@@ -27,6 +27,7 @@ import {
     extractFingerprint,
 } from '../util/pairingCrypto.js';
 import { defaultIceServers } from './IceServers.js';
+import { isViewMessage } from './hostMessages.js';
 
 /**
  * Describe a WebSocket close code for diagnostic logging.
@@ -927,16 +928,7 @@ export class WebRtcDataChannel {
                 // Parse server-to-client JSON messages (stats, pong, rumble, etc.)
                 try {
                     const msg = JSON.parse(evt.data);
-                    if (
-                        msg.type === 'stats' ||
-                        msg.type === 'pong' ||
-                        msg.type === 'rumble' ||
-                        msg.type === 'clipboard' ||
-                        msg.type === 'clipboardcaps' ||
-                        msg.type === 'cursor' ||
-                        msg.type === 'inputgate' ||
-                        msg.type === 'displayformat'
-                    ) {
+                    if (isViewMessage(msg.type)) {
                         if (this.onStats) this.onStats(msg);
                     } else if (msg.type === 'takeover') {
                         if (this.onTakeover) this.onTakeover();
@@ -1722,16 +1714,7 @@ export class WebRtcDataChannel {
         if (typeof evt.data === 'string') {
             try {
                 const msg = JSON.parse(evt.data);
-                if (
-                    (msg.type === 'stats' ||
-                        msg.type === 'pong' ||
-                        msg.type === 'rumble' ||
-                        msg.type === 'clipboard' ||
-                        msg.type === 'clipboardcaps' ||
-                        msg.type === 'inputgate' ||
-                        msg.type === 'displayformat') &&
-                    this.onStats
-                ) {
+                if (isViewMessage(msg.type) && this.onStats) {
                     this.onStats(msg);
                 } else if (msg.type === 'takeover' && this.onTakeover) {
                     this.onTakeover();
@@ -1798,15 +1781,7 @@ export class WebRtcDataChannel {
         if (typeof evt.data === 'string') {
             try {
                 const msg = JSON.parse(evt.data);
-                if (
-                    msg.type === 'stats' ||
-                    msg.type === 'pong' ||
-                    msg.type === 'rumble' ||
-                    msg.type === 'clipboard' ||
-                    msg.type === 'clipboardcaps' ||
-                    msg.type === 'inputgate' ||
-                    msg.type === 'displayformat'
-                ) {
+                if (isViewMessage(msg.type)) {
                     if (this.onStats) this.onStats(msg);
                 } else if (msg.type === 'takeover') {
                     if (this.onTakeover) this.onTakeover();

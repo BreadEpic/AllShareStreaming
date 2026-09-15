@@ -27,6 +27,7 @@ import {
     extractFingerprint,
 } from '../util/pairingCrypto.js';
 import { defaultIceServers } from './IceServers.js';
+import { isViewMessage } from './hostMessages.js';
 
 /**
  * Describe a WebSocket close code for diagnostic logging.
@@ -611,16 +612,7 @@ export class WebRtcMedia {
             } else if (label === this.DC_INPUT_LABEL) {
                 try {
                     const msg = JSON.parse(evt.data);
-                    if (
-                        msg.type === 'stats' ||
-                        msg.type === 'pong' ||
-                        msg.type === 'rumble' ||
-                        msg.type === 'clipboard' ||
-                        msg.type === 'clipboardcaps' ||
-                        msg.type === 'cursor' ||
-                        msg.type === 'inputgate' ||
-                        msg.type === 'displayformat'
-                    ) {
+                    if (isViewMessage(msg.type)) {
                         if (this.onStats) this.onStats(msg);
                     } else if (msg.type === 'takeover') {
                         // Exit notice from MediaTrackRelay::sendExitNotice, sent
