@@ -603,19 +603,30 @@ private:
     {
 #if defined(MW_NATIVE_LINUX_PORTAL)
         if (m_Target.capture == CaptureApi::PipeWire) {
+            // The grant as it stands NOW: a restart reopens the portal, and a
+            // portal that rotates its tokens has already spent the one the
+            // session started with.
+            if (m_PortalToken.empty()) m_PortalToken = m_Config.portalRestoreToken;
+            // One portal session at a time: the old stream goes before the new
+            // one is asked for (a restart reaches here with it still open).
+            if (m_Capture) {
+                m_Pipeline.reset();
+                m_Capture.reset();
+            }
             auto portal = std::make_unique<capture::PortalCapture>();
-            portal->setRestoreToken(m_Config.portalRestoreToken);
+            portal->setRestoreToken(m_PortalToken);
             if (!portal->start(error)) return false;
             // A grant only comes back from a start that raised the dialog.
             // Handing it up is what spares the user every later one — the
             // consumer stores it and passes it back in SessionConfig.
-            if (m_Callbacks.onPortalGrant) {
-                const std::string granted = portal->restoreToken();
-                if (!granted.empty() && granted != m_Config.portalRestoreToken)
-                    m_Callbacks.onPortalGrant(granted);
+            const std::string granted = portal->restoreToken();
+            if (!granted.empty() && granted != m_PortalToken) {
+                m_PortalToken = granted;
+                if (m_Callbacks.onPortalGrant) m_Callbacks.onPortalGrant(granted);
             }
             m_PortalDmabuf = portal->dmabuf();
             m_Capture = std::move(portal);
+            m_PortalModes = capture::KmsCapture::modeSignature(m_CardPath);
             return true;
         }
 #endif
@@ -733,9 +744,12 @@ private:
             m_Pipeline = std::make_unique<CpuPipeline>();
         else
             m_Pipeline = std::make_unique<GpuPipeline>();
-        return m_Pipeline->init(*m_Capture, m_Codec, outputWidth, outputHeight, m_EncodeFps,
-                                m_Config.bitrateKbps, m_Config.intraRefresh, m_Config.tuning,
-                                error);
+        if (!m_Pipeline->init(*m_Capture, m_Codec, outputWidth, outputHeight, m_EncodeFps,
+                              m_Config.bitrateKbps, m_Config.intraRefresh, m_Config.tuning, error))
+            return false;
+        m_PipelineCaptureWidth = m_Capture->width();
+        m_PipelineCaptureHeight = m_Capture->height();
+        return true;
     }
 
     convert::CursorDraw cursorDraw() const
@@ -784,7 +798,15 @@ private:
             log::info("[native] display is back after " + std::to_string(failures) + " attempt" +
                       (failures > 1 ? "s" : ""));
         m_DisplayMilliHz = m_Capture->refreshMilliHz();
+        if (!rebuildForCapture(error)) return Restart::Failed;
+        return Restart::Restarted;
+    }
 
+    /// Rebuild everything behind the capture for the size it delivers now —
+    /// after a restart, or when the portal renegotiated a new size under a
+    /// running stream (see the loop). The capture itself is left alone.
+    bool rebuildForCapture(std::string& error)
+    {
         // The frame keeps its size unless the viewer follows the display's
         // shape and the mode change moved it — see SessionConfig::
         // followDisplayShape, and the Windows session, which does the same.
@@ -792,7 +814,14 @@ private:
         int frameHeight = m_Info.height;
         FrameSize full{m_FullWidth, m_FullHeight};
         if (m_Config.followDisplayShape) {
-            full = frameForDisplay({m_Capture->width(), m_Capture->height()}, full,
+            // From the size the session was set up with, not the current one: a
+            // display that shrank below it on a tier that never upscales would
+            // otherwise keep the frame small once it grew back (1920x1080 ->
+            // 1280x960 -> 1706x960 on the portal's CPU pair, 15/09/2026).
+            const FrameSize base = m_Config.width > 0 && m_Config.height > 0
+                                       ? FrameSize{m_Config.width, m_Config.height}
+                                       : full;
+            full = frameForDisplay({m_Capture->width(), m_Capture->height()}, base,
                                    m_Target.fallbackEncoder || m_UsingCpuPair);
             if (full.width != m_FullWidth || full.height != m_FullHeight) {
                 log::info("[native] the display is now " + std::to_string(m_Capture->width()) +
@@ -806,11 +835,11 @@ private:
             }
         }
         if (!buildPipeline(frameWidth, frameHeight, error)) {
-            if (frameWidth == m_Info.width && frameHeight == m_Info.height) return Restart::Failed;
+            if (frameWidth == m_Info.width && frameHeight == m_Info.height) return false;
             log::warning("[native] cannot encode at " + std::to_string(frameWidth) + "x" +
                          std::to_string(frameHeight) + " (" + error + ") — staying at " +
                          std::to_string(m_Info.width) + "x" + std::to_string(m_Info.height));
-            if (!buildPipeline(m_Info.width, m_Info.height, error)) return Restart::Failed;
+            if (!buildPipeline(m_Info.width, m_Info.height, error)) return false;
         } else {
             m_FullWidth = full.width;
             m_FullHeight = full.height;
@@ -827,7 +856,7 @@ private:
         }
         m_ResendCursor.store(true);
         reportDisplayFormat();
-        return Restart::Restarted;
+        return true;
     }
 
     /// Tell the viewer what the display became — only when its size or the
@@ -904,6 +933,8 @@ private:
         // Whether the frame the capture last handed out is still valid to
         // re-convert (it is until the next export, see KmsCapture::acquire).
         bool haveFrame = false;
+        constexpr int64_t kModeCheckUs = 1000 * 1000;
+        int64_t nextModeCheckUs = steadyNowUs() + kModeCheckUs;
         capture::KmsFrame frame;
 
         auto floorIntervalUs = [this, kIdleFloorUs]() -> int64_t {
@@ -1045,8 +1076,26 @@ private:
             // Between frames, so the encoder is not holding anything.
             if (m_PendingResize.exchange(false)) applyLoadCap();
 
+            // The portal route: a mode change may never reach the stream. GNOME
+            // 42 simply stops delivering frames at one — measured on the
+            // UM790Pro, 15/09/2026: the desktop at 1280x960 on the scanout, not
+            // one frame out of the portal — where a fresh portal session opens
+            // on the new mode without a dialog, replaying the grant. So the
+            // CRTC modes are watched, and a change is handled as a loss.
+            bool portalModeChanged = false;
+            if (m_Target.capture == CaptureApi::PipeWire && steadyNowUs() >= nextModeCheckUs) {
+                nextModeCheckUs = steadyNowUs() + kModeCheckUs;
+                const std::string modes = capture::KmsCapture::modeSignature(m_CardPath);
+                if (!modes.empty() && !m_PortalModes.empty() && modes != m_PortalModes) {
+                    log::info("[native] a display mode changed under the portal — reopening it");
+                    portalModeChanged = true;
+                }
+            }
+
             capture::KmsFrame fresh;
-            const capture::AcquireStatus status = m_Capture->acquire(timeoutMs, fresh);
+            const capture::AcquireStatus status = portalModeChanged
+                                                      ? capture::AcquireStatus::Lost
+                                                      : m_Capture->acquire(timeoutMs, fresh);
 
             if (status != capture::AcquireStatus::Timeout && boosted) {
                 boosted = false;
@@ -1129,6 +1178,29 @@ private:
             if (status != capture::AcquireStatus::Ok) {
                 finish("capture failed");
                 return;
+            }
+
+            // The portal renegotiates a new size in place — a resolution
+            // change on the compositor's side — where KMS reports the display
+            // lost. The frames simply arrive bigger or smaller, and a pipeline
+            // built for the old size would import them at the wrong one. Same
+            // rebuild as after a restart, minus reopening a capture that is
+            // perfectly alive: a new portal session would ask the user again.
+            if (fresh.width != m_PipelineCaptureWidth || fresh.height != m_PipelineCaptureHeight) {
+                log::info("[native] the capture now delivers " + std::to_string(fresh.width) + "x" +
+                          std::to_string(fresh.height) + " (was " +
+                          std::to_string(m_PipelineCaptureWidth) + "x" +
+                          std::to_string(m_PipelineCaptureHeight) + ") — rebuilding behind it");
+                closeBurst("display resized");
+                if (!rebuildForCapture(error)) {
+                    finish("the pipeline could not follow the display's new size: " + error);
+                    return;
+                }
+                m_ForceKeyframe.store(true);
+                boosted = false;
+                applyBitrate(baseKbps);
+                lastRealUs = steadyNowUs();
+                resetBurst();
             }
 
             m_PresentsSeen++;
@@ -1440,6 +1512,11 @@ private:
     /// shared memory (only the CPU pair can read it). Meaningless on the KMS
     /// route, which is always DMA-BUF.
     bool m_PortalDmabuf = false;
+    /// The portal grant to replay on the next open — the session's own, then
+    /// whatever the portal handed back. See openCapture.
+    std::string m_PortalToken;
+    /// The CRTC modes when the portal was opened (KmsCapture::modeSignature).
+    std::string m_PortalModes;
     bool m_LoggedSharedMemory = false;
     /// The codec the pipeline was really built with. Starts as the Selector's
     /// choice and is lowered to H.264 when the portal forces the CPU pair —
@@ -1456,6 +1533,10 @@ private:
     /// The size the session was opened at, which the cap scales FROM — never
     /// from the current one, or a run of reductions would compound.
     int m_FullWidth = 0;
+    /// The capture size the pipeline was last built for — what a portal frame
+    /// of another size is told apart by.
+    int m_PipelineCaptureWidth = 0;
+    int m_PipelineCaptureHeight = 0;
     int m_FullHeight = 0;
     encode::EncodeLoadCap m_LoadCap;
     std::atomic<bool> m_PendingResize{false};

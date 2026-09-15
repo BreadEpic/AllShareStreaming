@@ -27,6 +27,7 @@
 #include "../../core/FrameCadence.h"
 #include "../../core/Log.h"
 #include "../../core/RestartBackoff.h"
+#include "../../core/Selector.h"
 #include "../../core/Session.h"
 #include "../../encode/RateControl.h"
 #include "../../encode/RateGovernor.h"
@@ -297,13 +298,21 @@ public:
         // the capture and the encoder were opened on it above.
         m_Info.hdr = m_Target.hdr;
         // What the viewer weighs its own screen against (SessionInfo). macOS has
-        // no HDR switch — an EDR panel always has its headroom — so nothing here
-        // changes under a session, and no DisplayFormat is ever reported.
-        // hdrCapable already carries the macOS 15 capture the probe requires.
+        // no HDR switch — an EDR panel always has its headroom — but a mode
+        // change is reported through reportDisplayFormat. hdrCapable already
+        // carries the macOS 15 capture the probe requires.
         m_Info.displayWidth = m_Display.pixelWidth;
         m_Info.displayHeight = m_Display.pixelHeight;
         m_Info.hdrCapable = m_Target.hdrCapable;
         m_Info.displayHdr = m_Display.hdr && m_Target.hdrCapable;
+        m_ModePixelWidth = m_Display.pixelWidth;
+        m_ModePixelHeight = m_Display.pixelHeight;
+        {
+            std::lock_guard<std::mutex> lock(m_FormatMutex);
+            m_LastFormat = DisplayFormat{m_Info.displayWidth, m_Info.displayHeight, m_Info.width,
+                                         m_Info.height,       m_Info.displayHdr,    m_Info.hdr,
+                                         m_Info.hdrCapable};
+        }
         m_Info.yuv444 = false;
         m_Info.intraRefresh = false;
         m_Info.intraRefreshFrames = 0;
@@ -446,6 +455,12 @@ public:
         }
     }
 
+    void setDisplayFormatCallback(DisplayFormatCallback callback) override
+    {
+        std::lock_guard<std::mutex> lock(m_FormatMutex);
+        m_OnDisplayFormat = std::move(callback);
+    }
+
     void setClientRefresh(int milliHz, bool vsync) override
     {
         if (milliHz < 1000) milliHz = 0;
@@ -549,7 +564,21 @@ private:
                 if (d.displayId == m_Display.displayId) m_Display = d;
             m_DisplayMilliHz = m_Display.refreshMilliHz;
             wakeDisplay();
-            if (openCapture(m_Info.width, m_Info.height, error)) break;
+            // The frame keeps its size — ScreenCaptureKit letterboxes a panel of
+            // another shape into it — unless the viewer follows the display's
+            // shape (SessionConfig::followDisplayShape): then the same height
+            // at the panel's new shape, as on Windows and Linux.
+            FrameSize frame{m_Info.width, m_Info.height};
+            if (m_Config.followDisplayShape && m_Config.width > 0 && m_Config.height > 0)
+                frame = frameForDisplay({m_Display.pixelWidth, m_Display.pixelHeight},
+                                        {m_Config.width, m_Config.height}, false);
+            if (failures == 0 && (frame.width != m_Info.width || frame.height != m_Info.height))
+                log::info("[native] the display is now " + std::to_string(m_Display.pixelWidth) +
+                          "x" + std::to_string(m_Display.pixelHeight) +
+                          " — the stream follows its shape: " + std::to_string(m_Info.width) + "x" +
+                          std::to_string(m_Info.height) + " -> " + std::to_string(frame.width) +
+                          "x" + std::to_string(frame.height));
+            if (openCapture(frame.width, frame.height, error)) break;
             failures++;
             if (failures == 1)
                 log::info("[native] display is away (reconfiguring, or off), waiting for it: " +
@@ -560,13 +589,60 @@ private:
             log::info("[native] display is back after " + std::to_string(failures) + " attempt" +
                       (failures > 1 ? "s" : ""));
         if (!buildEncoder(error)) return Restart::Failed;
+        m_Info.width = m_Capture->width();
+        m_Info.height = m_Capture->height();
         {
             const capture::DesktopRect rect = m_Capture->desktopRect();
             std::lock_guard<std::mutex> lock(m_InputMutex);
             if (m_Input) m_Input->setDisplayRect(rect.left, rect.top, rect.right, rect.bottom);
         }
         m_ResendCursor.store(true);
+        m_ModePixelWidth = m_Display.pixelWidth;
+        m_ModePixelHeight = m_Display.pixelHeight;
+        reportDisplayFormat();
         return Restart::Restarted;
+    }
+
+    /// Whether the display's mode changed since the capture was opened on it.
+    ///
+    /// ScreenCaptureKit does not say: a resolution change keeps the stream
+    /// running and letterboxes the new desktop into the old frame, so nothing
+    /// ever reaches the loop as a loss. Asked of CoreGraphics instead — a mode
+    /// copy, cheap enough for the loop to ask twice a second — rather than
+    /// through a reconfiguration callback, which is delivered on a run loop
+    /// this capture thread does not have.
+    bool displayModeChanged() const
+    {
+        CGDisplayModeRef mode = CGDisplayCopyDisplayMode(m_Display.displayId);
+        if (!mode) return false; // away: the capture reports that itself
+        const int width = static_cast<int>(CGDisplayModeGetPixelWidth(mode));
+        const int height = static_cast<int>(CGDisplayModeGetPixelHeight(mode));
+        CGDisplayModeRelease(mode);
+        return width > 0 && height > 0 &&
+               (width != m_ModePixelWidth || height != m_ModePixelHeight);
+    }
+
+    /// Tell the viewer what the display became — only when something it can
+    /// act on moved. See DisplayFormat.
+    void reportDisplayFormat()
+    {
+        const bool displayHdr = m_Display.hdr && m_Target.hdrCapable;
+        const DisplayFormat format{
+            m_Display.pixelWidth, m_Display.pixelHeight, m_Info.width, m_Info.height, displayHdr,
+            m_Info.hdr,           m_Info.hdrCapable};
+        std::lock_guard<std::mutex> lock(m_FormatMutex);
+        if (format.displayWidth == m_LastFormat.displayWidth &&
+            format.displayHeight == m_LastFormat.displayHeight &&
+            format.frameWidth == m_LastFormat.frameWidth &&
+            format.frameHeight == m_LastFormat.frameHeight &&
+            format.displayHdr == m_LastFormat.displayHdr && format.hdr == m_LastFormat.hdr)
+            return;
+        m_LastFormat = format;
+        log::info("[native] display format: " + std::to_string(format.displayWidth) + "x" +
+                  std::to_string(format.displayHeight) + (format.displayHdr ? " HDR" : " SDR") +
+                  ", streaming " + std::to_string(format.frameWidth) + "x" +
+                  std::to_string(format.frameHeight) + (format.hdr ? " HDR" : " SDR"));
+        if (m_OnDisplayFormat) m_OnDisplayFormat(format);
     }
 
     void run() noexcept
@@ -608,6 +684,8 @@ private:
         size_t refineFirstBytes = 0;
         int refineLogged = 0;
         bool haveFrame = false;
+        constexpr int64_t kModeCheckUs = 500 * 1000;
+        int64_t nextModeCheckUs = steadyNowUs() + kModeCheckUs;
 
         auto floorIntervalUs = [this]() -> int64_t {
             int fps = m_FloorFps.load(std::memory_order_relaxed);
@@ -755,8 +833,19 @@ private:
             if (haveFrame && (selfDrawn() || !m_CompositeCursor.load()))
                 timeoutMs = std::min(timeoutMs, std::max(4, 1000 / std::max(1, m_EncodeFps)));
 
+            // A mode change is not a loss to ScreenCaptureKit (displayModeChanged
+            // says why), so it is looked for here and handled as one.
+            bool modeChanged = false;
+            if (steadyNowUs() >= nextModeCheckUs) {
+                nextModeCheckUs = steadyNowUs() + kModeCheckUs;
+                modeChanged = displayModeChanged();
+                if (modeChanged)
+                    log::info("[native] display mode changed — restarting the capture on it");
+            }
+
             capture::SckFrame fresh;
-            const capture::AcquireStatus status = m_Capture->acquire(timeoutMs, fresh);
+            const capture::AcquireStatus status =
+                modeChanged ? capture::AcquireStatus::Lost : m_Capture->acquire(timeoutMs, fresh);
 
             if (status != capture::AcquireStatus::Timeout && boosted) {
                 boosted = false;
@@ -1305,6 +1394,17 @@ private:
 
     std::mutex m_InputMutex;
     std::unique_ptr<input::CgInput> m_Input;
+
+    /// The mode the capture was last opened on, in pixels — see
+    /// displayModeChanged. Capture thread only, after start().
+    int m_ModePixelWidth = 0;
+    int m_ModePixelHeight = 0;
+
+    /// See setDisplayFormatCallback, and the last format said. Guarded by
+    /// m_FormatMutex: set on the consumer's thread, read on the capture thread.
+    std::mutex m_FormatMutex;
+    DisplayFormatCallback m_OnDisplayFormat;
+    DisplayFormat m_LastFormat;
 
     std::thread m_Thread;
     std::atomic<bool> m_Running{false};

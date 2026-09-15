@@ -864,7 +864,11 @@ private:
         int frameHeight = m_Info.height;
         FrameSize full{m_FullWidth, m_FullHeight};
         if (m_Config.followDisplayShape) {
-            full = frameForDisplay({m_Capture->width(), m_Capture->height()}, full,
+            // From the size the session was set up with, not the current one: a
+            // display that shrank below it on a tier that never upscales would
+            // otherwise keep the frame small once it grew back (1920x1080 ->
+            // 1280x960 -> 1706x960 on the portal's CPU pair, 15/09/2026).
+            full = frameForDisplay({m_Capture->width(), m_Capture->height()}, shapeBase(),
                                    m_Target.fallbackEncoder);
             if (full.width != m_FullWidth || full.height != m_FullHeight) {
                 log::info("[native] the display is now " + std::to_string(m_Capture->width()) +
@@ -977,6 +981,14 @@ private:
     /// A black picture the size and format of what the capture was delivering,
     /// on the converter's device (the capture's, or the bridge's) so it can be
     /// converted directly. See restartCapture for what it is for.
+    /// The frame a display change is measured from — see restartCapture.
+    FrameSize shapeBase() const
+    {
+        return m_Config.width > 0 && m_Config.height > 0
+                   ? FrameSize{m_Config.width, m_Config.height}
+                   : FrameSize{m_FullWidth, m_FullHeight};
+    }
+
     Microsoft::WRL::ComPtr<ID3D11Texture2D> makeBlank(std::string& error)
     {
         Microsoft::WRL::ComPtr<ID3D11Texture2D> blank;

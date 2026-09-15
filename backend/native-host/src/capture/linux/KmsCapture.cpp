@@ -194,6 +194,27 @@ bool readPlaneProps(int card, uint32_t planeId, PlaneProps& out)
 
 // ── Enumeration ─────────────────────────────────────────────────────────────
 
+std::string KmsCapture::modeSignature(const std::string& cardPath)
+{
+    std::string signature;
+    const int card = ::open(cardPath.c_str(), O_RDWR | O_CLOEXEC);
+    if (card < 0) return signature;
+    if (drmModeRes* res = drmModeGetResources(card)) {
+        for (int i = 0; i < res->count_crtcs; ++i) {
+            drmModeCrtc* crtc = drmModeGetCrtc(card, res->crtcs[i]);
+            if (!crtc) continue;
+            if (crtc->mode_valid)
+                signature += std::to_string(crtc->crtc_id) + ":" + std::to_string(crtc->width) +
+                             "x" + std::to_string(crtc->height) + "+" + std::to_string(crtc->x) +
+                             "+" + std::to_string(crtc->y) + ";";
+            drmModeFreeCrtc(crtc);
+        }
+        drmModeFreeResources(res);
+    }
+    ::close(card);
+    return signature;
+}
+
 std::vector<KmsOutput> KmsCapture::listOutputs(const std::string& cardPath, std::string& error)
 {
     std::vector<KmsOutput> outputs;

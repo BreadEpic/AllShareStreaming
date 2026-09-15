@@ -101,6 +101,14 @@ public:
     /// GETFB2 succeeds for anyone, but hands a zero handle to the unprivileged.
     static bool canReadFramebuffers(const std::string& cardPath, std::string& why);
 
+    /// The modes this card's CRTCs are showing, as one comparable string —
+    /// empty when the card cannot be read. For noticing a mode change from a
+    /// route that does not capture through KMS (the portal, which on GNOME 42
+    /// stops delivering frames at a mode change instead of renegotiating).
+    /// CRTCs only: reading a connector probes it, which reads the monitor's
+    /// EDID over the wire, and this is asked every second.
+    static std::string modeSignature(const std::string& cardPath);
+
     KmsCapture(std::string cardPath, uint32_t connectorId);
     ~KmsCapture();
 
