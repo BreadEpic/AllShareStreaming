@@ -362,12 +362,25 @@ AcquireStatus DxgiDuplication::acquire(int timeoutMs, CapturedFrame& frame)
         log::info("[native] duplication lost (mode change or desktop switch) — will restart");
         return AcquireStatus::Lost;
     }
+    // An HDR switch — on this display, or on another one the same GPU drives —
+    // does not always answer ACCESS_LOST: the duplication can simply become
+    // invalid, and every call on it then says so. Measured 15/09/2026 on the
+    // reference bench, three runs of display-follow.ps1 in four, each ending the
+    // session. A duplication that has delivered is recovered like any other
+    // lost one; one that never has is not, or a call that can never succeed
+    // would restart the capture for ever.
+    if (hr == DXGI_ERROR_INVALID_CALL && m_Delivered) {
+        log::info("[native] duplication invalidated (a display switched HDR or mode) — will "
+                  "restart");
+        return AcquireStatus::Lost;
+    }
     if (FAILED(hr)) {
         log::warning("[native] AcquireNextFrame failed: " + hresultToString(hr));
         return AcquireStatus::Failed;
     }
 
     m_FrameHeld = true;
+    m_Delivered = true;
 
     const bool cursorMoved = updateCursor(info);
     samplePointerForVerdict();
@@ -409,6 +422,7 @@ void DxgiDuplication::stop()
 {
     release();
     m_Duplication.Reset();
+    m_Delivered = false;
     m_Context.Reset();
     m_Device.Reset();
     m_Width = 0;

@@ -118,6 +118,10 @@ private:
     /// the next acquire() silently.
     Microsoft::WRL::ComPtr<ID3D11Texture2D> m_AcquiredTexture;
     bool m_FrameHeld = false;
+    /// Whether this duplication has delivered a frame since start(): what
+    /// tells a duplication a display change invalidated (it worked, then
+    /// DXGI_ERROR_INVALID_CALL) from one that never could (see acquire()).
+    bool m_Delivered = false;
 
     int m_Width = 0;
     int m_Height = 0;
