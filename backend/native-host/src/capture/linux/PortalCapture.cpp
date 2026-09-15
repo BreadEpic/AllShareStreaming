@@ -223,6 +223,20 @@ struct PortalCapture::Impl
         cursorFresh = true;
     }
 
+    /// PipeWire takes a buffer back — a renegotiation, which GNOME 42 does at
+    /// a display mode change even when the size stays. A frame still held
+    /// here would point at freed memory, and handing it back later (release,
+    /// stop) crashed the session inside pw_stream_queue_buffer (UM790Pro,
+    /// 15/09/2026). Forgotten instead: it is no longer ours to return.
+    static void onRemoveBuffer(void* data, pw_buffer* b)
+    {
+        auto* self = static_cast<Impl*>(data);
+        std::lock_guard<std::mutex> lock(self->mutex);
+        if (self->held != b) return;
+        self->held = nullptr;
+        self->frameFresh = false;
+    }
+
     static void onProcess(void* data)
     {
         auto* self = static_cast<Impl*>(data);
@@ -338,6 +352,7 @@ bool PortalCapture::start(std::string& error)
     d->events.state_changed = &Impl::onStateChanged;
     d->events.param_changed = &Impl::onParamChanged;
     d->events.process = &Impl::onProcess;
+    d->events.remove_buffer = &Impl::onRemoveBuffer;
 
     d->stream = pw_stream_new(d->core, "MoonlightWeb screen",
                               pw_properties_new(PW_KEY_MEDIA_TYPE, "Video", PW_KEY_MEDIA_CATEGORY,
