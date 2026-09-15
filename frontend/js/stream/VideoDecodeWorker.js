@@ -948,15 +948,15 @@ function processFrame(data, isKeyframe, backendTs, arrivalAbs) {
     }
 
     // New parameter sets at a keyframe: the host changed the picture size
-    // mid-stream — start a new decoder on the new sets, or the old description
-    // decodes it green (StreamView._processVideoFrame has the full story, and
-    // why a new decoder rather than configure() on the running one).
+    // mid-stream — reconfigure, or the old description decodes it green
+    // (StreamView._processVideoFrame has the full story, and why configure()
+    // on the running decoder rather than a new one).
     if (isKeyframe && S.decoderConfigured && S.nalParser.changedBy(data)) {
-        console.log('[VideoWorker] Parameter sets changed at a keyframe — starting a new decoder');
+        console.log('[VideoWorker] Parameter sets changed at a keyframe — reconfiguring decoder');
         S.nalParser.reset();
         S.nalParser.feed(data);
-        setupDecoder();
-        S._proactiveIdrScheduled = false; // the new decoder gets its clean keyframe too
+        S.decoderConfigured = false;
+        S.decoderConfiguring = false;
         configureDecoder();
     }
 

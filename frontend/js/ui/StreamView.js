@@ -6029,30 +6029,24 @@ export class StreamView {
         // (or profile) mid-stream. The decoder holds the old sets as its
         // description and the chunks have theirs stripped, so it would decode
         // this keyframe against the wrong size — green blocks. Re-read the sets
-        // from this keyframe and start a NEW decoder on them; the keyframe waits
-        // in pendingFrames until the configuration is in (decodeFrame buffers
+        // from this keyframe and configure again; the keyframe waits in
+        // pendingFrames until the new configuration is in (decodeFrame buffers
         // while decoderConfigured is false).
         //
-        // A new decoder, not configure() on the running one: Chrome on Linux
-        // with a VA-API decoder kept painting green after re-configuring the
-        // live instance to the new size (issue #15, 13/09/2026, both log lines
-        // "reconfiguring" then green), while every fresh decoder at stream start
-        // on that same machine showed a clean first picture. A new one is the
-        // path proven there; it costs one decoder creation per resize.
-        //
-        // And the proactive IDR is re-armed: every clean first picture in that
-        // log was a fresh decoder PLUS the keyframe requested 250 ms after its
-        // configuration (configureDecoder says why a first decode can come out
-        // green). The new decoder gets the same keyframe, or the evidence does
-        // not carry over.
+        // configure() on the running decoder, no new decoder and no extra
+        // keyframe: a resize comes from a host short of CPU, the moment a
+        // keyframe costs it most. The green the reporter of issue #15 saw after
+        // "reconfiguring" was in the stream itself — the host encoded an empty
+        // picture after its own rebuild (fixed there, 15/09/2026) — and this
+        // path decodes cleanly on AMD VA-API, Intel VA-API and Windows alike.
         if (isKeyframe && this.decoderConfigured && this.nalParser.changedBy(data)) {
             console.log(
-                '[StreamView] Parameter sets changed at a keyframe — starting a new decoder',
+                '[StreamView] Parameter sets changed at a keyframe — reconfiguring decoder',
             );
             this.nalParser.reset();
             this.nalParser.feed(data);
-            this.setupDecoder();
-            this._proactiveIdrScheduled = false;
+            this.decoderConfigured = false;
+            this.decoderConfiguring = false;
             this.configureDecoder();
         }
 
