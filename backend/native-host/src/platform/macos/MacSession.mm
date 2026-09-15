@@ -567,15 +567,18 @@ private:
             // The frame keeps its size — ScreenCaptureKit letterboxes a panel of
             // another shape into it — unless the viewer follows the display's
             // shape (SessionConfig::followDisplayShape): then the same height
-            // at the panel's new shape, as on Windows and Linux.
+            // at the panel's new shape, as on Windows and Linux. Followed or
+            // not, it is never larger than the panel (frameForDisplay).
             FrameSize frame{m_Info.width, m_Info.height};
-            if (m_Config.followDisplayShape && m_Config.width > 0 && m_Config.height > 0)
-                frame = frameForDisplay({m_Display.pixelWidth, m_Display.pixelHeight},
-                                        {m_Config.width, m_Config.height}, false);
+            const FrameSize panel{m_Display.pixelWidth, m_Display.pixelHeight};
+            const bool overPanel = frame.width > panel.width || frame.height > panel.height;
+            if ((m_Config.followDisplayShape || overPanel) && m_Config.width > 0 &&
+                m_Config.height > 0)
+                frame = frameForDisplay(panel, {m_Config.width, m_Config.height});
             if (failures == 0 && (frame.width != m_Info.width || frame.height != m_Info.height))
                 log::info("[native] the display is now " + std::to_string(m_Display.pixelWidth) +
                           "x" + std::to_string(m_Display.pixelHeight) +
-                          " — the stream follows its shape: " + std::to_string(m_Info.width) + "x" +
+                          " — the stream follows it: " + std::to_string(m_Info.width) + "x" +
                           std::to_string(m_Info.height) + " -> " + std::to_string(frame.width) +
                           "x" + std::to_string(frame.height));
             if (openCapture(frame.width, frame.height, error)) break;

@@ -467,39 +467,51 @@ void run_selector_tests()
 
     // ── The same rule when the display changes mode under a session ──────────
     {
-        // 16:9 → 4:3 (a game setting 1280×960): same height, 4:3 width.
-        FrameSize f = frameForDisplay({1280, 960}, {1920, 1080}, false);
+        // 16:9 → 4:3 (a game setting 1920×1440): same height, 4:3 width.
+        FrameSize f = frameForDisplay({1920, 1440}, {1920, 1080});
         CHECK_EQ(f.width, 1440);
         CHECK_EQ(f.height, 1080);
 
         // Back to 16:9.
-        f = frameForDisplay({2560, 1440}, {1440, 1080}, false);
+        f = frameForDisplay({2560, 1440}, {1440, 1080});
         CHECK_EQ(f.width, 1920);
         CHECK_EQ(f.height, 1080);
 
         // Portrait: the width is derived and kept even.
-        f = frameForDisplay({1440, 2560}, {1920, 1080}, false);
+        f = frameForDisplay({1440, 2560}, {1920, 1080});
         CHECK_EQ(f.width, 608);
         CHECK_EQ(f.height, 1080);
 
         // Same shape at another size: the frame is the client's, untouched.
-        f = frameForDisplay({3840, 2160}, {1920, 1080}, false);
+        f = frameForDisplay({3840, 2160}, {1920, 1080});
         CHECK_EQ(f.width, 1920);
         CHECK_EQ(f.height, 1080);
 
         // Unknown sizes change nothing.
-        f = frameForDisplay({0, 0}, {1920, 1080}, false);
+        f = frameForDisplay({0, 0}, {1920, 1080});
         CHECK_EQ(f.width, 1920);
-        f = frameForDisplay({1280, 960}, {0, 0}, false);
+        f = frameForDisplay({1280, 960}, {0, 0});
         CHECK_EQ(f.width, 0);
 
-        // The fallback tier never upscales, including after a shrink.
-        f = frameForDisplay({1280, 720}, {1920, 1080}, true);
-        CHECK_EQ(f.width, 1280);
-        CHECK_EQ(f.height, 720);
-        f = frameForDisplay({1280, 720}, {1920, 1080}, false);
+        // Never larger than the display: a 1440p request of a display gone
+        // 1080p streams 1080p, one gone 800×600 streams 800×600 (the 4:3 shape
+        // at 1440 lines would not fit), and one grown back gets the request.
+        f = frameForDisplay({1920, 1080}, {2560, 1440});
         CHECK_EQ(f.width, 1920);
         CHECK_EQ(f.height, 1080);
+        f = frameForDisplay({800, 600}, {2560, 1440});
+        CHECK_EQ(f.width, 800);
+        CHECK_EQ(f.height, 600);
+        f = frameForDisplay({2560, 1440}, {2560, 1440});
+        CHECK_EQ(f.width, 2560);
+        CHECK_EQ(f.height, 1440);
+        f = frameForDisplay({1280, 960}, {1920, 1080});
+        CHECK_EQ(f.width, 1280);
+        CHECK_EQ(f.height, 960);
+        // An odd-sized display is capped to even dimensions.
+        f = frameForDisplay({1366, 767}, {1920, 1080});
+        CHECK_EQ(f.width, 1366);
+        CHECK_EQ(f.height, 766);
     }
 
     SECTION("Selector — default display");
@@ -789,7 +801,7 @@ void run_selector_tests()
         CHECK_EQ(sel.codec, Codec::Hevc); // the client's own preference still decides
     }
 
-    // ── The fallback tier never upscales; a GPU encoder still may ────────────
+    // ── No tier upscales, the fallback tier included ─────────────────────────
     {
         Capabilities caps = encoderlessMachine(); // a 1920×1080 display
         caps.fallbacks.push_back({EncoderApi::Software, {Codec::H264}, false, "OpenH264"});
@@ -812,13 +824,14 @@ void run_selector_tests()
         CHECK_EQ(sel.width, 1280);
         CHECK_EQ(sel.height, 720);
 
-        // The same request on a GPU encoder is untouched.
+        // The same request on a GPU encoder is capped the same way.
         const Capabilities hybrid = hybridMachine();
         cfg.displayId = 0; // the 1080p panel
         cfg.width = 2560;
         cfg.height = 1440;
         CHECK(select(hybrid, cfg, sel, err));
-        CHECK_EQ(sel.width, 2560);
+        CHECK_EQ(sel.width, 1920);
+        CHECK_EQ(sel.height, 1080);
     }
 
     // ── A client that decodes none of what the fallback makes is refused ─────

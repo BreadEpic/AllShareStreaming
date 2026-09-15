@@ -91,8 +91,7 @@ struct ResolvedTarget
 
     /// The encoder would carry HDR on an HDR display (Selection::hdrCapable).
     bool hdrCapable = false;
-    /// The encoder is a machine-level fallback, which never upscales — see
-    /// frameForDisplay().
+    /// The encoder is a machine-level fallback (Selection::fallbackEncoder).
     bool fallbackEncoder = false;
 };
 

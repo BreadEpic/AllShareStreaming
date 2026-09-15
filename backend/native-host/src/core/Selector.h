@@ -95,17 +95,18 @@ struct FrameSize
 };
 
 /// The frame a display of @p display should be streamed at, given the frame
-/// the session has now: the display's shape at the frame's height, width kept
+/// the client asked for: the display's shape at the frame's height, width kept
 /// even. The frame is returned untouched when its shape is already within 0.5%
 /// of the display's, so a client's even-width rounding is never fought over,
 /// and when either size is unknown.
 ///
-/// @p noUpscale caps the result at the display's own size — the fallback
-/// tier's rule (see select()), which a display shrinking under a session must
-/// not break.
+/// Never larger than the display: a 1440p request of a 1080p display streams
+/// 1080p, whatever the encoder (see select()). Given the size the client asked
+/// for rather than the one the session has now, a display that shrank and grew
+/// back returns to that size.
 ///
 /// Pure, shared by select() at the start of a session and by every platform
 /// session when the display changes mode under it.
-FrameSize frameForDisplay(FrameSize display, FrameSize frame, bool noUpscale);
+FrameSize frameForDisplay(FrameSize display, FrameSize frame);
 
 } // namespace mw::native

@@ -66,12 +66,7 @@ import {
 } from './util/BrowserDetect.js';
 import { startRefreshRateMonitor, currentRefreshMilliHz } from './util/RefreshRate.js';
 import { computeAutoBitrate } from './util/AutoBitrate.js';
-import {
-    DEFAULT_ASPECT,
-    loadHostAspect,
-    resolveMeasuredAspect,
-    saveHostAspect,
-} from './util/AspectRatio.js';
+import { DEFAULT_ASPECT, loadHostAspect, saveHostAspect } from './util/AspectRatio.js';
 import { startAspectProbe } from './stream/AspectProbe.js';
 import * as iosAudioUnlock from './audio/iosAudioUnlock.js';
 import { init as i18nInit, applyDOM, t } from './i18n/i18n.js';
@@ -1657,16 +1652,20 @@ const MoonlightApp = {
         //
         // Sunshine publishes no display format, so this is the only way to know
         // (see stream/AspectProbe.js).
+        //
+        // The native host needs none of the above: it streams its display's own
+        // shape whatever is asked (only the height is ours), states it in the
+        // launch reply, and rebuilds the stream at the new shape when its
+        // display changes mode — see _adoptNativeFormat. So for it the ratio is
+        // always Auto, whatever Settings say, and whatever the display's shape:
+        // the white list of screen ratios is the probe's, which a host that
+        // tells its size does not need.
         const chosenAspect = streamingSettings.stream_aspect;
-        this._aspectAuto = !chosenAspect || chosenAspect === 'auto';
+        this._aspectAuto = nativeHost || !chosenAspect || chosenAspect === 'auto';
         if (this._aspectAuto) {
             streamingSettings.stream_aspect = loadHostAspect(host.uuid) || DEFAULT_ASPECT;
         }
-        // The native host needs none of the above: it streams its display's own
-        // shape whatever is asked (only the height is ours), states it in the
-        // launch reply, and in Auto rebuilds the stream at the new shape when
-        // its display changes mode — see _adoptNativeFormat.
-        streamingSettings.follow_display_shape = nativeHost && this._aspectAuto;
+        streamingSettings.follow_display_shape = nativeHost;
 
         try {
             const result = await BackendClient.launchApp(host.uuid, app.id, streamingSettings);
@@ -2118,11 +2117,12 @@ const MoonlightApp = {
         this._reconcileNativeHdr('session start');
     },
 
-    /** Auto only: the native frame's shape becomes the session's aspect, and
-     *  the host's memory — the frame IS the display's shape. */
+    /** The native frame's shape becomes the session's aspect, and the host's
+     *  memory — the frame IS the display's shape. Kept exact, never snapped to
+     *  the list of screen ratios: a 3600x2338 panel is 1662:1080, not 3:2. */
     _noteNativeAspect(width, height) {
         if (!this._aspectAuto || !(width > 0) || !(height > 0)) return;
-        const aspect = resolveMeasuredAspect(width, height) || width + ':' + height;
+        const aspect = width + ':' + height;
         if (this._lastStreamHost) saveHostAspect(this._lastStreamHost.uuid, aspect);
         const settings = this._lastStreamingSettings;
         if (settings && settings.stream_aspect !== aspect) {

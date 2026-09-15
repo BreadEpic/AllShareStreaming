@@ -317,21 +317,21 @@ bool select(const Capabilities& caps, const SessionConfig& config, Selection& ou
     // 14/09/2026). Nothing then marks the picture as wrong: no bars for the
     // browser's aspect probe to measure, a request honoured to the pixel.
     //
-    // The fallback tier never upscales. A client whose setting is 1440p asking
-    // a 1080p display would have a machine with no encoder to spare convert and
-    // encode 1.8× the pixels for no information at all — measured: the
-    // Snapdragon's transform took 21 ms a picture at 1440p, the Debian VM's CPU
-    // encoder likewise (07/09/2026). The browser scales the picture up itself,
-    // and does it better than a CPU under load would.
+    // Never upscaled, on any tier (Bruno's rule, 16/09/2026; the fallback tier
+    // alone had it before). A client whose setting is 1440p asking a 1080p
+    // display would have the host convert and encode 1.8× the pixels for no
+    // information at all — measured on the fallback tier: the Snapdragon's
+    // transform took 21 ms a picture at 1440p, the Debian VM's CPU encoder
+    // likewise (07/09/2026) — and a GPU spends bitrate on them just the same.
+    // The browser scales the picture up itself.
     const FrameSize asked{out.width, out.height};
-    const FrameSize shaped =
-        frameForDisplay({out.display->width, out.display->height}, asked, out.fallbackEncoder);
+    const FrameSize shaped = frameForDisplay({out.display->width, out.display->height}, asked);
     if (shaped.width != asked.width || shaped.height != asked.height) {
         log::info("[native] " + std::to_string(asked.width) + "x" + std::to_string(asked.height) +
                   " asked of a " + std::to_string(out.display->width) + "x" +
                   std::to_string(out.display->height) + " display — streaming " +
                   std::to_string(shaped.width) + "x" + std::to_string(shaped.height) +
-                  (shaped.height != asked.height ? " on the fallback encoder, no upscaling"
+                  (shaped.height != asked.height ? ", the display's own size — never upscaled"
                                                  : ", the display's own shape"));
         out.width = shaped.width;
         out.height = shaped.height;
@@ -348,7 +348,7 @@ bool select(const Capabilities& caps, const SessionConfig& config, Selection& ou
     return true;
 }
 
-FrameSize frameForDisplay(FrameSize display, FrameSize frame, bool noUpscale)
+FrameSize frameForDisplay(FrameSize display, FrameSize frame)
 {
     if (display.width <= 0 || display.height <= 0 || frame.width <= 0 || frame.height <= 0)
         return frame;
@@ -359,9 +359,9 @@ FrameSize frameForDisplay(FrameSize display, FrameSize frame, bool noUpscale)
     if (std::abs(frameAspect - displayAspect) / displayAspect > 0.005)
         out.width = static_cast<int>(std::lround(frame.height * displayAspect)) & ~1;
 
-    if (noUpscale && (out.width > display.width || out.height > display.height)) {
-        out.width = display.width;
-        out.height = display.height;
+    if (out.width > display.width || out.height > display.height) {
+        out.width = display.width & ~1;
+        out.height = display.height & ~1;
     }
     return out;
 }

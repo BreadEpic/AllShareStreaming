@@ -858,23 +858,24 @@ private:
         // The frame keeps its size — unless the viewer follows the display's
         // shape and the mode change moved it (SessionConfig::followDisplayShape):
         // then the same height at the new shape, and the client's decoder
-        // follows on the keyframe the loop forces after a restart. The load
-        // cap keeps its percentage of the new full size.
+        // follows on the keyframe the loop forces after a restart. Followed or
+        // not, it is never larger than the display (frameForDisplay): a mode
+        // that no longer holds the frame brings it down. The load cap keeps its
+        // percentage of the new full size.
         int frameWidth = m_Info.width;
         int frameHeight = m_Info.height;
         FrameSize full{m_FullWidth, m_FullHeight};
-        if (m_Config.followDisplayShape) {
+        const FrameSize display{m_Capture->width(), m_Capture->height()};
+        if (m_Config.followDisplayShape || full.width > display.width ||
+            full.height > display.height) {
             // From the size the session was set up with, not the current one: a
-            // display that shrank below it on a tier that never upscales would
-            // otherwise keep the frame small once it grew back (1920x1080 ->
-            // 1280x960 -> 1706x960 on the portal's CPU pair, 15/09/2026).
-            full = frameForDisplay({m_Capture->width(), m_Capture->height()}, shapeBase(),
-                                   m_Target.fallbackEncoder);
+            // display that shrank below it would otherwise keep the frame small
+            // once it grew back (1920x1080 -> 1280x960 -> 1706x960 on the
+            // portal's CPU pair, 15/09/2026).
+            full = frameForDisplay(display, shapeBase());
             if (full.width != m_FullWidth || full.height != m_FullHeight) {
                 log::info("[native] the display is now " + std::to_string(m_Capture->width()) +
-                          "x" + std::to_string(m_Capture->height()) +
-                          " — the stream follows its "
-                          "shape: " +
+                          "x" + std::to_string(m_Capture->height()) + " — the stream follows it: " +
                           std::to_string(m_FullWidth) + "x" + std::to_string(m_FullHeight) +
                           " -> " + std::to_string(full.width) + "x" + std::to_string(full.height));
                 frameWidth = encode::EncodeLoadCap::scaled(full.width, m_LoadCap.percent());
