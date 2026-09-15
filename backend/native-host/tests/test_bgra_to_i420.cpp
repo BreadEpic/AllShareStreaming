@@ -157,4 +157,38 @@ void run_bgra_to_i420_tests()
         CHECK(out.y[6] > 220);
         CHECK(out.y[9] < 30);
     }
+
+    // ── Ten bits a channel: each channel lands in its own byte ───────────────
+    {
+        // XRGB2101010: R = 1023 (full), G = 512 (half), B = 4 (near zero), the
+        // two alpha bits set. XBGR2101010 is the same word read the other way
+        // round, so its red is the 4 and its blue the 1023.
+        const uint32_t word = (3u << 30) | (1023u << 20) | (512u << 10) | 4u;
+        std::vector<uint8_t> src(8, 0);
+        for (int i = 0; i < 2; ++i)
+            for (int b = 0; b < 4; ++b)
+                src[static_cast<size_t>(i) * 4 + b] = static_cast<uint8_t>(word >> (8 * b));
+        std::vector<uint8_t> rgb(8, 0), bgr(8, 0);
+        unpack2101010Rows(src.data(), 8, 2, false, rgb.data(), 0, 1);
+        unpack2101010Rows(src.data(), 8, 2, true, bgr.data(), 0, 1);
+        CHECK_EQ(rgb[0], 1);   // B: 4 >> 2
+        CHECK_EQ(rgb[1], 128); // G: 512 >> 2
+        CHECK_EQ(rgb[2], 255); // R: 1023 >> 2
+        CHECK_EQ(rgb[3], 255);
+        CHECK_EQ(bgr[0], 255);
+        CHECK_EQ(bgr[2], 1);
+        CHECK(rgb[4] == rgb[0] && rgb[6] == rgb[2]);
+
+        // And through the colour pass: a 10-bit white is the 8-bit white.
+        std::vector<uint8_t> white(8 * 4 * 4, 0);
+        const uint32_t w10 = (3u << 30) | (1023u << 20) | (1023u << 10) | 1023u;
+        for (size_t i = 0; i < white.size(); ++i)
+            white[i] = static_cast<uint8_t>(w10 >> (8 * (i % 4)));
+        std::vector<uint8_t> unpacked(white.size(), 0);
+        unpack2101010Rows(white.data(), 32, 8, false, unpacked.data(), 0, 4);
+        Planes out(8, 4);
+        bgraToI420Rows(params(unpacked, 32, 8, 4, out), 0, 4);
+        CHECK(out.y[0] >= 234 && out.y[0] <= 236);
+        CHECK_EQ(out.u[0], 128);
+    }
 }

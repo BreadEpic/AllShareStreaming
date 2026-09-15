@@ -164,14 +164,21 @@ public:
               int outputHeight, int fps, int bitrateKbps, bool intraRefresh,
               const EncoderTuning& tuning, std::string& error) override
     {
+        // The encoder first: it has the last word on the size. VA-API HEVC
+        // rounds down to whole 8-pixel blocks, so a converter built at the size
+        // asked for rendered into a surface of another size and the pipeline
+        // was refused — measured 15/09/2026, a 1280x1024 display followed at
+        // 1350x1080, encoded 1344x1080, stream left at its old shape.
+        m_Encoder = std::make_unique<encode::VaapiEncoder>();
+        if (!m_Encoder->init(capture.renderNodePath(), codec,
+                             outputWidth > 0 ? outputWidth : capture.width(),
+                             outputHeight > 0 ? outputHeight : capture.height(), fps, bitrateKbps,
+                             intraRefresh, tuning, error))
+            return false;
         m_Converter = std::make_unique<convert::GlConvert>();
         if (!m_Converter->init(capture.renderNodePath(), capture.fourcc(), capture.width(),
-                               capture.height(), outputWidth, outputHeight, error))
-            return false;
-        m_Encoder = std::make_unique<encode::VaapiEncoder>();
-        if (!m_Encoder->init(capture.renderNodePath(), codec, m_Converter->outputWidth(),
-                             m_Converter->outputHeight(), fps, bitrateKbps, intraRefresh, tuning,
-                             error))
+                               capture.height(), m_Encoder->inputTarget().width,
+                               m_Encoder->inputTarget().height, error))
             return false;
         return m_Converter->bindTarget(m_Encoder->inputTarget(), error);
     }
@@ -627,6 +634,7 @@ private:
             m_PortalDmabuf = portal->dmabuf();
             m_Capture = std::move(portal);
             m_PortalModes = capture::KmsCapture::modeSignature(m_CardPath);
+            m_PortalOpenedModes = m_PortalModes;
             return true;
         }
 #endif
@@ -935,6 +943,15 @@ private:
         bool haveFrame = false;
         constexpr int64_t kModeCheckUs = 1000 * 1000;
         int64_t nextModeCheckUs = steadyNowUs() + kModeCheckUs;
+        // A mode change seen under the portal and not settled yet: when it was
+        // seen, the modes it moved to, and the frames the stream has delivered
+        // since. See the check in the loop.
+        constexpr int64_t kPortalFollowGraceUs = 2000 * 1000;
+        constexpr int kPortalAliveFrames = 5;
+        int64_t portalModeSeenUs = 0;
+        std::string portalModesSeen;
+        int portalFramesSince = 0;
+        bool reopenPortal = false;
         capture::KmsFrame frame;
 
         auto floorIntervalUs = [this, kIdleFloorUs]() -> int64_t {
@@ -1094,16 +1111,37 @@ private:
             // 42 simply stops delivering frames at one — measured on the
             // UM790Pro, 15/09/2026: the desktop at 1280x960 on the scanout, not
             // one frame out of the portal — where a fresh portal session opens
-            // on the new mode without a dialog, replaying the grant. So the
-            // CRTC modes are watched, and a change is handled as a loss.
+            // on the new mode without a dialog, replaying the grant. KWin
+            // (Plasma 5.24, same machine, same day) does the opposite: its
+            // stream renegotiates the new size in place, and its portal keeps
+            // no grant, so a reopen raised the dialog again and froze the
+            // stream until someone AT the host clicked Share. So the CRTC modes
+            // are watched, and a change is given a moment to reach the stream:
+            // one that keeps delivering (a new size, or a few frames) is left
+            // alone; one that falls silent is handled as a loss and reopened.
             bool portalModeChanged = false;
             if (m_Target.capture == CaptureApi::PipeWire && steadyNowUs() >= nextModeCheckUs) {
                 nextModeCheckUs = steadyNowUs() + kModeCheckUs;
                 const std::string modes = capture::KmsCapture::modeSignature(m_CardPath);
-                if (!modes.empty() && !m_PortalModes.empty() && modes != m_PortalModes) {
-                    log::info("[native] a display mode changed under the portal — reopening it");
-                    portalModeChanged = true;
+                if (!modes.empty() && !m_PortalModes.empty() && modes != m_PortalModes &&
+                    modes != portalModesSeen) {
+                    log::info("[native] a display mode changed under the portal — waiting for its "
+                              "stream to follow");
+                    portalModeSeenUs = steadyNowUs();
+                    portalModesSeen = modes;
+                    portalFramesSince = 0;
                 }
+            }
+            if (portalModeSeenUs != 0 && steadyNowUs() - portalModeSeenUs >= kPortalFollowGraceUs) {
+                log::info("[native] the portal stream went silent after the mode change — "
+                          "reopening it");
+                portalModeSeenUs = 0;
+                portalModesSeen.clear();
+                portalModeChanged = true;
+            }
+            if (reopenPortal) {
+                reopenPortal = false;
+                portalModeChanged = true;
             }
 
             capture::KmsFrame fresh;
@@ -1200,7 +1238,36 @@ private:
             // built for the old size would import them at the wrong one. Same
             // rebuild as after a restart, minus reopening a capture that is
             // perfectly alive: a new portal session would ask the user again.
-            if (fresh.width != m_PipelineCaptureWidth || fresh.height != m_PipelineCaptureHeight) {
+            const bool resized =
+                fresh.width != m_PipelineCaptureWidth || fresh.height != m_PipelineCaptureHeight;
+            // A stream still delivering after a mode change (see the mode check
+            // above). At a new size it followed: settled. At its old size it
+            // did not — KWin 5.24 keeps its 1920x1080 buffer and paints a
+            // 1280x1024 desktop into it, doubled at the right, striped below.
+            // With a grant the portal reopens on the new mode without a word;
+            // without one a reopen asks at the host, and a stream frozen until
+            // someone there clicks is worse than a wrong picture its viewer can
+            // put right by setting the mode back. So it is kept, and said.
+            if (portalModeSeenUs != 0 && (resized || ++portalFramesSince >= kPortalAliveFrames)) {
+                if (resized) {
+                    log::info("[native] the portal stream followed the mode change");
+                } else if (portalModesSeen == m_PortalOpenedModes) {
+                    log::info("[native] the display is back on the mode the portal opened on");
+                } else if (!m_PortalToken.empty()) {
+                    log::info("[native] the portal stream kept its old size through the mode "
+                              "change — reopening it on the grant");
+                    reopenPortal = true;
+                } else {
+                    log::warning("[native] the portal stream kept its old size through the mode "
+                                 "change, and there is no grant to reopen it without asking at "
+                                 "the host — keeping it; the picture is wrong until the mode "
+                                 "is back");
+                }
+                m_PortalModes = portalModesSeen;
+                portalModeSeenUs = 0;
+                portalModesSeen.clear();
+            }
+            if (resized) {
                 log::info("[native] the capture now delivers " + std::to_string(fresh.width) + "x" +
                           std::to_string(fresh.height) + " (was " +
                           std::to_string(m_PipelineCaptureWidth) + "x" +
@@ -1537,6 +1604,9 @@ private:
     std::string m_PortalToken;
     /// The CRTC modes when the portal was opened (KmsCapture::modeSignature).
     std::string m_PortalModes;
+    /// The same, as they were when this portal session opened: a mode change
+    /// that comes back to them needs nothing from the stream.
+    std::string m_PortalOpenedModes;
     bool m_LoggedSharedMemory = false;
     /// The codec the pipeline was really built with. Starts as the Selector's
     /// choice and is lowered to H.264 when the portal forces the CPU pair —

@@ -78,7 +78,8 @@ public:
     CpuConvert(const CpuConvert&) = delete;
     CpuConvert& operator=(const CpuConvert&) = delete;
 
-    /// @p sourceFourcc must be XRGB8888 / ARGB8888 / XBGR8888 / ABGR8888.
+    /// @p sourceFourcc must be XRGB8888 / ARGB8888 / XBGR8888 / ABGR8888, or
+    /// their 2101010 counterparts.
     /// Output dimensions are rounded down to even.
     bool init(uint32_t sourceFourcc, int sourceWidth, int sourceHeight, int outputWidth,
               int outputHeight, std::string& error);
@@ -98,6 +99,16 @@ private:
     void blendPointer(const capture::CursorState& cursor, const CursorDraw& draw);
 
     bool m_RgbOrder = false;
+    /// A 10-bit scanout, and which way round its word is; unpacked into
+    /// m_Unpacked (8-bit BGRX) before the colour pass.
+    enum class TenBit
+    {
+        No,
+        Rgb,
+        Bgr
+    };
+    TenBit m_TenBit = TenBit::No;
+    std::vector<uint8_t> m_Unpacked;
     int m_SourceWidth = 0;
     int m_SourceHeight = 0;
     int m_OutputWidth = 0;

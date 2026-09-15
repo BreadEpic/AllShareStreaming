@@ -56,16 +56,28 @@ CpuConvert::~CpuConvert() = default;
 bool CpuConvert::init(uint32_t sourceFourcc, int sourceWidth, int sourceHeight, int outputWidth,
                       int outputHeight, std::string& error)
 {
+    m_TenBit = TenBit::No;
+    m_RgbOrder = false;
     switch (sourceFourcc) {
     case DRM_FORMAT_XRGB8888:
     case DRM_FORMAT_ARGB8888: m_RgbOrder = false; break;
     case DRM_FORMAT_XBGR8888:
     case DRM_FORMAT_ABGR8888: m_RgbOrder = true; break;
+    // Ten bits a channel, SDR all the same (KWin's scanout wherever the
+    // display takes it): unpacked to 8-bit BGRX first, see unpack2101010Rows.
+    case DRM_FORMAT_XRGB2101010:
+    case DRM_FORMAT_ARGB2101010: m_TenBit = TenBit::Rgb; break;
+    case DRM_FORMAT_XBGR2101010:
+    case DRM_FORMAT_ABGR2101010: m_TenBit = TenBit::Bgr; break;
     default:
-        error = "the CPU converter takes 8-bit XRGB/XBGR scanout buffers, not " +
+        error = "the CPU converter takes 8- or 10-bit XRGB/XBGR scanout buffers, not " +
                 fourccName(sourceFourcc);
         return false;
     }
+    if (m_TenBit != TenBit::No)
+        m_Unpacked.assign(static_cast<size_t>(sourceWidth) * 4 * sourceHeight, 0);
+    else
+        m_Unpacked.clear();
     if (sourceWidth <= 0 || sourceHeight <= 0 || outputWidth <= 0 || outputHeight <= 0) {
         error = "empty picture";
         return false;
@@ -153,6 +165,14 @@ bool CpuConvert::convert(const capture::KmsFrame& frame, const capture::CursorSt
     BgraToI420Params p;
     p.src = alreadyMapped ? frame.mapped : static_cast<const uint8_t*>(map) + frame.offsets[0];
     p.srcPitch = frame.pitches[0];
+    if (m_TenBit != TenBit::No) {
+        // One pass over the buffer while it is mapped: the bands below then
+        // read the 8-bit copy, exactly as they read an 8-bit scanout.
+        unpack2101010Rows(p.src, p.srcPitch, m_SourceWidth, m_TenBit == TenBit::Bgr,
+                          m_Unpacked.data(), 0, m_SourceHeight);
+        p.src = m_Unpacked.data();
+        p.srcPitch = static_cast<size_t>(m_SourceWidth) * 4;
+    }
     p.srcWidth = m_SourceWidth;
     p.srcHeight = m_SourceHeight;
     p.rgbOrder = m_RgbOrder;

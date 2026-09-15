@@ -339,11 +339,17 @@ bool GlConvert::init(const std::string& renderNode, uint32_t sourceFourcc, int s
     stop();
     d = std::make_unique<Impl>();
 
+    // Ten bits a channel is still the SDR desktop: KWin scans out in
+    // XRGB2101010 wherever the display takes it — the Radeon 780M under Plasma
+    // 5.24, measured 15/09/2026, where this refusal left KDE with no stream at
+    // all. An imported image is sampled normalised, whatever its depth, so the
+    // shaders are the same. HDR (a PQ desktop, ABGR16161616F) is another matter
+    // and is not written on this platform: refused, as ColorConvert does for a
+    // format it lacks.
     if (sourceFourcc != DRM_FORMAT_XRGB8888 && sourceFourcc != DRM_FORMAT_ARGB8888 &&
-        sourceFourcc != DRM_FORMAT_XBGR8888 && sourceFourcc != DRM_FORMAT_ABGR8888) {
-        // HDR (XRGB2101010, ABGR16161616F) is not written on this platform yet,
-        // and a 10-bit desktop read as 8-bit would be a picture that is merely
-        // wrong. Refuse instead, as ColorConvert does for a format it lacks.
+        sourceFourcc != DRM_FORMAT_XBGR8888 && sourceFourcc != DRM_FORMAT_ABGR8888 &&
+        sourceFourcc != DRM_FORMAT_XRGB2101010 && sourceFourcc != DRM_FORMAT_ARGB2101010 &&
+        sourceFourcc != DRM_FORMAT_XBGR2101010 && sourceFourcc != DRM_FORMAT_ABGR2101010) {
         error = "no GL conversion for scanout format " + std::to_string(sourceFourcc);
         return false;
     }

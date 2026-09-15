@@ -187,4 +187,31 @@ inline void bgraToI420Rows(const BgraToI420Params& p, int rowBegin, int rowEnd)
     }
 }
 
+/// A scanout of ten bits a channel (DRM X/ARGB2101010 and X/ABGR2101010 — what
+/// KWin allocates on a display that takes them, an SDR desktop all the same)
+/// brought down to the 8-bit B,G,R,X layout the pass above reads, @p width
+/// pixels a row into @p dst (4 bytes a pixel, no padding). A source pixel is one
+/// little-endian 32-bit word: two bits of alpha on top, then three channels of
+/// ten bits, red highest in XRGB2101010, blue highest when @p bgrWord is set.
+inline void unpack2101010Rows(const uint8_t* src, size_t srcPitch, int width, bool bgrWord,
+                              uint8_t* dst, int rowBegin, int rowEnd)
+{
+    for (int row = rowBegin; row < rowEnd; ++row) {
+        const uint8_t* s = src + static_cast<size_t>(row) * srcPitch;
+        uint8_t* d = dst + static_cast<size_t>(row) * static_cast<size_t>(width) * 4;
+        for (int x = 0; x < width; ++x, s += 4, d += 4) {
+            const uint32_t w = static_cast<uint32_t>(s[0]) | (static_cast<uint32_t>(s[1]) << 8) |
+                               (static_cast<uint32_t>(s[2]) << 16) |
+                               (static_cast<uint32_t>(s[3]) << 24);
+            const uint8_t high = static_cast<uint8_t>((w >> 22) & 0xFF);
+            const uint8_t mid = static_cast<uint8_t>((w >> 12) & 0xFF);
+            const uint8_t low = static_cast<uint8_t>((w >> 2) & 0xFF);
+            d[0] = bgrWord ? high : low; // B
+            d[1] = mid;                  // G
+            d[2] = bgrWord ? low : high; // R
+            d[3] = 255;
+        }
+    }
+}
+
 } // namespace mw::native::convert
