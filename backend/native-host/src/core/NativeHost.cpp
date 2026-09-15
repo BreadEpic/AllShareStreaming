@@ -144,6 +144,8 @@ std::unique_ptr<Session> NativeHost::createSession(const SessionConfig& config,
     target.codec = selection.codec;
     target.crossGpuCopy = selection.crossGpuCopy;
     target.hdr = selection.hdr;
+    target.hdrCapable = selection.hdrCapable;
+    target.fallbackEncoder = selection.fallbackEncoder;
     // Granted, not requested: the Selector already moved the codec to one that
     // has 4:4:4, or gave it up. The backend must never re-ask the encoder.
     target.yuv444 = selection.yuv444;

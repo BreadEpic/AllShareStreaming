@@ -43,6 +43,11 @@ struct Selection
     /// runs SDR rather than failing.
     bool hdr = false;
 
+    /// The encoder would carry HDR on an HDR display — see
+    /// SessionInfo::hdrCapable. Independent of the request and of the display's
+    /// current mode, which are the two things that change under a session.
+    bool hdrCapable = false;
+
     /// 4:4:4 granted: asked for AND the chosen codec has it on this encoder.
     /// The request steers the codec choice (see select()), so this is false
     /// only when no codec the client and the GPU share can carry 4:4:4 — the
@@ -81,5 +86,26 @@ struct Selection
 /// client and the machine share no codec at all.
 bool select(const Capabilities& caps, const SessionConfig& config, Selection& out,
             std::string& error);
+
+/// A frame size and a display size, in pixels.
+struct FrameSize
+{
+    int width = 0;
+    int height = 0;
+};
+
+/// The frame a display of @p display should be streamed at, given the frame
+/// the session has now: the display's shape at the frame's height, width kept
+/// even. The frame is returned untouched when its shape is already within 0.5%
+/// of the display's, so a client's even-width rounding is never fought over,
+/// and when either size is unknown.
+///
+/// @p noUpscale caps the result at the display's own size — the fallback
+/// tier's rule (see select()), which a display shrinking under a session must
+/// not break.
+///
+/// Pure, shared by select() at the start of a session and by every platform
+/// session when the display changes mode under it.
+FrameSize frameForDisplay(FrameSize display, FrameSize frame, bool noUpscale);
 
 } // namespace mw::native

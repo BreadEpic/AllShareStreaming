@@ -96,6 +96,26 @@ MediaTrackRelay::MediaTrackRelay(IMediaEngine* engine, QObject* parent)
                 } catch (const std::exception&) {}
             });
 
+    // The host's display format (native host) — see DataChannelRelay.
+    connect(m_Shim, &IMediaEngine::displayFormatChanged, this,
+            [this](int displayWidth, int displayHeight, int frameWidth, int frameHeight,
+                   bool displayHdr, bool hdr, bool hdrCapable) {
+                if (m_Stopping.load() || !m_InputDc) return;
+                QJsonObject m;
+                m["type"] = "displayformat";
+                m["displayWidth"] = displayWidth;
+                m["displayHeight"] = displayHeight;
+                m["frameWidth"] = frameWidth;
+                m["frameHeight"] = frameHeight;
+                m["displayHdr"] = displayHdr;
+                m["hdr"] = hdr;
+                m["hdrCapable"] = hdrCapable;
+                QByteArray j = QJsonDocument(m).toJson(QJsonDocument::Compact);
+                try {
+                    m_InputDc->send(std::string(j.constData(), j.size()));
+                } catch (const std::exception&) {}
+            });
+
     // The mouse pointer's shape when the browser draws it (native host, desktop
     // mode) — same message as DataChannelRelay's, same reasoning there. The
     // input DC carries it here exactly as it does on the other transport.

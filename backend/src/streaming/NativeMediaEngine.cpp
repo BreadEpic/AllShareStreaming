@@ -154,6 +154,7 @@ void NativeMediaEngine::startCapture(const StartParams& params)
     config.hdr = params.hdr;
     config.yuv444 = params.yuv444;
     config.intraRefresh = params.intraRefresh;
+    config.followDisplayShape = params.followDisplayShape;
     config.allowElevatedInput = params.viewerAdmin;
     config.muteHostAudio = params.muteHostAudio;
     // The consent this machine was already given, replayed. Empty on the very
@@ -265,6 +266,18 @@ void NativeMediaEngine::startCapture(const StartParams& params)
         QMetaObject::invokeMethod(
             this,
             [this, blocked, reason, window]() { emit inputGateChanged(blocked, reason, window); },
+            Qt::QueuedConnection);
+    });
+
+    // Same thread story as the gate: said on the capture thread, forwarded by
+    // a relay that lives elsewhere.
+    m_Session->setDisplayFormatCallback([this](const mw::native::DisplayFormat& f) {
+        QMetaObject::invokeMethod(
+            this,
+            [this, f]() {
+                emit displayFormatChanged(f.displayWidth, f.displayHeight, f.frameWidth,
+                                          f.frameHeight, f.displayHdr, f.hdr, f.hdrCapable);
+            },
             Qt::QueuedConnection);
     });
 
@@ -596,6 +609,13 @@ bool NativeMediaEngine::intraRefreshActive() const
 int NativeMediaEngine::intraRefreshFrames() const
 {
     return intraRefreshActive() ? m_Session->info().intraRefreshFrames : 0;
+}
+
+bool NativeMediaEngine::sessionInfo(mw::native::SessionInfo& out) const
+{
+    if (!m_Session || !m_Connected.load(std::memory_order_acquire)) return false;
+    out = m_Session->info();
+    return true;
 }
 
 QString NativeMediaEngine::describeSession() const

@@ -136,6 +136,22 @@ struct SessionConfig
     /// hands it back here next time. Ignored everywhere else.
     std::string portalRestoreToken;
 
+    /// Let the frame follow the display's shape when the host changes its mode
+    /// under a running session — a game switching the desktop to 4:3, a
+    /// portrait rotation, a 16:10 panel swapped in.
+    ///
+    /// The session always STARTS in the display's shape (the Selector keeps
+    /// only the client's height). What this decides is the change: true
+    /// rebuilds the encoder at the new shape, same height, and says so through
+    /// the DisplayFormatCallback; the client's decoder follows the new
+    /// parameter sets on the keyframe that comes with it. False, the default,
+    /// keeps the negotiated size and lets the conversion pass absorb the
+    /// difference — stretched on Windows and Linux, letterboxed on macOS.
+    ///
+    /// The browser sets it when the viewer's aspect setting is "Auto": a
+    /// ratio chosen by hand is a ratio the viewer wants kept.
+    bool followDisplayShape = false;
+
     // ── Bench-only, below this line ─────────────────────────────────────────
     //
     // Neither field is ever set by a session a browser started. They exist so
@@ -173,6 +189,20 @@ struct SessionInfo
     /// True when the session really is 10-bit HDR. May be false even though
     /// SessionConfig::hdr was true — see that field.
     bool hdr = false;
+
+    /// The display as it stands when the session starts: its desktop size in
+    /// pixels, and whether it is in an HDR mode. The frame size above is what
+    /// is encoded; these are what is captured. Updated for the viewer through
+    /// the DisplayFormatCallback, not here.
+    int displayWidth = 0;
+    int displayHeight = 0;
+    bool displayHdr = false;
+
+    /// Whether this session's encoder would carry HDR, were the display in an
+    /// HDR mode and the client asking — a 10-bit GPU encoder on HEVC or AV1.
+    /// Lets a client tell "the host is in SDR" from "this host never does HDR",
+    /// so it relaunches for the first and not for the second.
+    bool hdrCapable = false;
 
     /// True when the session really is 4:4:4. Same contract as `hdr`: asked for
     /// is not granted, and the stats overlay is where the difference shows.

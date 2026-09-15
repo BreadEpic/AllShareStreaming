@@ -191,6 +191,36 @@ struct InputGate
 
 using InputGateCallback = std::function<void(const InputGate& gate)>;
 
+/// The host's display changed under a running session: its mode, its shape,
+/// or whether it is in HDR. Reported once the capture is running again on the
+/// new mode, and only when one of these fields moved.
+///
+/// Two things a viewer cannot learn from the picture alone, which is why this
+/// exists. The frame's shape may not have followed (SessionConfig::
+/// followDisplayShape off), and an HDR switch changes nothing a decoder can
+/// see in an SDR session: DXGI tone-maps the new HDR desktop into the same
+/// 8-bit frames. The client weighs this against its own screen and decides
+/// whether a new session is worth it.
+struct DisplayFormat
+{
+    /// The desktop, in the display's own pixels.
+    int displayWidth = 0;
+    int displayHeight = 0;
+    /// What is encoded from now on.
+    int frameWidth = 0;
+    int frameHeight = 0;
+    /// The display is in an HDR mode now.
+    bool displayHdr = false;
+    /// The frames are HDR now. An HDR session whose display left HDR drops to
+    /// SDR on its own; an SDR session never rises to HDR on its own — the
+    /// client relaunches, because its renderer is chosen at stream start.
+    bool hdr = false;
+    /// Same as SessionInfo::hdrCapable.
+    bool hdrCapable = false;
+};
+
+using DisplayFormatCallback = std::function<void(const DisplayFormat& format)>;
+
 /// The session ended on its own — the display went away, the encoder died, the
 /// user logged out. `reason` is English, for logs. A session that ends this way
 /// never calls stop() on itself; the owner still must.
@@ -331,6 +361,12 @@ public:
     /// Only the Windows engine has anything to report today; elsewhere this
     /// is accepted and never called.
     virtual void setInputGateCallback(InputGateCallback callback) { (void)callback; }
+
+    /// Where to hear that the host's display changed mode, shape or dynamic
+    /// range — see DisplayFormat. Delivered on the capture thread, once the
+    /// capture runs again on the new mode. Optional; accepted and never called
+    /// on a platform that does not watch for it.
+    virtual void setDisplayFormatCallback(DisplayFormatCallback callback) { (void)callback; }
 
     /// Where to hear that the desktop portal issued a consent worth keeping.
     ///

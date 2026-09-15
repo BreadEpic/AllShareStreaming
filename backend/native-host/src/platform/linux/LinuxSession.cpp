@@ -25,6 +25,7 @@
 #include "../../core/FrameCadence.h"
 #include "../../core/Log.h"
 #include "../../core/RestartBackoff.h"
+#include "../../core/Selector.h"
 #include "../../core/Session.h"
 #include "../../encode/EncodeLoadCap.h"
 #include "../../encode/RateControl.h"
@@ -417,6 +418,20 @@ public:
         m_Info.gpuName = m_Target.encodeGpuName;
         m_Info.hdr = false;
         m_Info.yuv444 = false;
+        // No HDR on this platform at all (LinuxProbe), so the display is SDR and
+        // no encoder here would carry it.
+        m_Info.displayWidth = m_Capture->width();
+        m_Info.displayHeight = m_Capture->height();
+        {
+            std::lock_guard<std::mutex> lock(m_FormatMutex);
+            m_LastFormat = DisplayFormat{m_Info.displayWidth,
+                                         m_Info.displayHeight,
+                                         m_Info.width,
+                                         m_Info.height,
+                                         false,
+                                         false,
+                                         false};
+        }
         m_Info.intraRefresh = m_Pipeline->intraRefreshEnabled();
         m_Info.intraRefreshFrames = m_Pipeline->intraRefreshFrames();
         m_Info.referenceInvalidation = m_Pipeline->supportsReferenceInvalidation();
@@ -769,7 +784,39 @@ private:
             log::info("[native] display is back after " + std::to_string(failures) + " attempt" +
                       (failures > 1 ? "s" : ""));
         m_DisplayMilliHz = m_Capture->refreshMilliHz();
-        if (!buildPipeline(m_Info.width, m_Info.height, error)) return Restart::Failed;
+
+        // The frame keeps its size unless the viewer follows the display's
+        // shape and the mode change moved it — see SessionConfig::
+        // followDisplayShape, and the Windows session, which does the same.
+        int frameWidth = m_Info.width;
+        int frameHeight = m_Info.height;
+        FrameSize full{m_FullWidth, m_FullHeight};
+        if (m_Config.followDisplayShape) {
+            full = frameForDisplay({m_Capture->width(), m_Capture->height()}, full,
+                                   m_Target.fallbackEncoder || m_UsingCpuPair);
+            if (full.width != m_FullWidth || full.height != m_FullHeight) {
+                log::info("[native] the display is now " + std::to_string(m_Capture->width()) +
+                          "x" + std::to_string(m_Capture->height()) +
+                          " — the stream follows its "
+                          "shape: " +
+                          std::to_string(m_FullWidth) + "x" + std::to_string(m_FullHeight) +
+                          " -> " + std::to_string(full.width) + "x" + std::to_string(full.height));
+                frameWidth = encode::EncodeLoadCap::scaled(full.width, m_LoadCap.percent());
+                frameHeight = encode::EncodeLoadCap::scaled(full.height, m_LoadCap.percent());
+            }
+        }
+        if (!buildPipeline(frameWidth, frameHeight, error)) {
+            if (frameWidth == m_Info.width && frameHeight == m_Info.height) return Restart::Failed;
+            log::warning("[native] cannot encode at " + std::to_string(frameWidth) + "x" +
+                         std::to_string(frameHeight) + " (" + error + ") — staying at " +
+                         std::to_string(m_Info.width) + "x" + std::to_string(m_Info.height));
+            if (!buildPipeline(m_Info.width, m_Info.height, error)) return Restart::Failed;
+        } else {
+            m_FullWidth = full.width;
+            m_FullHeight = full.height;
+        }
+        m_Info.width = m_Pipeline->outputWidth();
+        m_Info.height = m_Pipeline->outputHeight();
         // A new encoder holds no reconstructions: a loss named against the old
         // one means nothing, and the first picture is a keyframe regardless.
         m_PendingInvalidation.store(0);
@@ -779,7 +826,38 @@ private:
             if (m_Input) applyInputRects(*m_Input, rects);
         }
         m_ResendCursor.store(true);
+        reportDisplayFormat();
         return Restart::Restarted;
+    }
+
+    /// Tell the viewer what the display became — only when its size or the
+    /// frame's moved. See DisplayFormat; HDR never changes here.
+    void reportDisplayFormat()
+    {
+        const DisplayFormat format{m_Capture->width(),
+                                   m_Capture->height(),
+                                   m_Info.width,
+                                   m_Info.height,
+                                   false,
+                                   false,
+                                   false};
+        std::lock_guard<std::mutex> lock(m_FormatMutex);
+        if (format.displayWidth == m_LastFormat.displayWidth &&
+            format.displayHeight == m_LastFormat.displayHeight &&
+            format.frameWidth == m_LastFormat.frameWidth &&
+            format.frameHeight == m_LastFormat.frameHeight)
+            return;
+        m_LastFormat = format;
+        log::info("[native] display format: " + std::to_string(format.displayWidth) + "x" +
+                  std::to_string(format.displayHeight) + ", streaming " +
+                  std::to_string(format.frameWidth) + "x" + std::to_string(format.frameHeight));
+        if (m_OnDisplayFormat) m_OnDisplayFormat(format);
+    }
+
+    void setDisplayFormatCallback(DisplayFormatCallback callback) override
+    {
+        std::lock_guard<std::mutex> lock(m_FormatMutex);
+        m_OnDisplayFormat = std::move(callback);
     }
 
     void run() noexcept
@@ -1330,6 +1408,12 @@ private:
 
     std::mutex m_InputMutex;
     std::unique_ptr<input::UinputInput> m_Input;
+
+    /// See setDisplayFormatCallback, and the last format said. Guarded by
+    /// m_FormatMutex: set on the consumer's thread, read on the capture thread.
+    std::mutex m_FormatMutex;
+    DisplayFormatCallback m_OnDisplayFormat;
+    DisplayFormat m_LastFormat;
     std::unique_ptr<input::UinputGamepad> m_Gamepad;
 
 #if defined(MW_NATIVE_LINUX_AUDIO)

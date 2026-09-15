@@ -280,8 +280,9 @@ bool select(const Capabilities& caps, const SessionConfig& config, Selection& ou
     // The fallback tier never carries it: 10-bit is a second reason for a weak
     // machine to fall behind, and a browser that is handed PQ it cannot place
     // shows a washed-out picture rather than an error (§21.10).
-    out.hdr = config.hdr && !fallback && out.display->hdrActive && out.gpu->supports10Bit &&
-              (out.codec == Codec::Hevc || out.codec == Codec::Av1);
+    out.hdrCapable = !fallback && out.gpu->supports10Bit &&
+                     (out.codec == Codec::Hevc || out.codec == Codec::Av1);
+    out.hdr = config.hdr && out.hdrCapable && out.display->hdrActive;
     if (config.hdr && !out.hdr) {
         log::info("[native] HDR requested but not achievable here — streaming SDR");
     }
@@ -314,39 +315,26 @@ bool select(const Capabilities& caps, const SessionConfig& config, Selection& ou
     // Windows conversion pass stretches the desktop across it — so a 16:9
     // screen asked for 1664x1080 came out squeezed into 3:2 (Arc A380,
     // 14/09/2026). Nothing then marks the picture as wrong: no bars for the
-    // browser's aspect probe to measure, a request honoured to the pixel. The
-    // browser reads the shape off the decoded frame and relaunches with it.
-    // Within 0.5% the request stands, so a client's even-width rounding is
-    // never fought over.
-    if (out.display->width > 0 && out.display->height > 0 && out.width > 0 && out.height > 0) {
-        const double displayAspect = static_cast<double>(out.display->width) / out.display->height;
-        const double frameAspect = static_cast<double>(out.width) / out.height;
-        if (std::abs(frameAspect - displayAspect) / displayAspect > 0.005) {
-            const int width = static_cast<int>(std::lround(out.height * displayAspect)) & ~1;
-            log::info("[native] " + std::to_string(out.width) + "x" + std::to_string(out.height) +
-                      " asked of a " + std::to_string(out.display->width) + "x" +
-                      std::to_string(out.display->height) + " display — streaming " +
-                      std::to_string(width) + "x" + std::to_string(out.height) +
-                      ", the display's own shape");
-            out.width = width;
-        }
-    }
-
+    // browser's aspect probe to measure, a request honoured to the pixel.
+    //
     // The fallback tier never upscales. A client whose setting is 1440p asking
     // a 1080p display would have a machine with no encoder to spare convert and
     // encode 1.8× the pixels for no information at all — measured: the
     // Snapdragon's transform took 21 ms a picture at 1440p, the Debian VM's CPU
     // encoder likewise (07/09/2026). The browser scales the picture up itself,
     // and does it better than a CPU under load would.
-    if (out.fallbackEncoder && out.display->width > 0 && out.display->height > 0 &&
-        (out.width > out.display->width || out.height > out.display->height)) {
-        log::info("[native] " + std::to_string(out.width) + "x" + std::to_string(out.height) +
+    const FrameSize asked{out.width, out.height};
+    const FrameSize shaped =
+        frameForDisplay({out.display->width, out.display->height}, asked, out.fallbackEncoder);
+    if (shaped.width != asked.width || shaped.height != asked.height) {
+        log::info("[native] " + std::to_string(asked.width) + "x" + std::to_string(asked.height) +
                   " asked of a " + std::to_string(out.display->width) + "x" +
-                  std::to_string(out.display->height) +
-                  " display on the fallback encoder — streaming the display's own size, no "
-                  "upscaling");
-        out.width = out.display->width;
-        out.height = out.display->height;
+                  std::to_string(out.display->height) + " display — streaming " +
+                  std::to_string(shaped.width) + "x" + std::to_string(shaped.height) +
+                  (shaped.height != asked.height ? " on the fallback encoder, no upscaling"
+                                                 : ", the display's own shape"));
+        out.width = shaped.width;
+        out.height = shaped.height;
     }
 
     if (config.fps > 0) {
@@ -358,6 +346,24 @@ bool select(const Capabilities& caps, const SessionConfig& config, Selection& ou
     if (out.fps <= 0) out.fps = 60;
 
     return true;
+}
+
+FrameSize frameForDisplay(FrameSize display, FrameSize frame, bool noUpscale)
+{
+    if (display.width <= 0 || display.height <= 0 || frame.width <= 0 || frame.height <= 0)
+        return frame;
+
+    FrameSize out = frame;
+    const double displayAspect = static_cast<double>(display.width) / display.height;
+    const double frameAspect = static_cast<double>(frame.width) / frame.height;
+    if (std::abs(frameAspect - displayAspect) / displayAspect > 0.005)
+        out.width = static_cast<int>(std::lround(frame.height * displayAspect)) & ~1;
+
+    if (noUpscale && (out.width > display.width || out.height > display.height)) {
+        out.width = display.width;
+        out.height = display.height;
+    }
+    return out;
 }
 
 } // namespace mw::native

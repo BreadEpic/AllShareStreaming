@@ -296,6 +296,14 @@ public:
         // The Selector granted it only with an EDR panel, macOS 15 and HEVC;
         // the capture and the encoder were opened on it above.
         m_Info.hdr = m_Target.hdr;
+        // What the viewer weighs its own screen against (SessionInfo). macOS has
+        // no HDR switch — an EDR panel always has its headroom — so nothing here
+        // changes under a session, and no DisplayFormat is ever reported.
+        // hdrCapable already carries the macOS 15 capture the probe requires.
+        m_Info.displayWidth = m_Display.pixelWidth;
+        m_Info.displayHeight = m_Display.pixelHeight;
+        m_Info.hdrCapable = m_Target.hdrCapable;
+        m_Info.displayHdr = m_Display.hdr && m_Target.hdrCapable;
         m_Info.yuv444 = false;
         m_Info.intraRefresh = false;
         m_Info.intraRefreshFrames = 0;

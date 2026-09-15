@@ -2881,6 +2881,9 @@ int main(int argc, char* argv[])
             // on vsync. Absent (an older frontend) → unknown, no alignment.
             s->setClientPresentation(body["client_refresh_mhz"].toInt(0),
                                      body["client_vsync"].toBool(false));
+            // The viewer's aspect is "Auto": a native stream follows the
+            // display's shape when it changes. Absent → the size is kept.
+            s->setFollowDisplayShape(body["follow_display_shape"].toBool(false));
             s->setClientKind(clientKind);
             // See the worker path: the administrator-window gate.
             s->setViewerAdmin(req.isLocal);
@@ -3008,6 +3011,7 @@ int main(int argc, char* argv[])
             cfg["rideOutLoss"] = body["ride_out_loss"].toBool(false);
             cfg["clientRefreshMilliHz"] = body["client_refresh_mhz"].toInt(0);
             cfg["clientVsync"] = body["client_vsync"].toBool(false);
+            cfg["followDisplayShape"] = body["follow_display_shape"].toBool(false);
             // Whether this browser administers MoonlightWeb here (loopback, the
             // host-key session, or the LAN admin password). The native host
             // keeps everyone else out of windows that run as administrator.

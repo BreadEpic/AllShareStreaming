@@ -297,6 +297,8 @@ int runStreamWorker(QCoreApplication& app)
     session->setPortalRestoreToken(cfg["portalRestoreToken"].toString());
     session->setClientPresentation(cfg["clientRefreshMilliHz"].toInt(0),
                                    cfg["clientVsync"].toBool(false));
+    // Absent (an older parent) → the frame keeps its size, today's behaviour.
+    session->setFollowDisplayShape(cfg["followDisplayShape"].toBool(false));
     session->setBackend(backend);
     session->setClientUniqueId(cfg["clientUniqueId"].toString());
     session->setPreferResume(cfg["preferResume"].toBool(false));

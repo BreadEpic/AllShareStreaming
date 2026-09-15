@@ -618,7 +618,8 @@ export class WebRtcMedia {
                         msg.type === 'clipboard' ||
                         msg.type === 'clipboardcaps' ||
                         msg.type === 'cursor' ||
-                        msg.type === 'inputgate'
+                        msg.type === 'inputgate' ||
+                        msg.type === 'displayformat'
                     ) {
                         if (this.onStats) this.onStats(msg);
                     } else if (msg.type === 'takeover') {

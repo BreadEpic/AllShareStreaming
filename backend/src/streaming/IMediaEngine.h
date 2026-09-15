@@ -351,6 +351,15 @@ signals:
     /// viewer sees why the cursor went dead instead of guessing.
     void inputGateChanged(bool blocked, QString reason, QString window);
 
+    /// The host's display changed mode, shape or dynamic range under the
+    /// session. Native host only, on change only — see mw::native::
+    /// DisplayFormat. `frameWidth`/`frameHeight` are what is encoded from now
+    /// on; `hdr` whether those frames are HDR, `displayHdr` whether the display
+    /// is, and `hdrCapable` whether a session asking for HDR would get it on an
+    /// HDR display. The browser decides from these whether to relaunch.
+    void displayFormatChanged(int displayWidth, int displayHeight, int frameWidth, int frameHeight,
+                              bool displayHdr, bool hdr, bool hdrCapable);
+
 protected:
     /// Written once by the session thread at stream start, read on every
     /// keystroke by whichever thread owns the input channel — hence atomic.

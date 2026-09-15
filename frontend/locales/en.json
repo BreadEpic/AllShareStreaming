@@ -268,7 +268,7 @@
         "frameRateDesc": "A higher frame rate helps reduce latency but needs more bandwidth.",
         "fpsSuffix": "{{fps}} FPS",
         "hdr": "HDR",
-        "hdrDesc": "High Dynamic Range — richer colors and contrast.",
+        "hdrDesc": "High Dynamic Range — richer colors and contrast. A MoonlightWeb native host ignores this box: it streams HDR whenever both screens are in HDR.",
         "hdrDeviceSdr": "HDR is not active on this device.",
         "hdrBrowserUnsupported": "HDR is not available in this browser.",
         "chroma444": "4:4:4 Chroma",

@@ -26,6 +26,7 @@
 #include "../../core/Log.h"
 #include "../../core/Probe.h"
 #include "../../core/RestartBackoff.h"
+#include "../../core/Selector.h"
 #include "../../core/Session.h"
 #include "../../encode/EncodeLoadCap.h"
 #include "../../encode/RateControl.h"
@@ -297,7 +298,17 @@ public:
         m_Info.capture = m_CaptureApi;
         m_Info.gpuName = m_Target.encodeGpuName;
         m_Info.hdr = m_Target.hdr;
+        m_Info.displayWidth = m_Capture->width();
+        m_Info.displayHeight = m_Capture->height();
+        m_Info.displayHdr = display->hdrActive;
+        m_Info.hdrCapable = m_Target.hdrCapable;
         m_Info.yuv444 = yuv444;
+        {
+            std::lock_guard<std::mutex> lock(m_FormatMutex);
+            m_LastFormat = DisplayFormat{m_Info.displayWidth, m_Info.displayHeight, m_Info.width,
+                                         m_Info.height,       m_Info.displayHdr,    m_Info.hdr,
+                                         m_Info.hdrCapable};
+        }
         // Reported, not requested: an encoder that declined it says so, and the
         // receiver must then keep its usual keyframe recovery.
         m_Info.intraRefresh = m_Encoder->intraRefreshEnabled();
@@ -434,6 +445,12 @@ public:
         std::lock_guard<std::mutex> lock(m_InputMutex);
         m_OnInputGate = std::move(callback);
         if (m_Input) m_Input->setGateCallback(m_OnInputGate);
+    }
+
+    void setDisplayFormatCallback(DisplayFormatCallback callback) override
+    {
+        std::lock_guard<std::mutex> lock(m_FormatMutex);
+        m_OnDisplayFormat = std::move(callback);
     }
 
     bool releaseInputBlock() override
@@ -838,9 +855,46 @@ private:
                       std::to_string(failures) + " failed attempt" + (failures > 1 ? "s" : ""));
         }
 
+        // The frame keeps its size — unless the viewer follows the display's
+        // shape and the mode change moved it (SessionConfig::followDisplayShape):
+        // then the same height at the new shape, and the client's decoder
+        // follows on the keyframe the loop forces after a restart. The load
+        // cap keeps its percentage of the new full size.
+        int frameWidth = m_Info.width;
+        int frameHeight = m_Info.height;
+        FrameSize full{m_FullWidth, m_FullHeight};
+        if (m_Config.followDisplayShape) {
+            full = frameForDisplay({m_Capture->width(), m_Capture->height()}, full,
+                                   m_Target.fallbackEncoder);
+            if (full.width != m_FullWidth || full.height != m_FullHeight) {
+                log::info("[native] the display is now " + std::to_string(m_Capture->width()) +
+                          "x" + std::to_string(m_Capture->height()) +
+                          " — the stream follows its "
+                          "shape: " +
+                          std::to_string(m_FullWidth) + "x" + std::to_string(m_FullHeight) +
+                          " -> " + std::to_string(full.width) + "x" + std::to_string(full.height));
+                frameWidth = encode::EncodeLoadCap::scaled(full.width, m_LoadCap.percent());
+                frameHeight = encode::EncodeLoadCap::scaled(full.height, m_LoadCap.percent());
+            }
+        }
+
         // buildPipeline() releases the old converter and encoder before it
         // builds the new ones — see there.
-        if (!buildPipeline(m_Info.width, m_Info.height, error)) return Restart::Failed;
+        if (!buildPipeline(frameWidth, frameHeight, error)) {
+            if (frameWidth == m_Info.width && frameHeight == m_Info.height) return Restart::Failed;
+            // The new shape would not build: the size that worked still does,
+            // stretched as before this setting existed.
+            log::warning("[native] cannot encode at " + std::to_string(frameWidth) + "x" +
+                         std::to_string(frameHeight) + " (" + error + ") — staying at " +
+                         std::to_string(m_Info.width) + "x" + std::to_string(m_Info.height));
+            if (!buildPipeline(m_Info.width, m_Info.height, error)) return Restart::Failed;
+        } else {
+            // What the cap scales from from now on.
+            m_FullWidth = full.width;
+            m_FullHeight = full.height;
+        }
+        m_Info.width = m_Converter->outputWidth();
+        m_Info.height = m_Converter->outputHeight();
 
         // Absolute mouse input is aimed at the display's rectangle on the
         // virtual desktop, and a resolution change is exactly what moves it.
@@ -860,7 +914,64 @@ private:
         log::info("[native] capture restarted at " + std::to_string(m_Capture->width()) + "x" +
                   std::to_string(m_Capture->height()) + ", streaming " +
                   std::to_string(m_Info.width) + "x" + std::to_string(m_Info.height));
+        reportDisplayFormat();
         return Restart::Restarted;
+    }
+
+    /// Whether the display is in an HDR mode right now, asked of the output
+    /// itself. Not read off the capture: an SDR session opens the duplication
+    /// in 8-bit whatever the desktop is, so its frames never say.
+    bool displayHdrActive() const
+    {
+        Microsoft::WRL::ComPtr<IDXGIFactory1> factory;
+        if (FAILED(::CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) return false;
+        Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
+        for (UINT i = 0;
+             factory->EnumAdapters1(i, adapter.ReleaseAndGetAddressOf()) != DXGI_ERROR_NOT_FOUND;
+             ++i) {
+            DXGI_ADAPTER_DESC1 desc = {};
+            if (FAILED(adapter->GetDesc1(&desc))) continue;
+            const uint64_t luid =
+                (static_cast<uint64_t>(static_cast<uint32_t>(desc.AdapterLuid.HighPart)) << 32) |
+                static_cast<uint64_t>(desc.AdapterLuid.LowPart);
+            if (luid != m_Target.captureAdapterHandle) continue;
+            Microsoft::WRL::ComPtr<IDXGIOutput> output;
+            if (FAILED(adapter->EnumOutputs(m_Target.outputIndex, &output))) return false;
+            Microsoft::WRL::ComPtr<IDXGIOutput6> output6;
+            if (FAILED(output.As(&output6))) return false;
+            DXGI_OUTPUT_DESC1 desc1 = {};
+            if (FAILED(output6->GetDesc1(&desc1))) return false;
+            return desc1.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+        }
+        return false;
+    }
+
+    /// Tell the viewer what the display became, once the capture runs on it
+    /// again — only when something it can act on moved. See DisplayFormat.
+    void reportDisplayFormat()
+    {
+        DisplayFormat format;
+        format.displayWidth = m_Capture->width();
+        format.displayHeight = m_Capture->height();
+        format.frameWidth = m_Info.width;
+        format.frameHeight = m_Info.height;
+        format.displayHdr = displayHdrActive();
+        format.hdr = m_Info.hdr;
+        format.hdrCapable = m_Info.hdrCapable;
+
+        std::lock_guard<std::mutex> lock(m_FormatMutex);
+        if (format.displayWidth == m_LastFormat.displayWidth &&
+            format.displayHeight == m_LastFormat.displayHeight &&
+            format.frameWidth == m_LastFormat.frameWidth &&
+            format.frameHeight == m_LastFormat.frameHeight &&
+            format.displayHdr == m_LastFormat.displayHdr && format.hdr == m_LastFormat.hdr)
+            return;
+        m_LastFormat = format;
+        log::info("[native] display format: " + std::to_string(format.displayWidth) + "x" +
+                  std::to_string(format.displayHeight) + (format.displayHdr ? " HDR" : " SDR") +
+                  ", streaming " + std::to_string(format.frameWidth) + "x" +
+                  std::to_string(format.frameHeight) + (format.hdr ? " HDR" : " SDR"));
+        if (m_OnDisplayFormat) m_OnDisplayFormat(format);
     }
 
     /// A black picture the size and format of what the capture was delivering,
@@ -2027,6 +2138,13 @@ private:
     /// See setInputGateCallback. Kept here so a listener registered before the
     /// sink exists is not lost. Guarded by m_InputMutex.
     InputGateCallback m_OnInputGate;
+
+    /// See setDisplayFormatCallback, and the last format reported — or the one
+    /// the session started on — so only a change is said. Guarded by
+    /// m_FormatMutex: set on the consumer's thread, read on the capture thread.
+    std::mutex m_FormatMutex;
+    DisplayFormatCallback m_OnDisplayFormat;
+    DisplayFormat m_LastFormat;
 
     /// Optional too: the host's playback, captured and encoded on its own
     /// thread. Null when the consumer asked for none or no device could open.

@@ -592,6 +592,27 @@ DataChannelRelay::DataChannelRelay(IMediaEngine* engine, QObject* parent)
                 } catch (const std::exception&) {}
             });
 
+    // The host's display changed mode, shape or dynamic range (native host).
+    // On change only; the browser decides whether it is worth a new session.
+    connect(m_Shim, &IMediaEngine::displayFormatChanged, this,
+            [this](int displayWidth, int displayHeight, int frameWidth, int frameHeight,
+                   bool displayHdr, bool hdr, bool hdrCapable) {
+                if (m_Stopping.load() || !m_InputDc) return;
+                QJsonObject m;
+                m["type"] = "displayformat";
+                m["displayWidth"] = displayWidth;
+                m["displayHeight"] = displayHeight;
+                m["frameWidth"] = frameWidth;
+                m["frameHeight"] = frameHeight;
+                m["displayHdr"] = displayHdr;
+                m["hdr"] = hdr;
+                m["hdrCapable"] = hdrCapable;
+                QByteArray j = QJsonDocument(m).toJson(QJsonDocument::Compact);
+                try {
+                    m_InputDc->send(std::string(j.constData(), j.size()));
+                } catch (const std::exception&) {}
+            });
+
     // ICE connection timeout: emit iceTimedOut() if PC doesn't reach
     // Connected within m_IceTimeoutMs after setRemoteDescription().
     // Triggers WebSocket fallback when UDP is blocked (corporate firewall).

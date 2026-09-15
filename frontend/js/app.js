@@ -66,7 +66,12 @@ import {
 } from './util/BrowserDetect.js';
 import { startRefreshRateMonitor, currentRefreshMilliHz } from './util/RefreshRate.js';
 import { computeAutoBitrate } from './util/AutoBitrate.js';
-import { DEFAULT_ASPECT, loadHostAspect, saveHostAspect } from './util/AspectRatio.js';
+import {
+    DEFAULT_ASPECT,
+    loadHostAspect,
+    resolveMeasuredAspect,
+    saveHostAspect,
+} from './util/AspectRatio.js';
 import { startAspectProbe } from './stream/AspectProbe.js';
 import * as iosAudioUnlock from './audio/iosAudioUnlock.js';
 import { init as i18nInit, applyDOM, t } from './i18n/i18n.js';
@@ -1496,6 +1501,11 @@ const MoonlightApp = {
             // inherits the verdict instead of measuring again.
             this._stopAspectProbe();
             this._aspectProbeDone = false;
+            // Native HDR (see _reconcileNativeHdr): a decoder that failed on it
+            // declines it for the rest of this launch, and the relaunch last
+            // tried is remembered so a host that refuses is not asked in a loop.
+            this._nativeHdrDeclined = false;
+            this._nativeHdrAttempt = null;
             // Dual-stream state: fresh launch starts on slot 0 with an unknown
             // (assumed possible) dual capability; any stale standby dies here.
             this._abortStandby('fresh launch');
@@ -1552,6 +1562,33 @@ const MoonlightApp = {
         if (hdrOverride !== undefined) {
             streamingSettings.hdr_enabled = hdrOverride === true;
         }
+        // The native host decides HDR from both screens, never from the
+        // checkbox: asked whenever this screen can show it, granted when the
+        // host's display is in HDR. An SDR screen gets SDR from an HDR host —
+        // the host's OS tone-maps its desktop into the 8-bit capture. A codec
+        // fallback that dropped HDR because this browser failed to decode it
+        // is the one thing that keeps it off, until the next launch.
+        const nativeHost = host.backendType === 'native';
+        if (nativeHost && (codecOverride === 'h264' || hdrOverride === false)) {
+            this._nativeHdrDeclined = true;
+        }
+        if (nativeHost) {
+            const cap = await hdrClientCapability();
+            streamingSettings.hdr_enabled =
+                hdrOverride === true || (cap.ok && !this._nativeHdrDeclined);
+            console.log(
+                '[MW] Native host: HDR ' +
+                    (streamingSettings.hdr_enabled ? 'asked' : 'not asked') +
+                    ' (display=' +
+                    cap.display +
+                    ' webgpu=' +
+                    cap.webgpu +
+                    ' decode=' +
+                    cap.decode +
+                    (this._nativeHdrDeclined ? ', declined by the decoder' : '') +
+                    ')',
+            );
+        }
         // HDR is never asked of the host for a client that cannot show it —
         // display in an HDR mode, WebGPU, a 10-bit decoder. The settings page
         // greys the box out on such a device; this catches a preference saved
@@ -1559,7 +1596,7 @@ const MoonlightApp = {
         // another screen). PQ pixels on an SDR output clip.
         // Dev: mw_hdr_request = '1' asks anyway — the way to exercise the
         // HDR→SDR tone-map path on an SDR screen.
-        if (streamingSettings.hdr_enabled) {
+        if (streamingSettings.hdr_enabled && !nativeHost) {
             const cap = await hdrClientCapability();
             let devForce = false;
             try {
@@ -1625,6 +1662,11 @@ const MoonlightApp = {
         if (this._aspectAuto) {
             streamingSettings.stream_aspect = loadHostAspect(host.uuid) || DEFAULT_ASPECT;
         }
+        // The native host needs none of the above: it streams its display's own
+        // shape whatever is asked (only the height is ours), states it in the
+        // launch reply, and in Auto rebuilds the stream at the new shape when
+        // its display changes mode — see _adoptNativeFormat.
+        streamingSettings.follow_display_shape = nativeHost && this._aspectAuto;
 
         try {
             const result = await BackendClient.launchApp(host.uuid, app.id, streamingSettings);
@@ -2005,7 +2047,9 @@ const MoonlightApp = {
         this.streamView.onCongestionSignal = () => {
             this._lastCongSignal = performance.now();
         };
+        this.streamView.onHostDisplayFormat = (msg) => this._onHostDisplayFormat(msg);
         this._armUpgradeTimer();
+        this._adoptNativeFormat(result);
         this._startAspectProbe();
     },
 
@@ -2024,6 +2068,9 @@ const MoonlightApp = {
      */
     _startAspectProbe() {
         if (!this._aspectAuto || this._aspectProbeDone) return;
+        // The native host states its shape (launch reply, then `displayformat`)
+        // — nothing to measure, and a measurement could only disagree.
+        if (this._lastStreamNative) return;
         this._stopAspectProbe();
         this._aspectProbeStop = startAspectProbe({
             getSurface: () => (this.streamView ? this.streamView.getProbeSurface() : null),
@@ -2031,6 +2078,123 @@ const MoonlightApp = {
             hostPads: !this._lastStreamNative,
             onResult: (aspect, reason) => this._onAspectMeasured(aspect, reason),
         });
+    },
+
+    // ── Native host: display format and HDR ───────────────────────────────
+
+    /**
+     * Take in what a native session started on (launch reply, or the standby's
+     * reply at promotion): the frame's shape, remembered for Auto, and the
+     * dynamic range on both sides of the host. Clears the state for any other
+     * host, which is what switches the handlers below off.
+     */
+    _adoptNativeFormat(result) {
+        if (!result || result.native !== true || typeof result.hdr !== 'boolean') {
+            this._nativeFormat = null;
+            return;
+        }
+        this._nativeFormat = {
+            // What the renderer was built for: fixed for this view's life.
+            viewHdr: result.hdr === true,
+            // What the frames are now: an HDR session whose display left HDR
+            // drops to SDR on its own, under a renderer still set for PQ.
+            hdr: result.hdr === true,
+            displayHdr: result.display_hdr === true,
+            hdrCapable: result.hdr_capable === true,
+        };
+        // This session IS the answer to what it asked: HDR asked of an HDR
+        // display on a capable encoder and still refused (a capture route with
+        // no HDR) is not asked again until the wish changes; granted, a later
+        // change may ask anything.
+        const f = this._nativeFormat;
+        const asked =
+            (this._lastStreamingSettings || {}).hdr_enabled === true &&
+            f.displayHdr &&
+            f.hdrCapable;
+        this._nativeHdrAttempt = f.hdr === asked ? null : asked;
+        this._noteNativeAspect(result.stream_width, result.stream_height);
+        this._watchClientDynamicRange();
+        // The screens may have changed while this session was being set up.
+        this._reconcileNativeHdr('session start');
+    },
+
+    /** Auto only: the native frame's shape becomes the session's aspect, and
+     *  the host's memory — the frame IS the display's shape. */
+    _noteNativeAspect(width, height) {
+        if (!this._aspectAuto || !(width > 0) || !(height > 0)) return;
+        const aspect = resolveMeasuredAspect(width, height) || width + ':' + height;
+        if (this._lastStreamHost) saveHostAspect(this._lastStreamHost.uuid, aspect);
+        const settings = this._lastStreamingSettings;
+        if (settings && settings.stream_aspect !== aspect) {
+            console.log('[MW] Native host shape: ' + settings.stream_aspect + ' → ' + aspect);
+            settings.stream_aspect = aspect;
+        }
+    },
+
+    /** `displayformat` from the native host: its display changed mode, shape
+     *  or dynamic range mid-stream. */
+    _onHostDisplayFormat(msg) {
+        const f = this._nativeFormat;
+        if (!f) return;
+        f.hdr = msg.hdr === true;
+        f.displayHdr = msg.displayHdr === true;
+        f.hdrCapable = msg.hdrCapable === true;
+        this._noteNativeAspect(msg.frameWidth, msg.frameHeight);
+        this._reconcileNativeHdr('host display changed');
+    },
+
+    /** Listen, once per page, for this screen entering or leaving HDR — a
+     *  window dragged to another monitor, the OS toggle. */
+    _watchClientDynamicRange() {
+        if (this._dynamicRangeWatched || typeof window.matchMedia !== 'function') return;
+        this._dynamicRangeWatched = true;
+        const mq = window.matchMedia('(dynamic-range: high)');
+        const onChange = () => this._reconcileNativeHdr('this screen changed');
+        if (typeof mq.addEventListener === 'function') mq.addEventListener('change', onChange);
+        else if (typeof mq.addListener === 'function') mq.addListener(onChange);
+    },
+
+    /**
+     * Keep a native stream's dynamic range on the rule both screens set:
+     * HDR when this screen can show it AND the host's display is in HDR (on an
+     * encoder that carries it), SDR otherwise. Any mismatch is a new session —
+     * the renderer is chosen at stream start and cannot swap — through the
+     * same seamless transition as a quality change.
+     */
+    async _reconcileNativeHdr(reason) {
+        if (!this._nativeFormat) return;
+        const cap = await hdrClientCapability();
+        const f = this._nativeFormat;
+        if (!f) return;
+        const want = cap.ok && f.displayHdr && f.hdrCapable && !this._nativeHdrDeclined;
+        if (want === f.viewHdr && f.hdr === f.viewHdr) return;
+
+        const settings = this._lastStreamingSettings;
+        if (!settings || this._nav.overlay !== 'streaming' || !this.streamView) return;
+        // A transition already in flight adopts its own result, and this runs
+        // again from there.
+        if (this._standbyView || this._relaunching) return;
+        if (this._sharePinsQuality()) return;
+        // Asked once already and the host answered otherwise (a capture path
+        // with no HDR, say): not again until the wish itself changes.
+        if (this._nativeHdrAttempt === want) return;
+        this._nativeHdrAttempt = want;
+
+        console.log(
+            '[MW] Native HDR (' +
+                reason +
+                '): stream ' +
+                (f.viewHdr ? 'HDR' : 'SDR') +
+                ' → ' +
+                (want ? 'HDR' : 'SDR') +
+                ' (host display ' +
+                (f.displayHdr ? 'HDR' : 'SDR') +
+                ', this screen ' +
+                (cap.ok ? 'HDR' : 'SDR') +
+                ')',
+        );
+        settings.hdr_enabled = cap.ok && !this._nativeHdrDeclined;
+        this._qualityRelaunch(this._transportIndex || 0);
     },
 
     /** Drop the probe, measurement and watch alike (quit, or a fresh launch
@@ -2108,7 +2272,12 @@ const MoonlightApp = {
         const videoEnhancementAlgo = streamingSettings.video_enhancement_algo || 'auto';
         // HDR: requires a WebGPU-capable browser and Sunshine negotiating HEVC
         // Main10 / AV1 10-bit. The decoder colorSpace is set accordingly.
-        const hdrEnabled = streamingSettings.hdr_enabled === true;
+        // A native session reports what it granted: it is asked for HDR whenever
+        // this screen can show it, so the request says nothing about the stream.
+        const hdrEnabled =
+            result.native === true && typeof result.hdr === 'boolean'
+                ? result.hdr
+                : streamingSettings.hdr_enabled === true;
         // Audio time-stretch (WSOLA) — server kill switch (env MW_AUDIO_TIME_STRETCH).
         // Read fresh from the launch result; defaults to on when unspecified.
         const audioTimeStretch = result.audio_time_stretch !== false;
@@ -2820,6 +2989,7 @@ const MoonlightApp = {
         sv.onCongestionSignal = () => {
             this._lastCongSignal = performance.now();
         };
+        sv.onHostDisplayFormat = (msg) => this._onHostDisplayFormat(msg);
         sv.activate();
         // Before the retirement below: the successor's capture element takes the
         // focus over while the outgoing one still holds it, so the OS keyboard
@@ -2827,6 +2997,7 @@ const MoonlightApp = {
         // this applies the zoom straight away.)
         sv.restoreViewState(viewState);
         this._armUpgradeTimer();
+        this._adoptNativeFormat(result);
 
         // Retire the old view quietly: its slot-scoped /quit only touches its
         // own leg, and `retire` preserves the display state (fullscreen) for
@@ -3127,6 +3298,7 @@ const MoonlightApp = {
         this._hideRelaunchLoader();
         this._stopUpgradeTimer();
         this._stopAspectProbe();
+        this._nativeFormat = null;
         this._abortStandby('active stream ended');
         // The session is over — no successor will claim the inherited display
         // state, and a bridged soft keyboard must not outlive the stream.
@@ -3183,7 +3355,10 @@ const MoonlightApp = {
             // When the fallback drops HDR, persist the unchecked preference so the
             // Settings HDR checkbox reflects reality, and inform the user.
             if (fallbackTarget.hdr === false) {
-                this._persistHdrDisabled();
+                // Not for the native host, which never reads the checkbox: its
+                // HDR comes back on the next launch if this screen can show it.
+                if (fallbackHost && fallbackHost.backendType !== 'native')
+                    this._persistHdrDisabled();
                 Toast.warning(t('launch.hdrFallback', { to: fallbackTarget.codec.toUpperCase() }));
             }
             // The H.264 fallback silently drops 4:4:4 as well (launchApp), and

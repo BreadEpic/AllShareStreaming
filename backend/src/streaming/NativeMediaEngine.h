@@ -21,6 +21,7 @@
 #include "IMediaEngine.h"
 
 #include "mw/native/LinkFeedback.h"
+#include "mw/native/SessionConfig.h"
 #include "mw/native/StageStats.h"
 
 #include <array>
@@ -93,6 +94,9 @@ public:
         /// Encode with intra-refresh. Only worth asking when the receiver will
         /// decode through a gap — see rideOutLoss in MediaDescriptor.h.
         bool intraRefresh = false;
+        /// Rebuild at the display's new shape when its mode changes under the
+        /// session — see SessionConfig::followDisplayShape.
+        bool followDisplayShape = false;
         /// The client's screen, as the browser measured it: refresh in
         /// millihertz (0 = unknown) and whether it paints on vsync. A vsync
         /// client gets a cadence that divides its refresh — see
@@ -283,6 +287,11 @@ public:
     /// the stream does not intra-refresh or no session has started. The
     /// browser sizes its ride-out watchdog on it, in frames it receives.
     int intraRefreshFrames() const;
+
+    /// What the session settled on, copied; false (and @p out untouched) until
+    /// a session has started. The launch reply reads the frame and display
+    /// geometry and the dynamic range off it.
+    bool sessionInfo(mw::native::SessionInfo& out) const;
 
 signals:
     /// The desktop portal issued a consent worth keeping — store it and hand

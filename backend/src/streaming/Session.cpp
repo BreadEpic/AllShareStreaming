@@ -585,6 +585,7 @@ void StreamSession::onLaunchResult(bool ok, const BackendError& err, const Media
         // paints on vsync — see SessionConfig::clientRefreshMilliHz.
         nativeParams.clientRefreshMilliHz = m_ClientRefreshMilliHz;
         nativeParams.clientVsync = m_ClientVsync;
+        nativeParams.followDisplayShape = m_FollowDisplayShape;
         // Who is on the other end, for the administrator-window gate.
         nativeParams.viewerAdmin = m_ViewerAdmin;
         // The "mute host audio" stream setting, honoured here as the GameStream
@@ -1096,6 +1097,21 @@ void StreamSession::onShimConnectionStarted()
         // full "GPU · encoder codec 4:4:4 intra-refresh" is a log line, and as
         // an overlay value it stretched the card past a phone's width.
         if (native != nullptr) result["native_encoder"] = native->describeEncoder();
+        // The frame and the display as the session started on them, and the
+        // dynamic range on both sides. The browser keeps its aspect from the
+        // frame instead of measuring it, and reads HDR from what was granted
+        // rather than from what it asked — a native session asks whenever the
+        // viewer's screen can show it. Updated mid-stream by `displayformat`.
+        mw::native::SessionInfo info;
+        if (native != nullptr && native->sessionInfo(info)) {
+            result["stream_width"] = info.width;
+            result["stream_height"] = info.height;
+            result["display_width"] = info.displayWidth;
+            result["display_height"] = info.displayHeight;
+            result["hdr"] = info.hdr;
+            result["display_hdr"] = info.displayHdr;
+            result["hdr_capable"] = info.hdrCapable;
+        }
     }
 
     // Audio time-stretch (WSOLA) — file-only setting (settings.json), default

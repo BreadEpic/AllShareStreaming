@@ -268,7 +268,7 @@
         "frameRateDesc": "Une fréquence d'images élevée aide à réduire la latence mais demande plus de bande passante.",
         "fpsSuffix": "{{fps}} FPS",
         "hdr": "HDR",
-        "hdrDesc": "Plage dynamique étendue — couleurs et contraste plus riches.",
+        "hdrDesc": "Plage dynamique étendue — couleurs et contraste plus riches. Un hôte natif MoonlightWeb ignore cette case : il diffuse en HDR dès que les deux écrans sont en HDR.",
         "hdrDeviceSdr": "Le HDR n'est pas actif sur cet appareil.",
         "hdrBrowserUnsupported": "Le HDR n'est pas disponible dans ce navigateur.",
         "chroma444": "Chroma 4:4:4",

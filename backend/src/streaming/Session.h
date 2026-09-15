@@ -163,6 +163,11 @@ public:
         m_ClientVsync = vsync;
     }
 
+    /// The viewer's aspect setting is "Auto", so a native stream rebuilds at
+    /// the display's new shape when the host changes mode — see
+    /// mw::native::SessionConfig::followDisplayShape. Other engines ignore it.
+    void setFollowDisplayShape(bool follow) { m_FollowDisplayShape = follow; }
+
     /// The provider this session launches through. Required: set it before
     /// start(). It is what decides which host/seat is dialled and, for a
     /// multi-seat backend, which identity is presented.
@@ -425,6 +430,9 @@ private:
     /// The client's screen at /start — see setClientPresentation.
     int m_ClientRefreshMilliHz = 0;
     bool m_ClientVsync = false;
+
+    /// See setFollowDisplayShape.
+    bool m_FollowDisplayShape = false;
 
     /// The engine producing this session's media: MoonlightShim for a
     /// GameStream host, NativeMediaEngine for this machine's own screen.

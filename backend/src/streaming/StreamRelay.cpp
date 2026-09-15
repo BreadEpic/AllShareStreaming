@@ -73,6 +73,24 @@ StreamRelay::StreamRelay(IMediaEngine* engine, quint16 wsPort, const QSslConfigu
                     QString::fromUtf8(QJsonDocument(m).toJson(QJsonDocument::Compact)));
             });
 
+    // The host's display format (native host) — see DataChannelRelay.
+    connect(m_Shim, &IMediaEngine::displayFormatChanged, this,
+            [this](int displayWidth, int displayHeight, int frameWidth, int frameHeight,
+                   bool displayHdr, bool hdr, bool hdrCapable) {
+                if (!m_WsClient || m_WsClient->state() != QAbstractSocket::ConnectedState) return;
+                QJsonObject m;
+                m["type"] = "displayformat";
+                m["displayWidth"] = displayWidth;
+                m["displayHeight"] = displayHeight;
+                m["frameWidth"] = frameWidth;
+                m["frameHeight"] = frameHeight;
+                m["displayHdr"] = displayHdr;
+                m["hdr"] = hdr;
+                m["hdrCapable"] = hdrCapable;
+                m_WsClient->sendTextMessage(
+                    QString::fromUtf8(QJsonDocument(m).toJson(QJsonDocument::Compact)));
+            });
+
     bool secure = !sslConfig.isNull();
     m_WsServer = new QWebSocketServer(
         QString("Moonlight-Relay"),

@@ -5506,6 +5506,26 @@ export class StreamView {
             this._applyInputGate(msg);
             return;
         }
+        if (msg.type === 'displayformat') {
+            // The native host's display changed mode, shape or dynamic range.
+            // The frame already follows the shape when the aspect is Auto (the
+            // decoder picks the new size up on the keyframe); whether HDR is
+            // worth a new session is the app's call, which owns relaunching.
+            console.log(
+                '[StreamView] Host display: ' +
+                    msg.displayWidth +
+                    '×' +
+                    msg.displayHeight +
+                    (msg.displayHdr ? ' HDR' : ' SDR') +
+                    ', stream ' +
+                    msg.frameWidth +
+                    '×' +
+                    msg.frameHeight +
+                    (msg.hdr ? ' HDR' : ' SDR'),
+            );
+            if (this.onHostDisplayFormat) this.onHostDisplayFormat(msg);
+            return;
+        }
         if (msg.type === 'cursor') {
             // The host's pointer, for us to draw. See _pictureCursor: visible
             // with no image is a real state, not a missing one.

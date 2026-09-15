@@ -268,7 +268,7 @@
         "frameRateDesc": "更高的帧率有助于降低延迟，但需要更多带宽。",
         "fpsSuffix": "{{fps}} FPS",
         "hdr": "HDR",
-        "hdrDesc": "高动态范围——更丰富的色彩与对比度。",
+        "hdrDesc": "高动态范围——更丰富的色彩与对比度。MoonlightWeb 原生主机不看此选项：只要两端屏幕都处于 HDR，就以 HDR 串流。",
         "hdrDeviceSdr": "此设备未启用 HDR。",
         "hdrBrowserUnsupported": "此浏览器不支持 HDR。",
         "chroma444": "4:4:4 色度",

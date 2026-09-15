@@ -234,6 +234,14 @@ void run_selector_tests()
         std::string err;
         CHECK(select(caps, cfg, sel, err));
         CHECK(sel.hdr);
+        CHECK(sel.hdrCapable);
+
+        // Not asked: SDR, and still capable — what a client reads to know a
+        // relaunch asking for HDR would be granted.
+        cfg.hdr = false;
+        CHECK(select(caps, cfg, sel, err));
+        CHECK(!sel.hdr);
+        CHECK(sel.hdrCapable);
     }
 
     // ── Asked for on an SDR display: stream SDR rather than fail ─────────────
@@ -263,6 +271,7 @@ void run_selector_tests()
         CHECK(select(caps, cfg, sel, err));
         CHECK_EQ(sel.codec, Codec::H264);
         CHECK(!sel.hdr);
+        CHECK(!sel.hdrCapable);
     }
 
     SECTION("Selector — 4:4:4 steers the codec, never fails the session");
@@ -454,6 +463,43 @@ void run_selector_tests()
         cfg.width = 2578;
         CHECK(select(wide, cfg, sel, err));
         CHECK_EQ(sel.width, 2578);
+    }
+
+    // ── The same rule when the display changes mode under a session ──────────
+    {
+        // 16:9 → 4:3 (a game setting 1280×960): same height, 4:3 width.
+        FrameSize f = frameForDisplay({1280, 960}, {1920, 1080}, false);
+        CHECK_EQ(f.width, 1440);
+        CHECK_EQ(f.height, 1080);
+
+        // Back to 16:9.
+        f = frameForDisplay({2560, 1440}, {1440, 1080}, false);
+        CHECK_EQ(f.width, 1920);
+        CHECK_EQ(f.height, 1080);
+
+        // Portrait: the width is derived and kept even.
+        f = frameForDisplay({1440, 2560}, {1920, 1080}, false);
+        CHECK_EQ(f.width, 608);
+        CHECK_EQ(f.height, 1080);
+
+        // Same shape at another size: the frame is the client's, untouched.
+        f = frameForDisplay({3840, 2160}, {1920, 1080}, false);
+        CHECK_EQ(f.width, 1920);
+        CHECK_EQ(f.height, 1080);
+
+        // Unknown sizes change nothing.
+        f = frameForDisplay({0, 0}, {1920, 1080}, false);
+        CHECK_EQ(f.width, 1920);
+        f = frameForDisplay({1280, 960}, {0, 0}, false);
+        CHECK_EQ(f.width, 0);
+
+        // The fallback tier never upscales, including after a shrink.
+        f = frameForDisplay({1280, 720}, {1920, 1080}, true);
+        CHECK_EQ(f.width, 1280);
+        CHECK_EQ(f.height, 720);
+        f = frameForDisplay({1280, 720}, {1920, 1080}, false);
+        CHECK_EQ(f.width, 1920);
+        CHECK_EQ(f.height, 1080);
     }
 
     SECTION("Selector — default display");
