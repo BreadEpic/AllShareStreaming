@@ -877,8 +877,15 @@ private:
             return blank;
         }
 
-        // Zero in every channel: black, whichever of the two 8-bit layouts the
-        // duplication used. Alpha is zero too, and the converter ignores it.
+        // Zero in every channel: black in either 8-bit layout, and 0.0 in FP16
+        // scRGB. Alpha is zero too, and the converter ignores it.
+        //
+        // ⚠️ The pitch follows the format. An HDR session captures FP16, eight
+        // bytes a pixel: sized for four, the initial data was half the texture,
+        // the driver read past it, and turning Windows HDR off during an HDR
+        // stream killed the worker inside nvwgf2umx (15/09/2026, M27Q and a
+        // virtual display alike).
+        const size_t bytesPerPixel = m_Capture->format() == DXGI_FORMAT_R16G16B16A16_FLOAT ? 8 : 4;
         D3D11_TEXTURE2D_DESC desc = {};
         desc.Width = static_cast<UINT>(width);
         desc.Height = static_cast<UINT>(height);
@@ -889,7 +896,7 @@ private:
         desc.Usage = D3D11_USAGE_IMMUTABLE;
         desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
 
-        const size_t pitch = static_cast<size_t>(width) * 4;
+        const size_t pitch = static_cast<size_t>(width) * bytesPerPixel;
         std::vector<uint8_t> zeros(pitch * static_cast<size_t>(height), 0);
         D3D11_SUBRESOURCE_DATA initial = {};
         initial.pSysMem = zeros.data();
