@@ -276,7 +276,18 @@ entering HDR, then the captured display itself), once the seamless relaunch the
 same switch had started replaced the dying session before anyone saw it. Both
 screens hang off the same GPU; the switch invalidated the desktop
 duplication with `DXGI_ERROR_INVALID_CALL` (`0x887A0001`), which the capture
-treats as fatal where it recovers from `DXGI_ERROR_ACCESS_LOST`.
+treated as fatal where it recovers from `DXGI_ERROR_ACCESS_LOST`. Fixed in
+`4fb3e35e`.
+
+Once the stream survived, the next run turned up a second defect, three runs in
+three: **the client's screen entering HDR again never brought the stream back
+to HDR**. Chrome on Windows dispatches the `(dynamic-range: high)` change event
+for a page's first toggle only (off, on, off, on: one event), while `matches`
+follows every one. Fixed in `dc759c17`: the app also reads the query every
+two seconds.
+
+With both fixes, two runs, **8/8 green each**, and the host log shows the
+duplication recovered five times over the replays where it used to end the session.
 
 ## 6. Metrics collected
 
