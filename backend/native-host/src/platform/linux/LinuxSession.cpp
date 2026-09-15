@@ -1019,7 +1019,10 @@ private:
         // Re-convert the held frame with the pointer where it is now, and
         // emit. The KMS equivalent of the Windows desktop copy, without one.
         auto reconvertHeld = [&](const FrameStamps& stamps) -> bool {
-            if (!m_Pipeline->convert(frame, m_Capture->cursor(), cursorDraw(), error)) {
+            static const capture::CursorState kNoPointer;
+            if (!m_Pipeline->convert(frame,
+                                     m_CompositeCursor.load() ? m_Capture->cursor() : kNoPointer,
+                                     cursorDraw(), error)) {
                 finish("colour conversion failed: " + error);
                 return false;
             }
@@ -1074,7 +1077,18 @@ private:
             const int timeoutMs = refineSoon ? refineTimeoutMs : idleTimeoutMs;
 
             // Between frames, so the encoder is not holding anything.
-            if (m_PendingResize.exchange(false)) applyLoadCap();
+            //
+            // A new pipeline has converted nothing: its encoder reads a zeroed
+            // picture, which is flat green once decoded (Y = U = V = 0). On a
+            // still screen no capture comes to fill it, and the keyframe the
+            // resize asks for, the proactive one after it and every floor pass
+            // were encoded from that — green until the screen next moved (issue
+            // #15, reproduced 15/09/2026 on an AMD client: 1 820-byte keyframes
+            // at 960x600 that every decoder faithfully painted green). The held
+            // picture goes in first.
+            if (m_PendingResize.exchange(false) && applyLoadCap() && haveFrame) {
+                if (!reconvertHeld(resendStamps(steadyNowUs()))) return;
+            }
 
             // The portal route: a mode change may never reach the stream. GNOME
             // 42 simply stops delivering frames at one — measured on the
@@ -1311,11 +1325,14 @@ private:
     /// Rebuild the pipeline at the size the cap now asks for. Called between
     /// frames, never inside emit(): the encoder there is holding a bitstream
     /// the sender has not finished with.
-    void applyLoadCap()
+    ///
+    /// True when the pipeline was rebuilt — at the new size, or back at the old
+    /// one — and so holds no picture yet.
+    bool applyLoadCap()
     {
         const int width = encode::EncodeLoadCap::scaled(m_FullWidth, m_LoadCap.percent());
         const int height = encode::EncodeLoadCap::scaled(m_FullHeight, m_LoadCap.percent());
-        if (width == m_Info.width && height == m_Info.height) return;
+        if (width == m_Info.width && height == m_Info.height) return false;
 
         std::string error;
         const int wasWidth = m_Info.width;
@@ -1327,9 +1344,11 @@ private:
             log::warning("[native] cpu cap: cannot encode at " + std::to_string(width) + "x" +
                          std::to_string(height) + " (" + error + ") — staying at " +
                          std::to_string(wasWidth) + "x" + std::to_string(wasHeight));
-            if (!buildPipeline(wasWidth, wasHeight, error))
+            if (!buildPipeline(wasWidth, wasHeight, error)) {
                 finish("colour conversion failed: " + error);
-            return;
+                return false;
+            }
+            return true;
         }
         m_Info.width = m_Pipeline->outputWidth();
         m_Info.height = m_Pipeline->outputHeight();
@@ -1339,6 +1358,7 @@ private:
                   std::to_string(m_Info.height) + " (" + std::to_string(m_LoadCap.percent()) +
                   "% of the display) — the CPU encoder sets the latency, so pixels give way "
                   "before frames");
+        return true;
     }
 
     /// The pointer for a client that draws its own. KMS gives the image and no

@@ -1216,6 +1216,10 @@ private:
         int baseKbps = governor.targetKbps();
         m_LinkKbps = baseKbps;
         bool boosted = false;
+        // A pipeline rebuilt by the load cap with no desktop copy to fill it:
+        // nothing is re-sent until a capture has converted a picture (see the
+        // resize below).
+        bool awaitingPicture = false;
         encode::EffectiveCadence effective;
         effective.start(m_EncodeFps, steadyNowUs());
         auto applyBitrate = [&](int kbps) {
@@ -1393,7 +1397,31 @@ private:
             const int timeoutMs = refineSoon ? refineTimeoutMs : idleTimeoutMs;
 
             // Between frames, so the encoder is not holding anything.
-            if (m_PendingResize.exchange(false)) applyLoadCap();
+            //
+            // A new converter holds a zeroed picture, flat green once decoded
+            // (Y = U = V = 0), and on a still screen no capture comes to fill
+            // it: the resize keyframe and every re-send after it were that green
+            // until the desktop next moved (issue #15, reproduced 15/09/2026 on
+            // the Linux engine, which shares this loop's shape). The desktop
+            // copy goes in first; without one, nothing is re-sent until a
+            // capture has.
+            if (m_PendingResize.exchange(false) && applyLoadCap()) {
+                if (m_DesktopCopy) {
+                    static const capture::CursorState kNoPointer;
+                    ID3D11Texture2D* picture = pictureFor(m_DesktopCopy.Get(), error);
+                    if (!picture ||
+                        !m_Converter->convert(
+                            picture, m_CompositeCursor.load() ? m_Capture->cursor() : kNoPointer,
+                            cursorDraw(), error)) {
+                        finish("colour conversion failed: " + error);
+                        return;
+                    }
+                    awaitingPicture = false;
+                    if (!emitPicture(resendStamps(steadyNowUs()))) return;
+                } else {
+                    awaitingPicture = true;
+                }
+            }
 
             capture::CapturedFrame frame;
             // A duplication that turned out to paint the pointer in is left for
@@ -1451,7 +1479,7 @@ private:
                 // either "prove the stream is alive" or whatever faster rate the
                 // client asked to keep settling at. Both re-encode what is
                 // already converted, so this costs an encode and not a capture.
-                if (!m_Converter->outputWidth()) continue;
+                if (!m_Converter->outputWidth() || awaitingPicture) continue;
 
                 // A keyframe the receiver asked for goes out NOW, not at the
                 // next floor tick. On a still screen the floor is the only
@@ -1604,7 +1632,14 @@ private:
             // another screen (a fullscreen game, the usual latency-critical
             // case), no pointer-only frame can ever need it: the copy is skipped
             // entirely and the frame path is exactly what it was before.
-            if (composite && m_Capture->cursor().visible && !retainDesktop(frame.texture, error))
+            //
+            // Also on the CPU encoder, whatever the pointer: that is the tier
+            // the load cap resizes, and a rebuilt converter needs a picture to
+            // start from on a still screen (see the resize above).
+            awaitingPicture = false;
+            if (((composite && m_Capture->cursor().visible) ||
+                 m_Target.encoder == EncoderApi::Software) &&
+                !retainDesktop(frame.texture, error))
                 log::warning("[native] could not keep a desktop copy: " + error);
 
             // Released before encoding: Desktop Duplication refuses the next
@@ -1727,25 +1762,34 @@ private:
 
     /// Rebuild at the size the cap now asks for. Between frames, never inside
     /// emit(): the encoder there is still holding a bitstream.
-    void applyLoadCap()
+    ///
+    /// True when the converter was rebuilt — at the new size, or back at the old
+    /// one — and so holds no picture yet. The desktop copy survives it: the
+    /// capture, and the device the copy lives on, are not rebuilt here.
+    bool applyLoadCap()
     {
         const int width = encode::EncodeLoadCap::scaled(m_FullWidth, m_LoadCap.percent());
         const int height = encode::EncodeLoadCap::scaled(m_FullHeight, m_LoadCap.percent());
-        if (width == m_Info.width && height == m_Info.height) return;
+        if (width == m_Info.width && height == m_Info.height) return false;
 
         std::string error;
         const int wasWidth = m_Info.width;
         const int wasHeight = m_Info.height;
+        const Microsoft::WRL::ComPtr<ID3D11Texture2D> desktop = m_DesktopCopy;
         if (!buildPipeline(width, height, error)) {
             // Keep streaming at the size that worked rather than ending the
             // session over an optimisation.
             log::warning("[native] cpu cap: cannot encode at " + std::to_string(width) + "x" +
                          std::to_string(height) + " (" + error + ") — staying at " +
                          std::to_string(wasWidth) + "x" + std::to_string(wasHeight));
-            if (!buildPipeline(wasWidth, wasHeight, error))
+            if (!buildPipeline(wasWidth, wasHeight, error)) {
                 finish("encoder restart failed: " + error);
-            return;
+                return false;
+            }
+            m_DesktopCopy = desktop;
+            return true;
         }
+        m_DesktopCopy = desktop;
         m_Info.width = m_Converter->outputWidth();
         m_Info.height = m_Converter->outputHeight();
         m_ForceKeyframe.store(true);
@@ -1754,6 +1798,7 @@ private:
                   std::to_string(m_Info.height) + " (" + std::to_string(m_LoadCap.percent()) +
                   "% of the display) — the CPU encoder sets the latency, so pixels give way "
                   "before frames");
+        return true;
     }
 
     /// Tell the client what the pointer looks like, when the client is the one
