@@ -210,6 +210,74 @@ sits where the protocol assumes, so both verdicts must come back OK on every
 host. A KO there is a harness fault or a host whose own layout is not US —
 never a layout-fidelity bug.
 
+## 5 ter. Host screen follow
+
+A native host knows its own display, so on a native host two things stop being
+settings:
+
+| | |
+|---|---|
+| **Shape** | in aspect *Auto* the stream takes the display's real ratio, and a mode change mid-stream (a game going 4:3) rebuilds the encoder at the new shape **without a relaunch** — one new decoder on the client, and nothing else |
+| **Dynamic range** | the HDR box is ignored. The stream is HDR exactly when the host's display is in HDR **and** the client's screen can show it; SDR otherwise, converted on the host. Either side changing mid-stream moves the stream through the seamless relaunch |
+
+Both fail silently — black bars, a duller picture, three decoders where one was
+enough — so `display-follow.ps1` **causes** each change and reads both ends
+back: the host's worker log says what it encodes, the page's console says what
+it decoded, whether it decided to move and whether it relaunched.
+
+```powershell
+.\display-follow.ps1 -AppUrl https://127.0.0.1:18443/ -ApiUrl http://127.0.0.1:18080
+```
+
+| Step | What is done | What must follow |
+|---|---|---|
+| `launch-sdr` | launch on the display in its own mode, SDR, the HDR box unticked | the display's shape, SDR |
+| `shape-other` | the display switches to another shape (4:3 when offered) | the new shape, **≤ 1** new decoder, no relaunch |
+| `shape-back` | back to the first mode | the first shape, ≤ 1 new decoder, no relaunch |
+| `hdr-host-on` | the host display enters HDR | HDR through one relaunch if the client can show it; SDR, no relaunch, otherwise |
+| `hdr-client-off` / `hdr-client-on` | the **client's** screen leaves HDR, then enters it again | SDR, then HDR, one relaunch each |
+| `hdr-host-off` | the host display leaves HDR | SDR |
+| `launch-hdr` | a fresh launch on a display already in HDR, box still unticked | HDR from the first frame if the client can show it |
+
+It changes real display settings, so it picks its screens with care:
+
+- **The captured screen is a virtual display** (a VDD / indirect display
+  driver) unless `-Device` names one: it takes HDR and a 4:3 mode and nobody
+  sees it flicker. A physical monitor is never guessed.
+- **The client's screen is physical** and is flipped out of HDR and back
+  (`-NoClientFlip` to skip). Some monitors drop their refresh rate on entering
+  HDR and keep it — the M27Q goes from 144 Hz to 60 Hz — so its mode is put back
+  along with its HDR state.
+- Everything is restored in a `finally`, whatever stops the script.
+
+The client's HDR capability is the page's own verdict, logged at launch
+(`Native host: HDR asked (display=… webgpu=… decode=…)`); the expectations are
+computed from it, so a client that cannot show HDR is tested on the SDR branch
+rather than failed. An HEVC HDR stream on an HDR screen is drawn by a `<video>`
+sink, not a canvas: the view is read from whichever is on the page.
+
+**On the reference bench** (bench-desk): the virtual display is captured at
+2560×1440, its alternative mode is 800×600, and the client kiosk sits on the
+HDR monitor. Results go to `results/display.jsonl`; the report renders them
+under *Host screen follow*.
+
+*Seen within* is an upper bound: both ends are polled every two to three
+seconds, so a shape followed in about a second reads 8–9 s and a seamless
+relaunch about 17 s. Compare it between runs, never with a player's stopwatch.
+A change that kills the stream is reported on its own row and the next change
+starts on a fresh launch, so one fatal change never fails the whole run.
+
+**Measured 15/09/2026 on bench-desk**, four runs: the shape rows are green every
+time (one new decoder per resize, no relaunch), and so is every HDR change the
+stream survived (one relaunch each, HDR from the first frame on an HDR launch
+with the box unticked). But in each of the last three runs **one HDR switch
+killed the host's capture** — twice it ended the stream (the client's monitor
+entering HDR, then the captured display itself), once the seamless relaunch the
+same switch had started replaced the dying session before anyone saw it. Both
+screens hang off the same GPU; the switch invalidated the desktop
+duplication with `DXGI_ERROR_INVALID_CALL` (`0x887A0001`), which the capture
+treats as fatal where it recovers from `DXGI_ERROR_ACCESS_LOST`.
+
 ## 6. Metrics collected
 
 | Source | What it gives |
@@ -275,7 +343,10 @@ scripts\bench\probe-run.ps1 -Label ref-head
 # 4 bis. the keyboard check, once per host — needs "keyboard_debug": true
 scripts\bench\keyboard-check.ps1 -Profiles fr-azerty,us-qwerty
 
-# 4 ter. give the machine back to whoever is sitting at it
+# 4 ter. the host screen follow, native host with a virtual display (§5 ter)
+scripts\bench\display-follow.ps1
+
+# 4 quater. give the machine back to whoever is sitting at it
 scripts\bench\kiosk-close.ps1
 
 # 5. the report
@@ -518,6 +589,7 @@ wherever the machine allows it.
 | Reference clip | `~/.mw-bench/content/cod.webm` — **outside the repository**, 263 MB |
 | Past verdicts | `docs/bench-native-host.md` |
 | Keyboard check | `keyboard-check.ps1` + the layout tables in `scripts/bench/keyboard/` |
+| Host screen follow | `display-follow.ps1` → `results/display.jsonl` |
 | Probe internals | `docs/design/glass-to-glass.md` §5 bis |
 
 ## 11. Two tiers: the campaign of record, and the diagnosis loop

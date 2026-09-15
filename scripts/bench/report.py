@@ -260,6 +260,35 @@ MITIGATIONS = {
         "worker, not the server that answers the API. Check `keyboard_debug` in the settings.json "
         "the host really reads, then look in moonlightweb-worker-<pid>.log rather than "
         "moonlightweb.log.",
+    "display-shape":
+        "The native stream did not take the host display's shape. In aspect Auto the launch asks "
+        "the host to follow its display (`follow_display_shape`), and a mode change mid-stream "
+        "rebuilds the encoder in place: the worker log says `the display is now WxH - the stream "
+        "follows its shape`, then `display format:`. No such line means the capture never saw "
+        "the mode change (a route that reports no loss - the Linux portal, macOS - is polled for "
+        "it); the line with the page still drawing the old size means the keyframe at the new "
+        "size never reached the decoder. Check that the page's settings really were Auto.",
+    "display-ended":
+        "The screen change killed the stream instead of being followed. Read the row's log: "
+        "`AcquireNextFrame failed` then `session ended: capture failed` is the capture treating "
+        "the change as fatal rather than as a loss to recover from - on Windows, a desktop "
+        "duplication invalidated by an HDR switch answers DXGI_ERROR_INVALID_CALL "
+        "(0x887A0001), not only DXGI_ERROR_ACCESS_LOST. The capture's acquire is where an "
+        "error is sorted into Lost (restart the capture) or Failed (end the session).",
+    "display-decoders":
+        "One mode change, several decoders. The client starts a new decoder when a keyframe "
+        "carries parameter sets it does not hold; anything beyond the one real resize is a set "
+        "that changed without changing the picture - on NVENC the level and tier it picks from "
+        "the bitrate. Nothing is visible, but each one costs a keyframe request. "
+        "`Mp4Muxer.sameParameterSet` is where a harmless difference is told from a real one.",
+    "display-hdr":
+        "The stream's dynamic range is not what the two screens call for: HDR exactly when the "
+        "host's display is in HDR and this client can show it (an HDR screen, WebGPU and a 10-bit "
+        "decoder), SDR otherwise. The page logs `Native HDR (<reason>): stream X -> Y` when it "
+        "decides to move and `Seamless transition` when it does. No decision line: the "
+        "`displayformat` message or the screen's `(dynamic-range: high)` change never reached "
+        "the app. A decision with no transition: a quality transition already in flight, a "
+        "share pinning the quality, or the host refusing HDR once (then not asked again).",
     "no-native":
         "No MoonlightWeb answered on loopback: start one with --dev before a campaign. The dev "
         "instance starts empty, so each host has to be paired again in it, and its ports are "
@@ -400,6 +429,7 @@ def analyse(results_dir):
     browser = (read_jsonl(os.path.join(results_dir, "browser.jsonl"))
                or read_jsonl(os.path.join(results_dir, "passes.jsonl")))
     keyboard = read_jsonl(os.path.join(results_dir, "keyboard.jsonl"))
+    display = read_jsonl(os.path.join(results_dir, "display.jsonl"))
 
     # probe-results.jsonl is APPENDED to and never truncated, so it holds every
     # series this machine has ever measured. Joining it to the matrix by label
@@ -672,8 +702,32 @@ def analyse(results_dir):
                          f"keyboard_layout_fidelity={run.get('fidelity')} — {ev}",
                          owner="Opus")
 
+    # ── Host screen follow ───────────────────────────────────────────────────
+    # A change the stream did not follow is red; a follow that cost more
+    # decoders than the resize needed gets a rule of its own, because it is the
+    # one failure nothing on screen shows.
+    for row in display:
+        if row.get("ok") is not False:
+            continue
+        kind = display_kind(row)
+        flag_anomaly(kind, f"{row.get('id')}: {row.get('what')}",
+                     f"{row.get('observed', '')} — {row.get('reason', '')}", owner="Opus")
+
     return (inventory, matrix, passes, anomalies, drift, perf_meaningful, provenance,
-            keyboard)
+            keyboard, display)
+
+
+def display_kind(row):
+    """Which rule a failed screen-follow row falls under: too many decoders
+    alone is its own (yellow) finding, anything else is about HDR or shape."""
+    reason = str(row.get("reason") or "")
+    if "stream ended" in reason:
+        return "display-ended"
+    if "decoder" in reason and "not within" not in reason and "relaunch" not in reason:
+        return "display-decoders"
+    if str(row.get("id", "")).startswith(("hdr-", "launch-hdr")):
+        return "display-hdr"
+    return "display-shape"
 
 
 # ── Rendering ───────────────────────────────────────────────────────────────
@@ -797,7 +851,7 @@ def fleet_table(path):
 
 
 def render(inventory, matrix, passes, anomalies, drift, perf_meaningful, provenance,
-           keyboard, out_path, redact=True, chapters=(), fleet=()):
+           keyboard, display, out_path, redact=True, chapters=(), fleet=()):
     global REDACTOR
     REDACTOR = Redactor(enabled=redact, inventory=inventory)
     disp = matrix.get("display") or {}
@@ -970,6 +1024,52 @@ def render(inventory, matrix, passes, anomalies, drift, perf_meaningful, provena
                      'instrument that says whether the right thing happened at all, rather than '
                      'how fast it happened.</p></div>')
 
+    # Not a curve either: the host's screen changed, and the stream followed or
+    # it did not. The instrument causes each change itself, so every row says
+    # what was done, what the rule expects, and what both ends reported.
+    parts.append("<h2>Host screen follow</h2>")
+    if display:
+        parts.append('<div class="card"><p class="note">Native host only. The instrument changes '
+                     'the captured display’s mode and HDR mid-stream, and the client screen’s HDR, '
+                     'then reads both ends back: what the host encodes (its worker log) and what '
+                     'the page draws, decodes and relaunches (its console). In aspect Auto the '
+                     'stream takes the display’s shape without a relaunch; it is HDR exactly when '
+                     'both screens are, whatever the HDR box says.</p></div>')
+        parts.append('<div class="card scroll"><table>')
+        parts.append("<tr><th>Change</th><th>Expected</th><th>Observed</th><th>Seen within</th>"
+                     "<th>New decoders</th><th>Relaunches</th></tr>")
+        for r in display:
+            ok = r.get("ok")
+            if ok is None:
+                colour = GREY
+            elif ok:
+                colour = GREEN
+            else:
+                colour = YELLOW if display_kind(r) == "display-decoders" else RED
+            adapt = r.get("adaptMs")
+            adapt_txt = ("—" if not isinstance(adapt, (int, float)) or adapt < 0
+                         else f"{adapt / 1000:.1f} s")
+            evidence = "<br>".join(esc(str(e)) for e in (r.get("evidence") or []))
+            log = (f'<details><summary class="note">log</summary><div class="note">{evidence}'
+                   '</div></details>') if evidence else ""
+            parts.append(
+                "<tr>"
+                f'<td><span class="dot dot--{colour}"></span><code>{esc(str(r.get("id")))}</code>'
+                f'<div class="note">{esc(str(r.get("what") or ""))}</div></td>'
+                f'<td class="note">{esc(str(r.get("expected") or ""))}</td>'
+                f'<td>{esc(str(r.get("observed") or ""))}'
+                f'<div class="note">{esc(str(r.get("reason") or ""))}</div>{log}</td>'
+                f"<td>{adapt_txt}</td>"
+                f'<td>{esc(str(r.get("decoders", "")))}</td>'
+                f'<td>{esc(str(r.get("relaunches", "")))}</td>'
+                "</tr>")
+        parts.append("</table></div>")
+    else:
+        parts.append('<div class="card"><p class="empty">No screen-follow check in this campaign. '
+                     'Run <code>display-follow.ps1</code> on a native host with a virtual display '
+                     'to switch — the only instrument that says whether the stream keeps the '
+                     'host’s shape and dynamic range when they change.</p></div>')
+
     parts.append("<h2>Encoder</h2>")
     enc = [(e["id"], num((e["bench"] or {}).get("encodeMean")),
             num((e["bench"] or {}).get("encodeP99")), e["flag"])
@@ -1088,14 +1188,14 @@ def main():
                     help="a run-fleet.ps1 results directory (one .jsonl per host)")
     ns = ap.parse_args()
 
-    inventory, matrix, passes, anomalies, drift, perf, prov, keyboard = analyse(ns.results)
+    inventory, matrix, passes, anomalies, drift, perf, prov, keyboard, display = analyse(ns.results)
 
     chapters = []
     for spec in ns.chapter:
         label, _, d = spec.partition("=")
         if not d:
             label, d = os.path.basename(spec.rstrip("/\\")), spec
-        inv2, mat2, ps2, an2, _, _, prov2, _ = analyse(d)
+        inv2, mat2, ps2, an2, _, _, prov2, _, _ = analyse(d)
         # note.txt: what the person who ran the chapter knows and the rules do not -
         # when it was measured, on which topology, and a cause already established.
         # A drift card with a generic "find what moved" under a chapter whose cause
@@ -1120,7 +1220,8 @@ def main():
             if name.endswith(".jsonl"):
                 fleet.append((f"fleet · {name[:-6]}", os.path.join(d, name)))
 
-    path = render(inventory, matrix, passes, anomalies, drift, perf, prov, keyboard, ns.out,
+    path = render(inventory, matrix, passes, anomalies, drift, perf, prov, keyboard, display,
+                  ns.out,
                   redact=ns.redact, chapters=chapters, fleet=fleet)
     print(f"report written to {os.path.abspath(path)}")
     print(f"  {len(passes)} passes in the main matrix, {len(chapters)} extra chapter(s), "
