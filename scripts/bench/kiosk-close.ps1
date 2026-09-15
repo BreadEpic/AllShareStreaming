@@ -15,7 +15,8 @@
 # of the two kiosks is which.
 # ============================================================================
 param(
-    # By default both kiosks and the click target. -Content / -Client narrow it.
+    # By default every kiosk (content, client, the -Share guest) and the click
+    # target. -Content / -Client narrow it.
     [switch] $Content,
     [switch] $Client
 )
@@ -23,7 +24,7 @@ param(
 $tags = @()
 if ($Content) { $tags += '.chrome-bench' }
 if ($Client) { $tags += '.chrome-client' }
-if (-not $tags) { $tags = @('.chrome-bench', '.chrome-client') }
+if (-not $tags) { $tags = @('.chrome-bench', '.chrome-client', '.chrome-guest') }
 
 $killed = 0
 Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" | ForEach-Object {

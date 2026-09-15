@@ -29,6 +29,11 @@ param(
     [string] $ChromeProfile = '',
     [int] $DebugPort = 0,
     [string] $AdapterLuid = '',
+    # A plain app window at exactly -X -Y -W -H instead of --kiosk, which
+    # Chrome always stretches over the whole monitor: two clients side by side
+    # on one screen (display-follow.ps1 -Share) otherwise cover each other, and
+    # Chrome stops painting a window nothing of which is visible.
+    [switch] $Windowed,
     [switch] $Verify
 )
 Add-Type @"
@@ -94,9 +99,10 @@ if (-not (Test-Path $chrome)) { throw "Chrome not found at $chrome" }
 
 $chromeArgs = @(
     "--user-data-dir=$ChromeProfile", "--no-first-run", "--no-default-browser-check",
-    "--disable-infobars", "--autoplay-policy=no-user-gesture-required", "--mute-audio", "--kiosk",
+    "--disable-infobars", "--autoplay-policy=no-user-gesture-required", "--mute-audio",
     "--window-position=$X,$Y"
 )
+if ($Windowed) { $chromeArgs += "--window-size=$W,$H" } else { $chromeArgs += "--kiosk" }
 if ($DebugPort -gt 0) {
     # The client kiosk talks to a dev instance over HTTPS with a self-signed
     # certificate; without this the page is an interstitial nothing can pass.
@@ -113,7 +119,7 @@ if ($AdapterLuid) {
     # Decimal "high,low": 0x12419 is "0,74777". The hex form is ignored silently.
     $chromeArgs += "--use-adapter-luid=$AdapterLuid"
 }
-$chromeArgs += $Url
+$chromeArgs += $(if ($Windowed) { "--app=$Url" } else { $Url })
 Start-Process -FilePath $chrome -ArgumentList $chromeArgs
 
 $h = [IntPtr]::Zero

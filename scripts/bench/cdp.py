@@ -234,6 +234,20 @@ def main():
         c.call("Page.reload")
     elif cmd == "launch":
         print("clicked tile at", c.click_text(args[0]))
+    elif cmd == "clicksel":
+        # A real click (it carries a user activation, which a JS .click() does
+        # not) on the first element matching a CSS selector.
+        pos = c.eval(f"""(() => {{
+            const e = document.querySelector({json.dumps(args[0])});
+            if (!e) return null;
+            e.scrollIntoView({{block: 'center'}});
+            const r = e.getBoundingClientRect();
+            return [r.left + r.width / 2, r.top + r.height / 2];
+        }})()""")
+        if not pos:
+            raise SystemExit(f"nothing matches {args[0]!r}")
+        c.click(*pos)
+        print("clicked", args[0], "at", pos)
     elif cmd == "fullscreen":
         pos = c.click_text("Fullscreen")
         time.sleep(1.5)

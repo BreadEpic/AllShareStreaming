@@ -2,7 +2,7 @@
 # The FOURTH instrument: does a native stream follow the host's screen?
 #
 #   .\display-follow.ps1 [-AppUrl https://127.0.0.1:18443/ -ApiUrl http://127.0.0.1:18080]
-#                        [-Device \\.\DISPLAY30] [-NoClientFlip] [-KeepKiosks]
+#                        [-Device \\.\DISPLAY30] [-NoClientFlip] [-KeepKiosks] [-Share]
 #
 # A native host knows its own display, so two things are not settings at all:
 #
@@ -37,6 +37,17 @@
 #
 # The client is a kiosk Chrome driven over CDP like the browser half's, and
 # the captured screen shows content/scroll.html so every frame is new.
+#
+# -Share plays the story again with the stream SHARED: a guest joins through a
+# share link in a second kiosk beside the owner's. A share pins the owner's
+# stream against the client's own changes, never against the host's:
+#
+#   Shape  the guest's stream follows the display as well (its own worker, its
+#          own encoder rebuilt at the new shape).
+#   HDR    the host display entering HDR still moves the owner's stream, and
+#          the guest keeps streaming through that relaunch. The client's screen
+#          leaving HDR is held back while the share is up, and taken up once
+#          the share is over.
 # ============================================================================
 param(
     [string] $ResultsDir = '',
@@ -50,7 +61,9 @@ param(
     [string] $ClientAdapterLuid = '',
     [int]    $TimeoutSec = 30,
     [switch] $NoClientFlip,
-    [switch] $KeepKiosks
+    [switch] $KeepKiosks,
+    [switch] $Share,
+    [int]    $GuestDebugPort = 9334
 )
 
 $ErrorActionPreference = 'Stop'
@@ -72,6 +85,12 @@ function Cdp {
     # poll again, not a reason to stop the script.
     $ErrorActionPreference = 'Continue'
     & python "$PSScriptRoot\cdp.py" --port $DebugPort @Args 2>&1 | Out-String
+}
+# The same against another kiosk: the guest's, with -Share.
+function CdpAt {
+    param([int] $Port, [Parameter(ValueFromRemainingArguments = $true)] $Rest)
+    $ErrorActionPreference = 'Continue'
+    & python "$PSScriptRoot\cdp.py" --port $Port @Rest 2>&1 | Out-String
 }
 
 # -- Screens: modes and HDR by GDI name --------------------------------------
@@ -283,9 +302,14 @@ function Get-LogMark {
         ForEach-Object { $m[$_.FullName] = $_.Length }
     return $m
 }
-function Get-HostLines($Mark) {
+# With -Share the guest's worker writes a log of its own: kept out of the
+# owner's lines, and read alone when -Only names it.
+$script:GuestLog = ''
+function Get-HostLines($Mark, [string] $Only = '') {
     $lines = @()
     foreach ($f in Get-ChildItem (Join-Path $LogDir 'moonlightweb-worker-*.log') -ErrorAction SilentlyContinue) {
+        if ($Only) { if ($f.FullName -ne $Only) { continue } }
+        elseif ($script:GuestLog -and $f.FullName -eq $script:GuestLog) { continue }
         $from = if ($Mark.ContainsKey($f.FullName)) { $Mark[$f.FullName] } else { 0 }
         if ($f.Length -le $from) { continue }
         $fs = [System.IO.File]::Open($f.FullName, 'Open', 'Read', 'ReadWrite')
@@ -347,8 +371,8 @@ function Get-PageLines([int64] $Since) {
 # What the page decodes now: the largest picture on it. A canvas's backing
 # size, or a <video>'s own size - an HEVC HDR stream on an HDR screen is drawn
 # by a <video> sink, and a canvas-only look reads it as no picture at all.
-function Get-View {
-    $raw = (Cdp eval "JSON.stringify((() => { const p = [...document.querySelectorAll('canvas')].filter(e => e.getBoundingClientRect().width > 0).map(e => ({ w: e.width, h: e.height, sink: 'canvas' })).concat([...document.querySelectorAll('video')].filter(e => e.videoWidth > 0).map(e => ({ w: e.videoWidth, h: e.videoHeight, sink: 'video' }))).sort((a, b) => b.w * b.h - a.w * a.h)[0] || { w: 0, h: 0, sink: 'none' }; p.screenHdr = matchMedia('(dynamic-range: high)').matches; return p; })())").Trim()
+function Get-View([int] $Port = $DebugPort) {
+    $raw = (CdpAt $Port eval "JSON.stringify((() => { const p = [...document.querySelectorAll('canvas')].filter(e => e.getBoundingClientRect().width > 0).map(e => ({ w: e.width, h: e.height, sink: 'canvas' })).concat([...document.querySelectorAll('video')].filter(e => e.videoWidth > 0).map(e => ({ w: e.videoWidth, h: e.videoHeight, sink: 'video' }))).sort((a, b) => b.w * b.h - a.w * a.h)[0] || { w: 0, h: 0, sink: 'none' }; p.screenHdr = matchMedia('(dynamic-range: high)').matches; return p; })())").Trim()
     try { return $raw | ConvertFrom-Json } catch { return [pscustomobject]@{ w = 0; h = 0; sink = 'none'; screenHdr = $false } }
 }
 
@@ -383,13 +407,19 @@ function Reset-Page {
 
 function Start-Stream {
     Cdp launch $Tile | Out-Null
-    Start-Sleep -Seconds 3
-    if ((Cdp eval "!!document.querySelector('.self-stream-go')") -match 'true') {
-        Cdp launch 'Stream anyway' | Out-Null
-    }
-    $ms = Wait-For { (Get-View).w -gt 0 } 30
+    # The self-stream warning can come up late (a narrower window took longer
+    # than the three seconds once waited here): answered whenever it shows.
+    $ms = Wait-For {
+        if ((Cdp eval "!!document.querySelector('.self-stream-go')") -match 'true') {
+            Cdp launch 'Stream anyway' | Out-Null
+        }
+        (Get-View).w -gt 0
+    } 40
     if ($ms -lt 0) { throw "the stream on '$Tile' never showed a picture" }
-    Cdp fullscreen | Out-Null
+    # Shared, the owner's kiosk holds half the screen and the guest's the other
+    # half: fullscreen would cover the guest, and Chrome stops painting a
+    # window nothing of which is visible.
+    if (-not $Share) { Cdp fullscreen | Out-Null }
     Start-Sleep -Seconds 3
 }
 
@@ -405,13 +435,64 @@ function Add-Row($Row) {
     $script:rows += $o
 }
 
+# -- The guest (-Share) -----------------------------------------------------
+# What the guest's worker encodes. Its log is the worker file that appeared
+# when the guest joined: found once, then kept out of the owner's lines.
+function Get-GuestState($Mark) {
+    if (-not $script:GuestLog) {
+        $new = @(Get-ChildItem (Join-Path $LogDir 'moonlightweb-worker-*.log') -ErrorAction SilentlyContinue |
+            Where-Object { -not $Mark.ContainsKey($_.FullName) } |
+            Where-Object { Select-String -Path $_.FullName -Pattern '\[native\] session:' -Quiet })
+        if ($new.Count -ne 1) { return Get-HostState @() }
+        $script:GuestLog = $new[0].FullName
+    }
+    return Get-HostState (Get-HostLines $Mark $script:GuestLog)
+}
+
+function Invoke-ShareApi([string] $Path, [string] $Body = '{}') {
+    $key = (Invoke-RestMethod -Uri "$ApiUrl/api/admin/token" -TimeoutSec 10).token
+    Invoke-RestMethod -Uri "$ApiUrl$Path" -Method Post -ContentType 'application/json' `
+        -Headers @{ 'X-MW-Admin-Key' = $key } -Body $Body -TimeoutSec 15
+}
+
+# Open a share on the running stream and have the guest kiosk join it the way a
+# person does: the link, the PIN, the Join button.
+function Join-Guest {
+    $act = Invoke-ShareApi '/api/share/slots/2/activate' '{"ttl_secs":3600}'
+    $token = Get-Prop $act 'token' ''
+    # The link names the token in its path on the LAN (/p/<token>), in its
+    # fragment through the introduction server (#t=<token>). The guest kiosk
+    # opens it on this machine, by path, either way.
+    $link = Get-Prop $act 'url' ''
+    if (-not $token -and $link -match '/p/([^/?#]+)') { $token = $Matches[1] }
+    if (-not $token -and $link -match '#t=([^&]+)') { $token = $Matches[1] }
+    if (-not $token) { throw "the share opened without a link: $($act | ConvertTo-Json -Compress)" }
+    $guestUrl = $AppUrl.TrimEnd('/') + '/p/' + $token
+    $guestArgs = @('-Url', $guestUrl, '-X', $script:guestRect[0], '-Y', $script:guestRect[1],
+                   '-W', $script:guestRect[2], '-H', $script:guestRect[3], '-DebugPort', $GuestDebugPort,
+                   '-ChromeProfile', '.chrome-guest', '-Windowed')
+    if ($ClientAdapterLuid) { $guestArgs += @('-AdapterLuid', $ClientAdapterLuid) }
+    & powershell -NoProfile -File "$PSScriptRoot\kiosk.ps1" @guestArgs | Out-Host
+    $ready = Wait-For { (CdpAt $GuestDebugPort eval "!!document.querySelector('.player-pin-input')") -match 'true' } 40
+    if ($ready -lt 0) { throw "the guest page never asked for the PIN at $guestUrl" }
+    CdpAt $GuestDebugPort eval ("(() => { const i = document.querySelector('.player-pin-input'); i.value = '" + $act.pin +
+        "'; i.form.requestSubmit(); return 'sent'; })()") | Out-Null
+    $ready = Wait-For { (CdpAt $GuestDebugPort eval "!!document.querySelector('.player-join-btn')") -match 'true' } 20
+    if ($ready -lt 0) { throw 'the guest page never offered to join after the PIN' }
+    CdpAt $GuestDebugPort clicksel '.player-join-btn' | Out-Null
+    # The owner's page learns of the share by polling (every five seconds):
+    # until then nothing on it knows the stream is shared.
+    Start-Sleep -Seconds 7
+}
+
 # A change and its verdict. $Act changes a screen; $Expect is evaluated against
 # the host state, the view and the page lines, polled until it holds or the
 # timeout. The counts are taken over a settling window AFTER it holds, because
 # a decoder created twice more a second later is exactly the defect to catch.
 function Invoke-Change {
     param([string] $Id, [string] $What, [string] $Expected, [scriptblock] $Act,
-          [scriptblock] $Holds, [int] $MaxDecoders = 1, [int] $Relaunches = -1, [switch] $Launch)
+          [scriptblock] $Holds, [int] $MaxDecoders = 1, [int] $Relaunches = -1, [switch] $Launch,
+          [scriptblock] $GuestHolds = $null)
     Write-Host ""
     Write-Host "=== $Id - $What ==="
     # Each change is measured on a live stream: one that died on the previous
@@ -430,16 +511,33 @@ function Invoke-Change {
         $script:hostState = Get-HostState (Get-HostLines $hostMark)
         $script:view = Get-View
         $script:page = Get-PageLines $since
-        & $Holds
+        if ($GuestHolds) {
+            $script:guestMark = $hostMark
+            $script:guestState = Get-GuestState $hostMark
+            $script:guestView = Get-View $GuestDebugPort
+            (& $Holds) -and (& $GuestHolds)
+        } else {
+            & $Holds
+        }
     }
     if ($ms -ge 0) { Start-Sleep -Seconds 5 }
     $hs = Get-HostState (Get-HostLines $hostMark)
     $v = Get-View
     $p = Get-PageLines $since
+    $guestNote = ''
+    $guestLines = @()
+    if ($GuestHolds) {
+        $gs = Get-GuestState $hostMark
+        $gv = Get-View $GuestDebugPort
+        $guestNote = "; guest: host encodes {0}x{1} {2}, page draws {3}x{4}" -f $gs.w, $gs.h,
+            $(if ($gs.hdr) { 'HDR' } else { 'SDR' }), $gv.w, $gv.h
+        if ($script:GuestLog) { $guestLines = @(Get-HostLines $hostMark $script:GuestLog | ForEach-Object { "guest $_" }) }
+    }
     $decoders = @($p | Where-Object { $_ -match 'starting a new decoder' }).Count
     $switches = @($p | Where-Object { $_ -match 'Seamless transition: first frame on standby' }).Count
     $reasons = @()
     if ($v.w -eq 0) { $reasons += 'the stream ended (the host log says why)' }
+    if ($GuestHolds -and $gv.w -eq 0) { $reasons += "the guest's stream ended" }
     if ($ms -lt 0) { $reasons += "not within $TimeoutSec s" }
     if ($decoders -gt $MaxDecoders) { $reasons += "$decoders new decoders where $MaxDecoders was enough" }
     if ($Relaunches -ge 0 -and $switches -ne $Relaunches) { $reasons += "$switches seamless relaunch(es), expected $Relaunches" }
@@ -449,12 +547,12 @@ function Invoke-Change {
         observed = ("host encodes {0}x{1} {2}{3}; page draws {4}x{5} ({6}), its screen {7}" -f
             $hs.w, $hs.h, $(if ($hs.hdr) { 'HDR' } else { 'SDR' }),
             $(if ($hs.displayW -gt 0) { ", display {0}x{1} {2}" -f $hs.displayW, $hs.displayH, $(if ($hs.displayHdr) { 'HDR' } else { 'SDR' }) } else { '' }),
-            $v.w, $v.h, $v.sink, $(if ($v.screenHdr) { 'HDR' } else { 'SDR' }))
+            $v.w, $v.h, $v.sink, $(if ($v.screenHdr) { 'HDR' } else { 'SDR' })) + $guestNote
         ok = ($reasons.Count -eq 0); reason = ($reasons -join '; ')
         adaptMs = $ms; decoders = $decoders; relaunches = $switches
-        evidence = @(@(Get-HostLines $hostMark) + @($p | Where-Object {
+        evidence = @(@(Get-HostLines $hostMark) + $guestLines + @($p | Where-Object {
             $_ -match 'Host display|Native HDR|Native host: HDR|Seamless transition|new decoder|First decoded frame|renderer=|\[bench\]' }) |
-            Select-Object -Last 14)
+            Select-Object -Last 18)
     })
 }
 
@@ -469,16 +567,24 @@ function Skip-Change([string] $Id, [string] $What, [string] $Why) {
 $orig = [pscustomobject]@{ capW = $cap.W; capH = $cap.H; capHz = $cap.Hz; capHdr = $cap.HdrOn
                            cliW = $client.W; cliH = $client.H; cliHz = $client.Hz; cliHdr = $client.HdrOn }
 $kiosksUp = $false
+$script:shareUp = $false
+$script:guestState = $null
+$script:guestView = $null
 try {
     if ($cap.HdrOn) { Set-ScreenHdr $Device $false }
 
     # The kiosks: moving content on the captured screen, the app on the client's.
     $content = 'file:///' + ((Join-Path $PSScriptRoot 'content\scroll.html') -replace '\\', '/')
     & powershell -NoProfile -File "$PSScriptRoot\kiosk.ps1" -Url $content -X $cap.X -Y $cap.Y -W $cap.W -H $cap.H | Out-Host
+    # Shared, the client's screen is split: the owner on the left half, the
+    # guest (Join-Guest) on the right.
+    $ownerW = if ($Share) { [int][Math]::Floor($client.W / 2) } else { $client.W }
+    $script:guestRect = @(($client.X + $ownerW), $client.Y, ($client.W - $ownerW), $client.H)
     # An empty -AdapterLuid is a missing argument to a child powershell: only when set.
-    $clientArgs = @('-Url', $AppUrl, '-X', $client.X, '-Y', $client.Y, '-W', $client.W, '-H', $client.H,
+    $clientArgs = @('-Url', $AppUrl, '-X', $client.X, '-Y', $client.Y, '-W', $ownerW, '-H', $client.H,
                     '-DebugPort', $DebugPort)
     if ($ClientAdapterLuid) { $clientArgs += @('-AdapterLuid', $ClientAdapterLuid) }
+    if ($Share) { $clientArgs += '-Windowed' }
     & powershell -NoProfile -File "$PSScriptRoot\kiosk.ps1" @clientArgs | Out-Host
     $kiosksUp = $true
 
@@ -512,21 +618,86 @@ try {
     $clientHdr = [bool]($askLine -match 'display=true webgpu=true decode=true')
     Write-Host "client HDR   : $clientHdr ($askLine)"
 
+    # Shared, every change below is also a verdict on the guest: still
+    # streaming, and (for a shape) at the display's new shape.
+    $guestAlive = if ($Share) { { $script:guestView.w -gt 0 } } else { $null }
+    $guestShapeOther = $null
+    $guestShapeBack = $null
+    if ($Share) {
+        $script:shareUp = $true
+        Invoke-Change 'share-join' 'a guest joins the stream through a share link' `
+            "the guest streams the display's shape; the owner's stream untouched" `
+            { Join-Guest } `
+            { $script:view.w -gt 0 } `
+            -MaxDecoders 0 -Relaunches 0 `
+            -GuestHolds { $script:guestState.w -gt 0 -and
+                          (Test-Ratio $script:guestState.w $script:guestState.h $cap.W $cap.H) -and
+                          $script:guestView.w -eq $script:guestState.w -and $script:guestView.h -eq $script:guestState.h }
+        $guestShapeOther = { (Test-Ratio $script:guestState.w $script:guestState.h $alt[0] $alt[1]) -and
+                             $script:guestView.w -eq $script:guestState.w -and $script:guestView.h -eq $script:guestState.h }
+        $guestShapeBack = { (Test-Ratio $script:guestState.w $script:guestState.h $orig.capW $orig.capH) -and
+                            $script:guestView.w -eq $script:guestState.w -and $script:guestView.h -eq $script:guestState.h }
+    }
+
     Invoke-Change 'shape-other' "the display switches to $($alt[0])x$($alt[1]) mid-stream" `
         "the stream rebuilt at that shape, one new decoder, no relaunch" `
         { Set-ScreenMode $Device $alt[0] $alt[1] } `
         { (Test-Ratio $script:hostState.w $script:hostState.h $alt[0] $alt[1]) -and
           $script:view.w -eq $script:hostState.w -and $script:view.h -eq $script:hostState.h } `
-        -MaxDecoders 1 -Relaunches 0
+        -MaxDecoders 1 -Relaunches 0 -GuestHolds $guestShapeOther
 
     Invoke-Change 'shape-back' "the display goes back to $($orig.capW)x$($orig.capH)" `
         "the stream back at the first shape, one new decoder, no relaunch" `
         { Set-ScreenMode $Device $orig.capW $orig.capH $orig.capHz } `
         { (Test-Ratio $script:hostState.w $script:hostState.h $orig.capW $orig.capH) -and
           $script:view.w -eq $script:hostState.w -and $script:view.h -eq $script:hostState.h } `
-        -MaxDecoders 1 -Relaunches 0
+        -MaxDecoders 1 -Relaunches 0 -GuestHolds $guestShapeBack
 
-    if (-not $cap.HdrSupported) {
+    $flipWhy = if ($NoClientFlip) { '-NoClientFlip' }
+               elseif (-not $client.HdrSupported) { "the client's screen $($client.Gdi) cannot do HDR" }
+               elseif (-not $client.HdrOn) { "the client's screen is SDR, so the client side was covered by hdr-host-on already" }
+               elseif (-not $clientHdr) { 'this client cannot show HDR even on an HDR screen (WebGPU or the 10-bit decoder)' }
+               else { '' }
+
+    if ($Share -and $cap.HdrSupported) {
+        # The host's change goes through the share; the client's is held back
+        # until the share is over.
+        $want = $clientHdr
+        Invoke-Change 'hdr-host-on-shared' 'the host display enters HDR while the stream is shared' `
+            $(if ($want) { "the owner's stream relaunched in HDR, the guest still streaming" } else { 'still SDR (this client cannot show HDR), the guest still streaming' }) `
+            { Set-ScreenHdr $Device $true } `
+            { $script:hostState.displayHdr -eq $true -and $script:hostState.hdr -eq $want } `
+            -MaxDecoders 1 -Relaunches $(if ($want) { 1 } else { 0 }) -GuestHolds $guestAlive
+        if ($flipWhy) {
+            Skip-Change 'hdr-client-off-shared' "the client's screen leaves HDR while shared" $flipWhy
+            Invoke-Change 'hdr-host-off-shared' 'the host display leaves HDR while the stream is shared' `
+                $(if ($want) { "the owner's stream relaunched in SDR, the guest still streaming" } else { 'still SDR, the guest still streaming' }) `
+                { Set-ScreenHdr $Device $false } `
+                { $script:hostState.displayHdr -eq $false -and $script:hostState.hdr -eq $false } `
+                -MaxDecoders 1 -Relaunches $(if ($want) { 1 } else { 0 }) -GuestHolds $guestAlive
+        } else {
+            Invoke-Change 'hdr-client-off-shared' "the client's screen leaves HDR while the stream is shared" `
+                'held back: no relaunch, the stream still HDR, the guest still streaming' `
+                { Set-ScreenHdr $client.Gdi $false } `
+                { -not $script:view.screenHdr -and $script:hostState.hdr -ne $false -and
+                  @($script:page | Where-Object { $_ -match 'held back while a share is active' }).Count -gt 0 } `
+                -MaxDecoders 0 -Relaunches 0 -GuestHolds $guestAlive
+            Invoke-Change 'share-over' 'the share ends with that change still held back' `
+                'the stream relaunched in SDR once the owner page sees the share gone' `
+                { Invoke-ShareApi '/api/share/slots/2/deactivate' | Out-Null; $script:shareUp = $false } `
+                { $script:hostState.hdr -eq $false -and
+                  @($script:page | Where-Object { $_ -match 'Native HDR \(share over\)' }).Count -gt 0 } `
+                -MaxDecoders 1 -Relaunches 1
+            Invoke-Change 'hdr-client-on' "the client's screen enters HDR again, nothing shared" `
+                'the stream relaunched in HDR' `
+                { Set-ScreenHdr $client.Gdi $true
+                  Set-ScreenMode $client.Gdi $orig.cliW $orig.cliH $orig.cliHz } `
+                { $script:view.screenHdr -and $script:hostState.hdr -eq $true } `
+                -MaxDecoders 1 -Relaunches 1
+        }
+    } elseif ($Share) {
+        Skip-Change 'hdr-host-on-shared' 'the host display enters HDR while shared' "$Device cannot do HDR"
+    } elseif (-not $cap.HdrSupported) {
         Skip-Change 'hdr-host-on' 'the host display enters HDR' "$Device cannot do HDR"
     } else {
         $want = $clientHdr
@@ -536,11 +707,6 @@ try {
             { $script:hostState.displayHdr -eq $true -and $script:hostState.hdr -eq $want } `
             -MaxDecoders 1 -Relaunches $(if ($want) { 1 } else { 0 })
 
-        $flipWhy = if ($NoClientFlip) { '-NoClientFlip' }
-                   elseif (-not $client.HdrSupported) { "the client's screen $($client.Gdi) cannot do HDR" }
-                   elseif (-not $client.HdrOn) { "the client's screen is SDR, so the client side was covered by hdr-host-on already" }
-                   elseif (-not $clientHdr) { 'this client cannot show HDR even on an HDR screen (WebGPU or the 10-bit decoder)' }
-                   else { '' }
         if ($flipWhy) {
             Skip-Change 'hdr-client-off' "the client's screen leaves HDR" $flipWhy
         } else {
@@ -576,6 +742,10 @@ try {
 }
 finally {
     Write-Host ""
+    if ($Share -and $script:shareUp) {
+        try { Invoke-ShareApi '/api/share/slots/2/deactivate' | Out-Null; Write-Host 'share closed' }
+        catch { Write-Warning "could not close the share: $_" }
+    }
     try {
         $now = Get-Screen $Device
         if ($now -and ($now.W -ne $orig.capW -or $now.H -ne $orig.capH)) { Set-ScreenMode $Device $orig.capW $orig.capH $orig.capHz }
