@@ -2140,7 +2140,7 @@ const MoonlightApp = {
         f.displayHdr = msg.displayHdr === true;
         f.hdrCapable = msg.hdrCapable === true;
         this._noteNativeAspect(msg.frameWidth, msg.frameHeight);
-        this._reconcileNativeHdr('host display changed');
+        this._reconcileNativeHdr('host display changed', true);
     },
 
     /** Watch, once per page, for this screen entering or leaving HDR — a
@@ -2163,7 +2163,14 @@ const MoonlightApp = {
         // on, off, on: one event). So the answer is also read every two seconds;
         // it costs a media query evaluation and nothing else, and reconciling is
         // a no-op outside a native stream.
-        setInterval(onChange, 2000);
+        // The same tick takes up a change a share held back, once it is over.
+        setInterval(() => {
+            onChange();
+            if (this._nativeHdrDeferred && !this._sharePinsQuality()) {
+                this._nativeHdrDeferred = false;
+                this._reconcileNativeHdr('share over');
+            }
+        }, 2000);
     },
 
     /**
@@ -2172,8 +2179,12 @@ const MoonlightApp = {
      * encoder that carries it), SDR otherwise. Any mismatch is a new session —
      * the renderer is chosen at stream start and cannot swap — through the
      * same seamless transition as a quality change.
+     *
+     * @param {string} reason for the log line
+     * @param {boolean} [hostChange] the host's display moved, which a share
+     *   does not hold back
      */
-    async _reconcileNativeHdr(reason) {
+    async _reconcileNativeHdr(reason, hostChange = false) {
         if (!this._nativeFormat) return;
         const cap = await hdrClientCapability();
         const f = this._nativeFormat;
@@ -2186,7 +2197,18 @@ const MoonlightApp = {
         // A transition already in flight adopts its own result, and this runs
         // again from there.
         if (this._standbyView || this._relaunching) return;
-        if (this._sharePinsQuality()) return;
+        // A share pins the stream against this side's own changes: a window
+        // dragged to another screen is the owner's business, and the guests
+        // would ride along on it. The host's display is everyone's picture, so
+        // its change still goes through — the relaunch retires the owner's leg
+        // only, and every guest keeps their own. What was skipped here is
+        // taken up again once the share is over (_watchClientDynamicRange).
+        if (!hostChange && this._sharePinsQuality()) {
+            if (!this._nativeHdrDeferred)
+                console.log('[MW] Native HDR (' + reason + '): held back while a share is active');
+            this._nativeHdrDeferred = true;
+            return;
+        }
         // Asked once already and the host answered otherwise (a capture path
         // with no HDR, say): not again until the wish itself changes.
         if (this._nativeHdrAttempt === want) return;
@@ -2206,7 +2228,7 @@ const MoonlightApp = {
                 ')',
         );
         settings.hdr_enabled = cap.ok && !this._nativeHdrDeclined;
-        this._qualityRelaunch(this._transportIndex || 0);
+        this._qualityRelaunch(this._transportIndex || 0, { hostChange });
     },
 
     /** Drop the probe, measurement and watch alike (quit, or a fresh launch
@@ -2888,16 +2910,23 @@ const MoonlightApp = {
      * switch itself is disruptive: it relaunches on the other slot, so on a
      * jittery network the owner spent more time transitioning than streaming,
      * and the guests rode along. While a link is out there the settings are the
-     * owner's to change by hand.
+     * owner's to change by hand. One exception: a native host whose display
+     * enters or leaves HDR (see _reconcileNativeHdr) — that picture is the
+     * guests' too.
      */
     _sharePinsQuality() {
         return !!(this.streamView && this.streamView.hasActiveShare());
     },
 
-    _qualityRelaunch(relaunchIndex) {
-        // Belt and braces: both entry points already bail out, but nothing else
+    /**
+     * @param {number} relaunchIndex transport chain index to relaunch on
+     * @param {{hostChange?: boolean}} [opts] hostChange: the native host's
+     *   display moved — the one reason a share does not pin the stream
+     */
+    _qualityRelaunch(relaunchIndex, opts = {}) {
+        // Belt and braces: the entry points already bail out, but nothing else
         // should be able to relaunch a shared stream by accident.
-        if (this._sharePinsQuality()) {
+        if (!opts.hostChange && this._sharePinsQuality()) {
             console.log('[MW] Quality transition skipped: a share is active');
             return;
         }

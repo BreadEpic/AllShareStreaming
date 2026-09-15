@@ -3963,6 +3963,13 @@ int main(int argc, char* argv[])
         cfg["iceTcp"] = chain.first().endsWith(QStringLiteral("-tcp"));
         cfg["lowAudio"] = false;
         cfg["muteHostAudio"] = false;
+        // A guest's width already follows the host's shape (above), and a
+        // native host's display changing mode mid-stream is theirs to follow
+        // as well: the encoder is rebuilt at the new shape, their decoder picks
+        // it up on the keyframe. Without it the frame kept its size, and the
+        // desktop came out stretched across it on Windows, letterboxed on
+        // macOS. Other engines ignore the flag.
+        cfg["followDisplayShape"] = true;
         cfg["clientUniqueId"] = uid;
         // No browser address reaches this path (a player is started from the
         // share activation, not from their own request), so assume the most
