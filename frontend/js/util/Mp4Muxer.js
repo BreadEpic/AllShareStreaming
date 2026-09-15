@@ -129,26 +129,31 @@ export class NalParser {
      * picture of the wrong size: green blocks, and the right part of the frame
      * a flat bright green (issue #15, 12/09/2026). The caller reconfigures when
      * this says yes. A buffer with no parameter set at all says no.
+     *
+     * A set that differs only in its level, or in HEVC's tier, is the same
+     * picture and says no. The encoder picks both from the bitrate it is set
+     * to, and the native host moves that under a running stream: NVENC's next
+     * IDR then announced Main 4.1 or High 5.0 in turn, at stream start and
+     * again after each resize, and every flip started a new decoder and asked
+     * for another keyframe (15/09/2026). A level describes what the stream may
+     * demand of a decoder, not how to decode it — the decoder configured with
+     * the old one decodes the new stream all the same.
      */
     changedBy(buffer) {
         if (!this.isReady()) return false;
-        const same = (a, b) => {
-            if (!a || a.length !== b.length) return false;
-            for (let i = 0; i < b.length; i++) if (a[i] !== b[i]) return false;
-            return true;
-        };
         for (const n of splitNals(buffer)) {
             if (this.codec === CODEC_HEVC) {
                 if (n.length < 2) continue;
                 const type = (n[0] >> 1) & 0x3f;
-                if (type === HEVC_VPS && !same(this.vps, n)) return true;
-                if (type === HEVC_SPS && !same(this.sps, n)) return true;
-                if (type === HEVC_PPS && !same(this.pps, n)) return true;
+                if (type === HEVC_VPS && !sameParameterSet(this.vps, n, HEVC_VPS_PTL)) return true;
+                if (type === HEVC_SPS && !sameParameterSet(this.sps, n, HEVC_SPS_PTL)) return true;
+                if (type === HEVC_PPS && !sameParameterSet(this.pps, n, null)) return true;
             } else {
                 if (n.length < 1) continue;
                 const type = n[0] & 0x1f;
-                if (type === H264_SPS && !same(this.sps, n)) return true;
-                if (type === H264_PPS && !same(this.pps, n)) return true;
+                if (type === H264_SPS && !sameParameterSet(this.sps, n, H264_SPS_LEVEL))
+                    return true;
+                if (type === H264_PPS && !sameParameterSet(this.pps, n, null)) return true;
             }
         }
         return false;
@@ -160,6 +165,52 @@ export class NalParser {
         this.pps = null;
         this.vps = null;
     }
+}
+
+// Where the bytes that only carry a level sit, counted in a parameter set with
+// its emulation prevention removed: [byte, mask] pairs to ignore.
+// HEVC profile_tier_level() starts after the 2-byte NAL header plus 4 bytes of
+// VPS fields, or plus 1 byte of SPS fields; its first byte holds the tier flag
+// (0x20) and general_level_idc is 11 bytes further on.
+const HEVC_VPS_PTL = [
+    [6, 0x20],
+    [17, 0xff],
+];
+const HEVC_SPS_PTL = [
+    [3, 0x20],
+    [14, 0xff],
+];
+// H.264: NAL header, profile_idc, constraint flags, then level_idc.
+const H264_SPS_LEVEL = [[3, 0xff]];
+
+/**
+ * Whether two parameter sets are the same once the level (and HEVC tier)
+ * fields listed in @p ignored are left out. Compared without emulation
+ * prevention: an escape byte can appear or vanish with the level byte next to
+ * it, which would shift everything behind it.
+ */
+function sameParameterSet(held, incoming, ignored) {
+    if (!held) return false;
+    if (held.length === incoming.length) {
+        let identical = true;
+        for (let i = 0; i < held.length; i++) {
+            if (held[i] !== incoming[i]) {
+                identical = false;
+                break;
+            }
+        }
+        if (identical) return true;
+    }
+    if (!ignored) return false;
+    const a = removeEmulationPrevention(held);
+    const b = removeEmulationPrevention(incoming);
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+        let mask = 0xff;
+        for (const [at, bits] of ignored) if (at === i) mask &= ~bits;
+        if ((a[i] & mask) !== (b[i] & mask)) return false;
+    }
+    return true;
 }
 
 /**

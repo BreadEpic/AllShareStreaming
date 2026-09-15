@@ -110,6 +110,42 @@ describe('Mp4Muxer — NalParser', () => {
         expect(p.changedBy(annexB([0x40, 0x01, 0x0c, 0x02], HEVC_SPS, HEVC_PPS))).toBe(true);
     });
 
+    it('changedBy() ignores a set that only moved its level or tier', () => {
+        // Three VPS NVENC sent in one native stream (15/09/2026): Main 4.1,
+        // High 5.0, High 4.1 — the bitrate moved, the picture did not. The
+        // escape bytes sit right before the level byte.
+        const hex = (h) => h.match(/../g).map((b) => parseInt(b, 16));
+        const main41 = hex('40010c01ffff01600000030090000003000003007b970240');
+        const high50 = hex('40010c01ffff216000000300900000030000030096970240');
+        const high41 = hex('40010c01ffff21600000030090000003000003007b970240');
+        const p = new NalParser();
+        p.feed(annexB(main41, HEVC_SPS, HEVC_PPS));
+        expect(p.changedBy(annexB(high50, HEVC_SPS, HEVC_PPS))).toBe(false);
+        expect(p.changedBy(annexB(high41, HEVC_SPS, HEVC_PPS))).toBe(false);
+        // The profile is another matter: Main 10 is a new decoder.
+        const main10 = hex('40010c01ffff02600000030090000003000003007b970240');
+        expect(p.changedBy(annexB(main10, HEVC_SPS, HEVC_PPS))).toBe(true);
+
+        // SPS: tier flag in byte 3, level in byte 14; the size still counts.
+        const sps = [0x42, 0x01, 0x01, 0x01, 0x60, 0, 0, 3, 0, 0x90, 0, 0, 3, 0, 0, 3, 0, 0x7b, 0xa0, 0x02, 0xd0];
+        const q = new NalParser();
+        q.feed(annexB(HEVC_VPS, sps, HEVC_PPS));
+        const spsHigh50 = [...sps];
+        spsHigh50[3] = 0x21;
+        spsHigh50[17] = 0x96;
+        expect(q.changedBy(annexB(HEVC_VPS, spsHigh50, HEVC_PPS))).toBe(false);
+        const spsResized = [...sps];
+        spsResized[19] = 0x03;
+        expect(q.changedBy(annexB(HEVC_VPS, spsResized, HEVC_PPS))).toBe(true);
+
+        // H.264: level_idc alone is not a change either.
+        const r = new NalParser();
+        r.feed(annexB(H264_SPS, H264_PPS));
+        const level42 = [...H264_SPS];
+        level42[3] = 0x2a + 1;
+        expect(r.changedBy(annexB(level42, H264_PPS, H264_IDR))).toBe(false);
+    });
+
     it('reset() clears state; helpers no-op until ready', () => {
         const p = new NalParser();
         p.feed(annexB(H264_SPS, H264_PPS));
