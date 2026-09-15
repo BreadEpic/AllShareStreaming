@@ -2143,15 +2143,27 @@ const MoonlightApp = {
         this._reconcileNativeHdr('host display changed');
     },
 
-    /** Listen, once per page, for this screen entering or leaving HDR — a
+    /** Watch, once per page, for this screen entering or leaving HDR — a
      *  window dragged to another monitor, the OS toggle. */
     _watchClientDynamicRange() {
         if (this._dynamicRangeWatched || typeof window.matchMedia !== 'function') return;
         this._dynamicRangeWatched = true;
         const mq = window.matchMedia('(dynamic-range: high)');
-        const onChange = () => this._reconcileNativeHdr('this screen changed');
+        let last = mq.matches;
+        const onChange = () => {
+            if (mq.matches === last) return;
+            last = mq.matches;
+            this._reconcileNativeHdr('this screen changed');
+        };
         if (typeof mq.addEventListener === 'function') mq.addEventListener('change', onChange);
         else if (typeof mq.addListener === 'function') mq.addListener(onChange);
+        // The event alone is not enough: Chrome 153 on Windows dispatches it for
+        // the first HDR toggle of a page and never again, while `matches` keeps
+        // following every one (measured 15/09/2026 on the reference bench — off,
+        // on, off, on: one event). So the answer is also read every two seconds;
+        // it costs a media query evaluation and nothing else, and reconciling is
+        // a no-op outside a native stream.
+        setInterval(onChange, 2000);
     },
 
     /**

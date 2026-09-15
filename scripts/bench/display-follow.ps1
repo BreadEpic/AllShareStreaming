@@ -490,6 +490,9 @@ try {
         Set-Content -Path $settingsPath -Encoding ASCII
     $ready = Wait-For { (Cdp eval 'document.body ? document.body.innerText : 0') -match [regex]::Escape($Tile) } 80
     if ($ready -lt 0) { throw "the app at $AppUrl never showed a tile named '$Tile' - is the host paired in this instance?" }
+    # The service worker would otherwise serve the kiosk profile the JS of the
+    # last build it saw, and a fix to the app would be measured on the old app.
+    Cdp eval "Promise.all([caches.keys().then(k => Promise.all(k.map(x => caches.delete(x)))), navigator.serviceWorker.getRegistrations().then(r => Promise.all(r.map(x => x.unregister())))]).then(() => 'purged')" | Out-Null
     Cdp settingsfile $settingsPath | Out-Null
     $ready = Wait-For { (Cdp eval 'document.body ? document.body.innerText : 0') -match [regex]::Escape($Tile) } 60
     if ($ready -lt 0) { throw "after the settings reload the tile '$Tile' never came back" }
