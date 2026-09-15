@@ -27,7 +27,11 @@ extern "C" {
 #include "HostOsProbe.h"
 #include "NativeProbeService.h"
 
+#include <QCollator>
 #include <QHostInfo>
+
+#include <algorithm>
+#include <vector>
 
 namespace {
 
@@ -217,9 +221,31 @@ void NativeHostBackend::getAppList(const QString& seatId, BackendAppListCallback
     // One app per display. The existing app grid then IS the display picker
     // asked for in the plan — no new screen to build, and a single-monitor
     // machine shows one card that streams on one click.
+    //
+    // The probe lists displays in the OS's enumeration order (on Windows, GPU
+    // by GPU), which puts "Display 2" before "Display 1" as soon as the second
+    // one hangs off the first adapter. The grid reads left to right, so the
+    // primary comes first and the rest follow by label, numbers compared as
+    // numbers ("Display 10" after "Display 2"). Only the order changes: each
+    // app keeps the id of its own display.
+    std::vector<const mw::native::DisplayInfo*> ordered;
+    ordered.reserve(caps.displays.size());
+    for (const mw::native::DisplayInfo& display : caps.displays)
+        ordered.push_back(&display);
+    QCollator collator;
+    collator.setNumericMode(true);
+    collator.setCaseSensitivity(Qt::CaseInsensitive);
+    std::stable_sort(ordered.begin(), ordered.end(),
+                     [&](const mw::native::DisplayInfo* a, const mw::native::DisplayInfo* b) {
+                         if (a->primary != b->primary) return a->primary;
+                         return collator.compare(QString::fromStdString(a->label),
+                                                 QString::fromStdString(b->label)) < 0;
+                     });
+
     QVector<NvApp> apps;
     apps.reserve(caps.displays.size());
-    for (const mw::native::DisplayInfo& display : caps.displays) {
+    for (const mw::native::DisplayInfo* entry : ordered) {
+        const mw::native::DisplayInfo& display = *entry;
         const bool hdrCapable = display.hdrActive && [&] {
             const mw::native::GpuInfo* gpu = caps.gpuFor(display);
             return gpu && gpu->supports10Bit;
