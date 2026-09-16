@@ -33,6 +33,8 @@ export default [
                 GPUTextureUsage: 'readonly',
                 GPUShaderStage: 'readonly',
                 GPUMapMode: 'readonly',
+                // WebKit's name for MediaStreamTrackGenerator (see videoSink.js).
+                VideoTrackGenerator: 'readonly',
             },
         },
         rules: {

@@ -29,6 +29,7 @@ import { Canvas2DRenderer } from './Canvas2DRenderer.js';
 import { WebGpuRenderer } from './WebGpuRenderer.js';
 import { WebGlRenderer, WEBGL_ALGOS } from './WebGlRenderer.js';
 import { VideoElementRenderer } from './VideoElementRenderer.js';
+import { videoSinkCtor } from './videoSink.js';
 
 /**
  * Enhancer choices that run WITHOUT WebGPU: the three WebGL2 shaders and
@@ -40,17 +41,13 @@ import { VideoElementRenderer } from './VideoElementRenderer.js';
 export const NO_WEBGPU_ALGOS = ['smooth2d', ...WEBGL_ALGOS];
 
 export async function createVideoRenderer(canvas, opts) {
-    // HDR: route decoded frames to a <video> element via MediaStreamTrackGenerator.
+    // HDR: route decoded frames to a <video> element via the track generator.
     // The canvas paths (WebGPU/Canvas2D) tone-map HDR away (importExternalTexture /
     // drawImage only output SDR color spaces) — <video> presents HDR natively. Needs
     // a DOM <video> (opts.videoEl), so it is main-thread only (not the worker path).
     // opts.forceVideo: the same sink on purpose, HDR or not (the debug menu's
     // "Video element" entry, to measure it against the canvas presenters).
-    if (
-        (opts.hdr || opts.forceVideo) &&
-        opts.videoEl &&
-        typeof MediaStreamTrackGenerator !== 'undefined'
-    ) {
+    if ((opts.hdr || opts.forceVideo) && opts.videoEl && videoSinkCtor()) {
         try {
             return await VideoElementRenderer.create(canvas, opts);
         } catch (e) {

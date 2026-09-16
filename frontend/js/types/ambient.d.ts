@@ -64,13 +64,20 @@ declare namespace GPUTextureUsage {
 }
 
 // -----------------------------------------------------------------------------
-// Insertable Streams for MediaStreamTrack — Chromium-only, feature-detected
-// before use (VideoElementRenderer.js / the webrtc-media path).
+// Insertable Streams for MediaStreamTrack — feature-detected before use, under
+// either name (videoSink.js / VideoElementRenderer.js / the webrtc-media path):
+// Chromium ships MediaStreamTrackGenerator, WebKit the standardized
+// VideoTrackGenerator, which carries its track instead of being one.
 // -----------------------------------------------------------------------------
 
 declare class MediaStreamTrackGenerator extends MediaStreamTrack {
     constructor(init: { kind: 'audio' | 'video' });
     readonly writable: WritableStream;
+}
+
+declare class VideoTrackGenerator {
+    readonly writable: WritableStream;
+    readonly track: MediaStreamTrack;
 }
 
 // -----------------------------------------------------------------------------

@@ -90,16 +90,11 @@ fn fs(in : VSOut) -> @location(0) vec4f {
 // soft-clip (identity below the SDR white knee, tanh shoulder above), ACES
 // filmic optional. Output is ordinary SDR perceptual RGB (rgba8unorm), so the
 // downstream FSR1/SGSR passes run unchanged on a normal SDR canvas.
-const HDR_TONEMAP_WGSL =
-    FULLSCREEN_VS +
-    /* wgsl */ `
-@group(0) @binding(0) var texY : texture_2d<u32>;
-@group(0) @binding(1) var texU : texture_2d<u32>;
-@group(0) @binding(2) var texV : texture_2d<u32>;
-@group(0) @binding(3) var<uniform> dims : vec4f;   // (yW, yH, cW, cH)
-@group(0) @binding(4) var<uniform> params : vec4f; // (refWhite nits, codeScale, exposure, curve 0=soft-clip 1=ACES 2=linear HDR out)
-@group(0) @binding(5) var<uniform> csp : vec4f;    // frame.colorSpace: (fullRange, bt709 matrix, isPq, _)
-
+// Shared HDR math, used by both Pass 0 tone-maps (the YUV readback below and
+// the external-texture one that follows it): the PQ EOTF, the two tone curves,
+// the sRGB encode, and tonemapPq() — the tail that takes transfer-encoded
+// R'G'B' (PQ, BT.2020 primaries) to whichever surface is being rendered to.
+const HDR_COMMON_WGSL = /* wgsl */ `
 // SMPTE ST 2084 (PQ) constants.
 const M1 : f32 = 0.1593017578125;
 const M2 : f32 = 78.84375;
@@ -126,44 +121,9 @@ fn linToSrgb(c : vec3f) -> vec3f {
     return select(hi, lo, c <= vec3f(0.0031308));
 }
 
-@fragment
-fn fs(in : VSOut) -> @location(0) vec4f {
-    let yDim = vec2<i32>(i32(dims.x), i32(dims.y));
-    let cDim = vec2<i32>(i32(dims.z), i32(dims.w));
-    let yc = clamp(vec2<i32>(floor(in.uv * dims.xy)), vec2<i32>(0), yDim - vec2<i32>(1));
-    let cc = clamp(vec2<i32>(floor(in.uv * dims.zw)), vec2<i32>(0), cDim - vec2<i32>(1));
-    let s = params.y;
-    let cy = f32(textureLoad(texY, yc, 0).r) * s;
-    let cu = f32(textureLoad(texU, cc, 0).r) * s;
-    let cv = f32(textureLoad(texV, cc, 0).r) * s;
-    // 10-bit Y'CbCr → R'G'B', range and matrix from frame.colorSpace.
-    var yL : f32;
-    var cb : f32;
-    var cr : f32;
-    if (csp.x > 0.5) { // full range
-        yL = cy / 1023.0;
-        cb = (cu - 512.0) / 1023.0;
-        cr = (cv - 512.0) / 1023.0;
-    } else { // limited range
-        yL = (cy - 64.0) / 876.0;
-        cb = (cu - 512.0) / 896.0;
-        cr = (cv - 512.0) / 896.0;
-    }
-    var rgbE : vec3f; // transfer-encoded R'G'B' in [0,1]
-    if (csp.y > 0.5) { // BT.709 matrix
-        rgbE.r = yL + 1.5748 * cr;
-        rgbE.g = yL - 0.18732 * cb - 0.46812 * cr;
-        rgbE.b = yL + 1.8556 * cb;
-    } else { // BT.2020 NCL
-        rgbE.r = yL + 1.4746 * cr;
-        rgbE.g = yL - 0.16455 * cb - 0.57135 * cr;
-        rgbE.b = yL + 1.8814 * cb;
-    }
-    rgbE = clamp(rgbE, vec3f(0.0), vec3f(1.0));
-    // Non-PQ content (10-bit SDR stream): already gamma-encoded, present as-is.
-    if (csp.z < 0.5) {
-        return vec4f(rgbE, 1.0);
-    }
+// Transfer-encoded R'G'B' (PQ, BT.2020) → the render target's own space.
+// params: (refWhite nits, _, exposure, curve 0=soft-clip 1=ACES 2=linear HDR out)
+fn tonemapPq(rgbE : vec3f, params : vec4f) -> vec4f {
     let linear2020 = pqEotf(rgbE);
     // SDR diffuse white (refWhite nits) maps to 1.0 before tone mapping.
     let scaled = linear2020 * (10000.0 / params.x) * params.z;
@@ -205,6 +165,83 @@ fn fs(in : VSOut) -> @location(0) vec4f {
         tm = clamp(tm, vec3f(0.0), vec3f(1.0));
     }
     return vec4f(linToSrgb(tm), 1.0);
+}
+`;
+
+const HDR_TONEMAP_WGSL =
+    FULLSCREEN_VS +
+    HDR_COMMON_WGSL +
+    /* wgsl */ `
+@group(0) @binding(0) var texY : texture_2d<u32>;
+@group(0) @binding(1) var texU : texture_2d<u32>;
+@group(0) @binding(2) var texV : texture_2d<u32>;
+@group(0) @binding(3) var<uniform> dims : vec4f;   // (yW, yH, cW, cH)
+@group(0) @binding(4) var<uniform> params : vec4f; // (refWhite nits, codeScale, exposure, curve 0=soft-clip 1=ACES 2=linear HDR out)
+@group(0) @binding(5) var<uniform> csp : vec4f;    // frame.colorSpace: (fullRange, bt709 matrix, isPq, _)
+
+@fragment
+fn fs(in : VSOut) -> @location(0) vec4f {
+    let yDim = vec2<i32>(i32(dims.x), i32(dims.y));
+    let cDim = vec2<i32>(i32(dims.z), i32(dims.w));
+    let yc = clamp(vec2<i32>(floor(in.uv * dims.xy)), vec2<i32>(0), yDim - vec2<i32>(1));
+    let cc = clamp(vec2<i32>(floor(in.uv * dims.zw)), vec2<i32>(0), cDim - vec2<i32>(1));
+    let s = params.y;
+    let cy = f32(textureLoad(texY, yc, 0).r) * s;
+    let cu = f32(textureLoad(texU, cc, 0).r) * s;
+    let cv = f32(textureLoad(texV, cc, 0).r) * s;
+    // 10-bit Y'CbCr → R'G'B', range and matrix from frame.colorSpace.
+    var yL : f32;
+    var cb : f32;
+    var cr : f32;
+    if (csp.x > 0.5) { // full range
+        yL = cy / 1023.0;
+        cb = (cu - 512.0) / 1023.0;
+        cr = (cv - 512.0) / 1023.0;
+    } else { // limited range
+        yL = (cy - 64.0) / 876.0;
+        cb = (cu - 512.0) / 896.0;
+        cr = (cv - 512.0) / 896.0;
+    }
+    var rgbE : vec3f; // transfer-encoded R'G'B' in [0,1]
+    if (csp.y > 0.5) { // BT.709 matrix
+        rgbE.r = yL + 1.5748 * cr;
+        rgbE.g = yL - 0.18732 * cb - 0.46812 * cr;
+        rgbE.b = yL + 1.8556 * cb;
+    } else { // BT.2020 NCL
+        rgbE.r = yL + 1.4746 * cr;
+        rgbE.g = yL - 0.16455 * cb - 0.57135 * cr;
+        rgbE.b = yL + 1.8814 * cb;
+    }
+    rgbE = clamp(rgbE, vec3f(0.0), vec3f(1.0));
+    // Non-PQ content (10-bit SDR stream): already gamma-encoded, present as-is.
+    if (csp.z < 0.5) {
+        return vec4f(rgbE, 1.0);
+    }
+    return tonemapPq(rgbE, params);
+}
+`;
+
+// HDR tone-map from the EXTERNAL texture (Pass 0 replacement, no readback).
+// For browsers whose importExternalTexture does NOT tone-map on import and
+// hands back the raw PQ code values: WebKit paints them as if they were sRGB,
+// which lifts the blacks and desaturates everything (the "washed grey" HDR
+// picture on iOS). The YUV→RGB matrix has already been applied by the browser,
+// so all that is left is the tail: PQ EOTF → gamut → tone curve → sRGB. Unlike
+// the readback path this needs no software decoder, so it is the only tone-map
+// available for HEVC — and it runs before the enhancer like the other one.
+const HDR_EXT_TONEMAP_WGSL =
+    FULLSCREEN_VS +
+    HDR_COMMON_WGSL +
+    /* wgsl */ `
+@group(0) @binding(0) var samp : sampler;
+@group(0) @binding(1) var tex : texture_external;
+@group(0) @binding(2) var<uniform> params : vec4f; // (refWhite nits, _, exposure, curve)
+
+@fragment
+fn fs(in : VSOut) -> @location(0) vec4f {
+    let rgbE = clamp(
+        textureSampleBaseClampToEdge(tex, samp, in.uv).rgb, vec3f(0.0), vec3f(1.0));
+    return tonemapPq(rgbE, params);
 }
 `;
 
@@ -857,6 +894,8 @@ export class WebGpuRenderer extends VideoRenderer {
         this._probeBusy = false;
         /** @type {boolean} HDR→SDR tone-map path (exclusive with _hdr). */
         this._hdrTonemap = false;
+        /** @type {boolean} Same tone-map, fed by importExternalTexture (no readback). */
+        this._hdrExtTonemap = false;
         /** @type {number} 10-bit sample alignment (1.0 = low-aligned 0..1023). */
         this._codeScale = 1.0;
     }
@@ -891,6 +930,11 @@ export class WebGpuRenderer extends VideoRenderer {
         r._hdrLinear = !!opts.hdrLinear && r._hdr;
         // Either readback path: the YUV Pass 0 replaces the external-texture blit.
         r._hdrYuv = r._hdrTonemap || r._hdrLinear;
+        // External-texture tone-map: same ACES tail, fed by importExternalTexture
+        // instead of the readback, for browsers that hand back raw PQ (see
+        // HDR_EXT_TONEMAP_WGSL). The readback is better when available, so this
+        // only applies when neither readback path is running.
+        r._hdrExtTonemap = !!opts.hdrExtTonemap && !r._hdrYuv;
         // Reference white (nits) → 1.0. 433 nits gives the SDR tone-map an
         // SDR-looking picture on an SDR screen; on an HDR canvas 1.0 must be
         // the display's SDR white, 203 nits (BT.2408), or the desktop reads dim.
@@ -933,7 +977,9 @@ export class WebGpuRenderer extends VideoRenderer {
                 ' hdrTonemap=' +
                 r._hdrTonemap +
                 ' hdrLinear=' +
-                r._hdrLinear,
+                r._hdrLinear +
+                ' hdrExtTonemap=' +
+                r._hdrExtTonemap,
         );
         return r;
     }
@@ -1119,6 +1165,7 @@ export class WebGpuRenderer extends VideoRenderer {
         });
 
         if (this._hdrYuv) this._buildHdrTonemapResources();
+        if (this._hdrExtTonemap) this._buildHdrExtTonemapResources();
 
         if (this._algo === 'fsr1') {
             this._buildFsr1Resources();
@@ -1272,6 +1319,34 @@ export class WebGpuRenderer extends VideoRenderer {
                 entryPoint: 'fs_main',
                 targets: [{ format: this._format }],
             },
+            primitive: { topology: 'triangle-list' },
+        });
+    }
+
+    // HDR tone-map Pass 0 without readback: external texture + params → SDR.
+    // Same bindings as the blit (sampler + external texture) plus the knobs, so
+    // the per-frame bind group is built next to the blit's in draw().
+    _buildHdrExtTonemapResources() {
+        const device = this._device;
+        this._extParams = device.createBuffer({
+            size: 16,
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        });
+        this._extLayout = device.createBindGroupLayout({
+            entries: [
+                { binding: 0, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
+                { binding: 1, visibility: GPUShaderStage.FRAGMENT, externalTexture: {} },
+                { binding: 2, visibility: GPUShaderStage.FRAGMENT, buffer: {} },
+            ],
+        });
+        const mod = device.createShaderModule({ code: HDR_EXT_TONEMAP_WGSL });
+        // Like the YUV pass: 'off' has no enhancer stage, so Pass 0 IS the
+        // canvas pass and must target the canvas format.
+        const target = this._algo === 'off' ? this._format : this._interFormat;
+        this._extPipeline = device.createRenderPipeline({
+            layout: device.createPipelineLayout({ bindGroupLayouts: [this._extLayout] }),
+            vertex: { module: mod, entryPoint: 'vs' },
+            fragment: { module: mod, entryPoint: 'fs', targets: [{ format: target }] },
             primitive: { topology: 'triangle-list' },
         });
     }
@@ -1644,6 +1719,7 @@ export class WebGpuRenderer extends VideoRenderer {
         this._intermW = 0;
         this._intermH = 0;
         if (this._hdrYuv && wasOff !== (algo === 'off')) this._buildHdrTonemapResources();
+        if (this._hdrExtTonemap && wasOff !== (algo === 'off')) this._buildHdrExtTonemapResources();
         console.log('[WebGpuRenderer] algo → ' + algo);
         return true;
     }
@@ -1718,17 +1794,35 @@ export class WebGpuRenderer extends VideoRenderer {
             // External texture + its blit bind group are per-frame (texture expires).
             // Skipped when the YUV tone-map pass supplies Pass 0 instead.
             let blitBindGroup = null;
+            // The external texture feeds either the plain blit or, on a browser
+            // that did not tone-map it on import, the ext tone-map pass.
+            const useExt = !useYuv && this._hdrExtTonemap && !!this._extPipeline;
             if (!useYuv) {
                 const externalTex = this._device.importExternalTexture({
                     source: frame,
                     colorSpace: this._importColorSpace || 'srgb',
                 });
+                if (useExt) {
+                    this._readHdrKnobs();
+                    // Written each frame (cheap) so the localStorage knobs apply live.
+                    this._device.queue.writeBuffer(
+                        this._extParams,
+                        0,
+                        new Float32Array([this._refWhite, 1.0, this._exposure, this._curve]),
+                    );
+                }
                 blitBindGroup = this._device.createBindGroup({
-                    layout: this._blitLayout,
-                    entries: [
-                        { binding: 0, resource: this._sampler },
-                        { binding: 1, resource: externalTex },
-                    ],
+                    layout: useExt ? this._extLayout : this._blitLayout,
+                    entries: useExt
+                        ? [
+                              { binding: 0, resource: this._sampler },
+                              { binding: 1, resource: externalTex },
+                              { binding: 2, resource: { buffer: this._extParams } },
+                          ]
+                        : [
+                              { binding: 0, resource: this._sampler },
+                              { binding: 1, resource: externalTex },
+                          ],
                 });
             }
 
@@ -1752,7 +1846,7 @@ export class WebGpuRenderer extends VideoRenderer {
                     pass.setPipeline(this._yuvPipeline);
                     pass.setBindGroup(0, this._yuvBindGroup);
                 } else {
-                    pass.setPipeline(this._passthroughPipeline);
+                    pass.setPipeline(useExt ? this._extPipeline : this._passthroughPipeline);
                     pass.setBindGroup(0, blitBindGroup);
                 }
                 pass.draw(3);
@@ -1791,7 +1885,8 @@ export class WebGpuRenderer extends VideoRenderer {
                 p0.setPipeline(this._yuvPipeline);
                 p0.setBindGroup(0, this._yuvBindGroup);
             } else {
-                p0.setPipeline(this._blitPipeline);
+                // Plain blit, or the same ACES tone-map fed by the external texture.
+                p0.setPipeline(useExt ? this._extPipeline : this._blitPipeline);
                 p0.setBindGroup(0, blitBindGroup);
             }
             p0.draw(3);

@@ -17,7 +17,7 @@
 
 /**
  * VideoElementRenderer — routes decoded VideoFrames to a <video> element via a
- * MediaStreamTrackGenerator, instead of drawing them to a canvas.
+ * writable track generator, instead of drawing them to a canvas.
  *
  * Why: the WebGPU/Canvas paths sample frames through importExternalTexture /
  * drawImage, which only output SDR-referred color spaces (srgb/display-p3) and
@@ -31,13 +31,16 @@
  * decoder config: bt2020 / pq), so no per-frame color handling is needed here —
  * we just write the frame to the generator, which presents it on the <video>.
  *
- * Chrome-only (MediaStreamTrackGenerator). createVideoRenderer falls back to the
- * WebGPU/Canvas2D path when it is unavailable.
+ * Needs the writable frame sink under either of its names — Chromium's
+ * MediaStreamTrackGenerator or WebKit's standardized VideoTrackGenerator (see
+ * videoSinkCtor). createVideoRenderer falls back to the WebGPU/Canvas2D path
+ * when neither exists.
  *
  * Trade-off: no WebGPU enhancers (FSR1/SGSR) on this path — the frames bypass
  * the shader pipeline. HDR fidelity is the priority here.
  */
 import { VideoRenderer } from './VideoRenderer.js';
+import { videoSinkCtor } from './videoSink.js';
 
 export class VideoElementRenderer extends VideoRenderer {
     constructor() {
@@ -47,9 +50,8 @@ export class VideoElementRenderer extends VideoRenderer {
     }
 
     static async create(canvas, opts) {
-        if (typeof MediaStreamTrackGenerator === 'undefined') {
-            throw new Error('MediaStreamTrackGenerator unavailable');
-        }
+        const Sink = videoSinkCtor();
+        if (!Sink) throw new Error('no VideoFrame sink (MediaStreamTrack/VideoTrackGenerator)');
         const videoEl = opts && opts.videoEl;
         if (!videoEl) throw new Error('VideoElementRenderer requires opts.videoEl');
 
@@ -58,12 +60,17 @@ export class VideoElementRenderer extends VideoRenderer {
         r._disposed = false;
         r._wrote = 0;
 
-        // MediaStreamTrackGenerator is a writable sink of VideoFrames that also
-        // behaves as a MediaStreamTrack — drive a <video> from it.
-        r._generator = new MediaStreamTrackGenerator({ kind: 'video' });
+        // Both sinks are writable streams of VideoFrames, but they expose the
+        // track differently: MediaStreamTrackGenerator IS the track (and takes a
+        // kind), VideoTrackGenerator carries one on .track. The kind argument is
+        // the former's; WebIDL drops the extra one for the latter, so a single
+        // call serves both, and .track || itself gives the track to present.
+        r._generator = new Sink({ kind: 'video' });
         if (!r._generator.writable) throw new Error('generator.writable is undefined');
         r._writer = r._generator.writable.getWriter();
-        r._stream = new MediaStream([r._generator]);
+        const track = r._generator.track || r._generator;
+        r._track = track;
+        r._stream = new MediaStream([track]);
         videoEl.srcObject = r._stream;
         // Make the <video> visible BEFORE play() — a display:none element can keep
         // play() pending. Caller's _applyRendererSink also sets this, but do it here
@@ -77,7 +84,7 @@ export class VideoElementRenderer extends VideoRenderer {
         // re-armed on the first successful write.
         r._playRequested = false;
         r._tryPlay();
-        console.log('[VideoElementRenderer] created; track.readyState=' + r._generator.readyState);
+        console.log('[VideoElementRenderer] created; track.readyState=' + track.readyState);
         return r;
     }
 
@@ -146,7 +153,7 @@ export class VideoElementRenderer extends VideoRenderer {
                             ? this.videoEl.videoWidth + 'x' + this.videoEl.videoHeight
                             : '?') +
                         ' track=' +
-                        (this._generator ? this._generator.readyState : '?'),
+                        (this._track ? this._track.readyState : '?'),
                 );
             }
         } catch (e) {
@@ -167,6 +174,7 @@ export class VideoElementRenderer extends VideoRenderer {
         } catch (e) {}
         this._writer = null;
         this._generator = null;
+        this._track = null;
         this._stream = null;
         this.videoEl = null;
     }

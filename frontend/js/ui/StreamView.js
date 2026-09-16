@@ -60,12 +60,14 @@ import {
     IS_MOBILE,
     IS_MOBILE_OR_TABLET,
     IS_APPLE,
+    IS_WEBKIT,
     SUPPORTS_CANVAS_TEARING,
     isSnapdragonGpu,
     pickAutoEnhancer,
     supportsDisplayHdr,
 } from '../util/BrowserDetect.js';
 import { createVideoRenderer, NO_WEBGPU_ALGOS } from '../stream/renderers/createRenderer.js';
+import { videoSinkCtor } from '../stream/renderers/videoSink.js';
 import { PipelineDiag, formatDiag } from '../stream/PipelineDiag.js';
 import { EnhancerGovernor } from '../stream/EnhancerGovernor.js';
 import { drawCapFor } from '../stream/RenderPacing.js';
@@ -596,25 +598,38 @@ export class StreamView {
             if (localStorage.getItem('mw_force_2d') === '1') this._wantWebGpu = false;
         } catch (e) {}
 
-        // HDR routing (DataChannel/WSS only). Both WebGPU HDR paths need the
-        // raw PQ planes (frame.copyTo): importExternalTexture tone-maps HDR
-        // away on import, on any canvas. copyTo only works on software-decoded
-        // frames, and Chrome has a software decoder for AV1 (dav1d), not for
-        // HEVC. Hence four outcomes, from the display and the codec:
-        //  - HDR display + AV1  → 'linear': rgba16float canvas in extended
+        // HDR routing (DataChannel/WSS only). Two things decide it: whether the
+        // user asked for the Enhancer, and what this browser gives us to work
+        // with. The Enhancer needs the frames in the shader pipeline, which the
+        // <video> sink bypasses — so the sink (true HDR, no shader) wins when no
+        // enhancer was asked for, and a tone-map (HDR→SDR on the canvas, shaders
+        // intact) takes over when one was, or when there is no sink here.
+        //
+        // The tone-map itself comes in two feeds. The readback one (frame.copyTo)
+        // gets the raw PQ planes, but copyTo only works on software-decoded
+        // frames and Chrome has a software decoder for AV1 (dav1d), not HEVC.
+        // The external-texture one works on any codec, but only on a browser
+        // that does NOT tone-map on import (WebKit, which hands back raw PQ —
+        // that is the washed-out grey iOS picture this path fixes).
+        //
+        // The outcomes:
+        //  - enhancer off + HDR display + a sink → 'sink': the <video> element
+        //    presents the frames natively. Hardware decode, true HDR.
+        //  - HDR display + AV1 → 'linear': rgba16float canvas in extended
         //    tone-mapping mode, PQ → scene light, 1.0 = reference white; the
         //    enhancer runs in HDR on the float intermediates. True HDR.
-        //  - HDR display + HEVC → 'sink': the <video> element presents the
-        //    frames natively (hardware decode, true HDR). No enhancer there.
-        //  - SDR display + AV1  → 'tonemap': ACES HDR→SDR in the renderer's
-        //    Pass 0, then the enhancer on a normal SDR canvas.
-        //  - SDR display + HEVC → 'browser': plain blit, the browser's own
-        //    tone-map on import. The least good picture, and the only one left.
+        //  - SDR display + AV1 → 'tonemap': ACES HDR→SDR in the renderer's
+        //    Pass 0 from the readback, then the enhancer on an SDR canvas.
+        //  - WebKit, any codec → 'tonemap-ext': the same ACES Pass 0, fed by
+        //    importExternalTexture instead. Enhancer intact.
+        //  - anything else → 'browser': plain blit, the browser's own tone-map
+        //    on import. The least good picture, and the only one left.
         // Dev: mw_hdr_tonemap = '1' forces 'tonemap' on an HDR display (to
-        // compare), '0' disables the readback altogether.
+        // compare), '0' disables the readback altogether; mw_hdr_ext_tonemap
+        // '1'/'0' forces or disables the external-texture tone-map.
         let hdrMode = 'none';
         if (forceVideo && transport !== 'webrtc-media') {
-            hdrMode = typeof MediaStreamTrackGenerator !== 'undefined' ? 'sink' : 'none';
+            hdrMode = videoSinkCtor() ? 'sink' : 'none';
         } else if (forceCanvas2d) {
             hdrMode = hdr ? 'browser' : 'none';
         } else if (hdr && transport !== 'webrtc-media') {
@@ -625,15 +640,28 @@ export class StreamView {
                 if (dev === '1') forceTonemap = true;
                 else if (dev === '0') readback = false;
             } catch (e) {}
+            let extTonemap = !!navigator.gpu && IS_WEBKIT;
+            try {
+                const dev = localStorage.getItem('mw_hdr_ext_tonemap');
+                if (dev === '1') extTonemap = !!navigator.gpu;
+                else if (dev === '0') extTonemap = false;
+            } catch (e) {}
+            // A sink only earns its keep on an HDR display: on an SDR one it
+            // presents the same tone-mapped picture with no enhancer left.
+            const sinkHdr = displayHdr && !!videoSinkCtor();
             if (readback && (forceTonemap || !displayHdr)) hdrMode = 'tonemap';
+            else if (algo === 'off' && sinkHdr) hdrMode = 'sink';
             else if (readback) hdrMode = 'linear';
-            else if (displayHdr && typeof MediaStreamTrackGenerator !== 'undefined')
-                hdrMode = 'sink';
+            else if (extTonemap) hdrMode = 'tonemap-ext';
+            else if (sinkHdr) hdrMode = 'sink';
             else hdrMode = 'browser';
         }
         this._hdrMode = hdrMode;
         this._hdrTonemap = hdrMode === 'tonemap';
         this._hdrLinear = hdrMode === 'linear';
+        // Same ACES tone-map, fed by the external texture instead of a readback:
+        // no software decoder needed, so the enhancer survives on any codec.
+        this._hdrExtTonemap = hdrMode === 'tonemap-ext';
         this._useVideoSink = hdrMode === 'sink';
         // Either readback path: the decoder must be software (see configureDecoder).
         this._hdrYuv = this._hdrTonemap || this._hdrLinear;
@@ -652,6 +680,12 @@ export class StreamView {
             );
             this._enhancerBlockedByHdr = true;
             algo = 'off';
+        } else if (hdrMode === 'tonemap-ext') {
+            console.log(
+                '[StreamView] HDR: this browser does not tone-map on import — ' +
+                    'ACES from the external texture, enhancer ' +
+                    algo,
+            );
         } else if (hdrMode === 'browser') {
             console.warn(
                 '[StreamView] HDR: ' +
@@ -2110,6 +2144,7 @@ export class StreamView {
                 hdr: (this._useVideoSink && this._hdrEnabled) || this._hdrLinear,
                 hdrTonemap: this._hdrTonemap,
                 hdrLinear: this._hdrLinear,
+                hdrExtTonemap: this._hdrExtTonemap,
                 forceVideo: this._forceVideoSink,
                 videoEl: this._useVideoSink ? this.videoEl : null,
             }).then((r) => {
@@ -4161,6 +4196,7 @@ export class StreamView {
                         hdr: (this._useVideoSink && this._hdrEnabled) || this._hdrLinear,
                         hdrTonemap: this._hdrTonemap,
                         hdrLinear: this._hdrLinear,
+                        hdrExtTonemap: this._hdrExtTonemap,
                         forceVideo: this._forceVideoSink,
                         videoEl: this._useVideoSink ? this.videoEl : null,
                     }).then((r) => {
@@ -5041,7 +5077,8 @@ export class StreamView {
             // the browser's own on import); HDR* when the canvas or the <video>
             // sink really presents HDR; HDR when the decode is HDR but the
             // renderer fell back to an SDR canvas.
-            if (this._hdrTonemap || this._hdrMode === 'browser') codecLabel += ' HDR→SDR';
+            if (this._hdrTonemap || this._hdrExtTonemap || this._hdrMode === 'browser')
+                codecLabel += ' HDR→SDR';
             else if (this._hdrLinear) codecLabel += this._rendererHdrActive ? ' HDR*' : ' HDR→SDR';
             else codecLabel += this._rendererHdrActive ? ' HDR*' : ' HDR';
         }

@@ -140,6 +140,22 @@ export const IS_ANDROID = /android/i.test(navigator.userAgent || '');
 export const IS_APPLE = /mac|iphone|ipad|ipod/i.test(navigator.userAgent || '') || IS_IOS;
 
 /**
+ * True on the WebKit engine: Safari on macOS, and every browser on iOS/iPadOS
+ * (they all wrap WebKit, whatever their name). Chromium and Gecko on a Mac are
+ * excluded by the Chrome/Firefox tokens.
+ *
+ * Read by the HDR routing: WebKit's importExternalTexture returns the frame's
+ * raw PQ code values instead of tone-mapping them into the destination color
+ * space, so an HDR stream blitted as-is renders washed-out grey. There is no
+ * feature test for that (the call succeeds either way), hence the engine check.
+ */
+export const IS_WEBKIT = (() => {
+    const ua = navigator.userAgent || '';
+    if (IS_IOS) return true;
+    return /safari/i.test(ua) && !/chrome|chromium|crios|android|firefox|fxios|edg/i.test(ua);
+})();
+
+/**
  * Physical screen resolution in device pixels, orientation-independent.
  * screen.{width,height} are CSS pixels; multiplying by devicePixelRatio yields
  * physical pixels. We return both edges so callers can reason about the panel
