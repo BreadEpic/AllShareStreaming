@@ -544,6 +544,7 @@
         "statStageQueue": "Hôte · file",
         "statStageSend": "Hôte · envoi",
         "statStageTotal": "Hôte · total",
+        "statGraphAvg": "moy.",
         "statGraphLoss": "Pertes",
         "statLossNetwork": "Images perdues (réseau)",
         "statLossJitter": "Images jetées (gigue)",

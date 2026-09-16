@@ -93,6 +93,7 @@ const GRAPH_LABEL_KEYS = {
     framerate: 'statFramerate',
     bitrate: 'statBitrate',
     loss: 'statGraphLoss',
+    avg: 'statGraphAvg',
 };
 
 /**
@@ -1862,6 +1863,7 @@ export class StreamView {
         this._statsGraphEl.className = 'stats-graph';
         this._statsGraphEl.style.display = 'none';
         this._overlayEl.appendChild(this._statsGraphEl);
+        this._bindStatsGraphHover(this._statsGraphEl);
         // Hidden until the first frame: there is nothing to measure yet, and
         // the centered startup overlay already reports the connection
         // progress. The CSS carries no display of its own, so without this the
@@ -5573,7 +5575,44 @@ export class StreamView {
         const ctx = el.getContext('2d');
         if (!ctx) return;
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-        this._statsGraph.draw(ctx, cssW, label);
+        this._statsGraph.draw(ctx, cssW, label, this._statsGraphHoverX);
+    }
+
+    /**
+     * Crosshair on the history strip, for a mouse only: a touch has no hover,
+     * and a finger on the card is a drag. The pointer is read as it moves and
+     * painted at most once per display frame — a 1000 Hz gaming mouse must not
+     * repaint the strip a thousand times a second. The data under the rule
+     * keeps scrolling on the 500 ms tick, as any live chart does.
+     *
+     * @param {HTMLCanvasElement} el
+     */
+    _bindStatsGraphHover(el) {
+        this._statsGraphHoverX = NaN;
+        let pending = 0;
+        const repaint = () => {
+            if (pending) return;
+            pending = requestAnimationFrame(() => {
+                pending = 0;
+                this._drawStatsGraph(el.style.display !== 'none');
+            });
+        };
+        el.addEventListener('pointermove', (e) => {
+            // A button held is the card being dragged, not the graph being read.
+            if (e.pointerType !== 'mouse' || e.buttons !== 0) {
+                if (!Number.isNaN(this._statsGraphHoverX)) {
+                    this._statsGraphHoverX = NaN;
+                    repaint();
+                }
+                return;
+            }
+            this._statsGraphHoverX = e.clientX - el.getBoundingClientRect().left;
+            repaint();
+        });
+        el.addEventListener('pointerleave', () => {
+            this._statsGraphHoverX = NaN;
+            repaint();
+        });
     }
 
     /**

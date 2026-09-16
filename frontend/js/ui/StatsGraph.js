@@ -102,6 +102,12 @@ const INK_LABEL = 'rgba(255,255,255,0.32)';
 const INK_UNIT = 'rgba(255,255,255,0.22)';
 const INK_AXIS = 'rgba(255,255,255,0.10)';
 const INK_CEIL = 'rgba(255,255,255,0.26)';
+/** The mean line, its figure, and the band under it down to zero. */
+const INK_MEAN = 'rgba(255,255,255,0.16)';
+const INK_MEAN_TEXT = 'rgba(255,255,255,0.5)';
+const INK_BAND = 'rgba(255,255,255,0.035)';
+/** Card surface, behind every figure written over a curve. */
+const HALO = 'rgba(8,8,14,0.7)';
 
 const FONT_STACK = "'SF Mono', 'Cascadia Code', 'Consolas', monospace";
 
@@ -150,6 +156,19 @@ class Ring {
             if (!(m >= v)) m = v;
         }
         return m;
+    }
+
+    /** Average of the finite samples, or NaN when there are none. */
+    mean() {
+        let total = 0;
+        let count = 0;
+        for (let i = 0; i < this._count; i++) {
+            const v = this.at(i);
+            if (!Number.isFinite(v)) continue;
+            total += v;
+            count++;
+        }
+        return count ? total / count : NaN;
     }
 
     /** True when at least one sample is a real number. */
@@ -380,6 +399,7 @@ export class StatsGraph {
                     { ring: this.latency, color: C_LATENCY, width: 1.4 },
                     { ring: this.latencyP99, color: C_LATENCY, width: 1, alpha: 0.38 },
                 ],
+                digits: 1,
                 value: () => fmtPair(this.latency.last(), this.latencyP99.last(), 1),
             },
             {
@@ -391,6 +411,7 @@ export class StatsGraph {
                     { ring: this.fpsIn, color: C_FPS, width: 1.4 },
                     { ring: this.fpsOut, color: C_FPS, width: 1, alpha: 0.4 },
                 ],
+                digits: 0,
                 value: () => fmtPair(this.fpsIn.last(), this.fpsOut.last(), 0),
             },
             {
@@ -399,6 +420,7 @@ export class StatsGraph {
                 unit: 'Mbps',
                 steps: STEPS_MBPS,
                 series: [{ ring: this.mbps, color: C_BITRATE, width: 1.4, fill: true }],
+                digits: 1,
                 value: () => fmtOne(this.mbps.last(), 1),
             },
             {
@@ -410,6 +432,7 @@ export class StatsGraph {
                     { ring: this.lossNet, color: C_LOSS, width: 1.4 },
                     { ring: this.lossJit, color: C_LOSS_SOFT, width: 1 },
                 ],
+                digits: 2,
                 value: () => fmtPair(this.lossNet.last(), this.lossJit.last(), 2),
                 quiet: () => !(this.lossNet.last() > 0) && !(this.lossJit.last() > 0),
             },
@@ -434,8 +457,9 @@ export class StatsGraph {
      * @param {CanvasRenderingContext2D} ctx
      * @param {number} w
      * @param {(k: string) => string} name
+     * @param {number} [hoverX] pointer x in CSS px, NaN when nobody is reading
      */
-    draw(ctx, w, name) {
+    draw(ctx, w, name, hoverX = NaN) {
         const lanes = this.lanes(name);
         if (!lanes.length || w <= 0) return;
         const h = this.height(name);
@@ -446,9 +470,12 @@ export class StatsGraph {
         ctx.fillStyle = 'rgba(255,255,255,0.07)';
         ctx.fillRect(0, 0, w, 1);
 
+        const avgWord = name('avg');
+        /** Where each lane landed, for the crosshair drawn over all of them. */
+        const plots = [];
         let y = HEAD_H;
         for (const lane of lanes) {
-            this._drawLane(ctx, lane, y, w);
+            plots.push(this._drawLane(ctx, lane, y, w, avgWord));
             y += LANE_H + LANE_GAP;
         }
 
@@ -466,18 +493,31 @@ export class StatsGraph {
             }
         }
 
-        // Time ruler: the window is only obvious once it is written down.
+        // Time ruler: the window is only obvious once it is written down. An
+        // end label steps aside when the crosshair's own time lands on it.
+        const hovering = Number.isFinite(hoverX) && n > 1;
         ctx.font = `8px ${FONT_STACK}`;
         ctx.fillStyle = INK_CEIL;
         ctx.textBaseline = 'alphabetic';
-        ctx.textAlign = 'left';
-        ctx.fillText('−' + Math.round(this.windowMs / 1000) + 's', 0, h - 2);
-        ctx.textAlign = 'right';
-        ctx.fillText('0s', w, h - 2);
+        if (!hovering || hoverX > 44) {
+            ctx.textAlign = 'left';
+            ctx.fillText('−' + Math.round(this.windowMs / 1000) + 's', 0, h - 2);
+        }
+        if (!hovering || hoverX < w - 44) {
+            ctx.textAlign = 'right';
+            ctx.fillText('0s', w, h - 2);
+        }
+
+        if (hovering) this._drawHover(ctx, plots, w, h, top, bottom, hoverX);
     }
 
-    /** @param {CanvasRenderingContext2D} ctx */
-    _drawLane(ctx, lane, y, w) {
+    /**
+     * One lane. Returns its geometry so the crosshair can find the curves
+     * again without recomputing the scale.
+     *
+     * @param {CanvasRenderingContext2D} ctx
+     */
+    _drawLane(ctx, lane, y, w, avgWord) {
         const plotTop = y + LANE_LABEL_H;
         const plotBottom = plotTop + LANE_PLOT_H;
 
@@ -504,8 +544,6 @@ export class StatsGraph {
         ctx.font = `10px ${FONT_STACK}`;
         ctx.fillText(lane.value(), w, y + 9);
 
-        // Baseline at zero, and the ceiling as a dotted rule with its figure —
-        // a curve with no scale is decoration.
         const high = Math.max(
             ...lane.series.map((s) => {
                 const m = s.ring.percentile(SCALE_PERCENTILE);
@@ -513,23 +551,111 @@ export class StatsGraph {
             }),
         );
         const ceil = this.ceiling(lane.key, lane.steps, high);
+        const yOf = (v) => plotBottom - Math.max(0, Math.min(1, v / ceil)) * LANE_PLOT_H;
+
+        // The reference is the lane's MEAN, not its ceiling. A figure pinned in
+        // a corner ("300") names a height nobody can place; a line drawn AT a
+        // value, with that value written on it, is a height every other point
+        // can be read against. The faint band under it runs down to zero, so
+        // the floor of the lane is found at a glance too.
+        const mean = lane.series[0].ring.mean();
+        const yMean = Number.isFinite(mean) ? Math.round(yOf(mean)) : NaN;
+        if (Number.isFinite(yMean)) {
+            ctx.fillStyle = INK_BAND;
+            ctx.fillRect(0, yMean, w, plotBottom - yMean);
+            ctx.fillStyle = INK_MEAN;
+            ctx.fillRect(0, yMean, w, 1);
+        }
         ctx.fillStyle = INK_AXIS;
         ctx.fillRect(0, plotBottom, w, 1);
-        ctx.save();
-        ctx.setLineDash([1, 3]);
-        ctx.strokeStyle = 'rgba(255,255,255,0.07)';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(0, plotTop + 0.5);
-        ctx.lineTo(w, plotTop + 0.5);
-        ctx.stroke();
-        ctx.restore();
-        ctx.font = `8px ${FONT_STACK}`;
-        ctx.fillStyle = INK_CEIL;
-        ctx.textAlign = 'right';
-        ctx.fillText(String(ceil), w, plotTop + 8);
 
         for (const s of lane.series) this._drawSeries(ctx, s, plotTop, plotBottom, w, ceil);
+
+        // Written after the curves, on a halo, so a curve crossing it cannot
+        // swallow it. Above the line when there is room, under it otherwise (a
+        // framerate that sits on its own ceiling).
+        if (Number.isFinite(yMean)) {
+            const text = avgWord + ' ' + fmtOne(mean, lane.digits);
+            const ty = yMean - plotTop >= 9 ? yMean - 2 : Math.min(plotBottom - 1, yMean + 9);
+            haloText(ctx, text, 2, ty, INK_MEAN_TEXT, 'left', 8);
+        }
+
+        return { lane, plotTop, plotBottom, yOf };
+    }
+
+    /**
+     * The crosshair: a vertical rule at the pointer, snapped to the nearest
+     * sample, and every curve's value written beside the point where it
+     * crosses it. The rule runs through all four lanes on purpose — the
+     * latency at a moment is half the answer, what the bitrate and the
+     * framerate were doing at that SAME moment is the other half.
+     *
+     * @param {CanvasRenderingContext2D} ctx
+     */
+    _drawHover(ctx, plots, w, h, top, bottom, hoverX) {
+        const n = this.events.count;
+        const i = Math.max(0, Math.min(n - 1, Math.round((hoverX / w) * (n - 1))));
+        const x = Math.round(xAt(i, n, w)) + 0.5;
+
+        ctx.fillStyle = 'rgba(255,255,255,0.32)';
+        ctx.fillRect(x - 0.5, top, 1, bottom - top);
+
+        // Labels go on the side with room: right of the rule, left of it once
+        // the pointer nears the right edge.
+        const flip = x > w - 56;
+        const lx = flip ? x - 6 : x + 6;
+        const align = flip ? 'right' : 'left';
+
+        for (const plot of plots) {
+            const points = [];
+            for (const s of plot.lane.series) {
+                const v = s.ring.at(i);
+                if (!Number.isFinite(v)) continue;
+                points.push({ s, v, y: plot.yOf(v), ty: 0 });
+            }
+            // Dots first, each on a ring of the card's surface so it stays
+            // distinct where two curves meet.
+            for (const pt of points) {
+                ctx.beginPath();
+                ctx.arc(x, pt.y, 3, 0, Math.PI * 2);
+                ctx.fillStyle = HALO;
+                ctx.fill();
+                ctx.beginPath();
+                ctx.arc(x, pt.y, 2, 0, Math.PI * 2);
+                ctx.fillStyle = pt.s.color;
+                ctx.fill();
+            }
+            // Two curves in one lane often sit a pixel apart (decoded vs
+            // presented fps): their labels are pushed apart, highest value on
+            // top, and kept inside the lane. A clipped sample shows its TRUE
+            // value — that is how an outlier the axis could not hold is read.
+            points.sort((a, b) => a.y - b.y);
+            const minGap = 9;
+            for (let k = 0; k < points.length; k++) {
+                const ty = points[k].y + 3;
+                points[k].ty = k > 0 ? Math.max(ty, points[k - 1].ty + minGap) : ty;
+            }
+            // Pushed past the floor: slide the group back up as one.
+            const last = points[points.length - 1];
+            const overflow = last ? last.ty - (plot.plotBottom + 2) : 0;
+            for (const pt of points) {
+                if (overflow > 0) pt.ty -= overflow;
+                pt.ty = Math.max(plot.plotTop + 1, pt.ty);
+                // A hairline's figure is dimmed like its curve: two amber
+                // numbers of equal weight would not say which is the mean
+                // and which the p99.
+                ctx.globalAlpha = pt.s.alpha ? 0.7 : 1;
+                haloText(ctx, fmtOne(pt.v, plot.lane.digits), lx, pt.ty, pt.s.color, align, 9);
+                ctx.globalAlpha = 1;
+            }
+        }
+
+        // When, in the ruler's own terms.
+        const secs = ((n - 1 - i) * this._periodMs) / 1000;
+        const when =
+            secs < 0.25 ? '0s' : '−' + (secs < 10 ? secs.toFixed(1) : Math.round(secs)) + 's';
+        const tx = Math.max(18, Math.min(w - 18, x));
+        haloText(ctx, when, tx, h - 2, 'rgba(255,255,255,0.75)', 'center', 8);
     }
 
     /** @param {CanvasRenderingContext2D} ctx */
@@ -631,6 +757,23 @@ function fmtPair(a, b, digits) {
 
 function fmtOne(v, digits) {
     return Number.isFinite(v) ? v.toFixed(digits) : '–';
+}
+
+/**
+ * Text on a halo of the card's surface: a figure written over moving curves
+ * must stay readable whatever passes under it.
+ * @param {CanvasRenderingContext2D} ctx
+ */
+function haloText(ctx, text, x, y, color, align, size) {
+    ctx.font = `${size}px ${FONT_STACK}`;
+    ctx.textAlign = align;
+    ctx.textBaseline = 'alphabetic';
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = HALO;
+    ctx.strokeText(text, x, y);
+    ctx.fillStyle = color;
+    ctx.fillText(text, x, y);
 }
 
 /** #rrggbb + alpha → rgba(). Only ever fed the lane constants above. */

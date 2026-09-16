@@ -544,6 +544,7 @@
         "statStageQueue": "Host · queue",
         "statStageSend": "Host · send",
         "statStageTotal": "Host · total",
+        "statGraphAvg": "avg",
         "statGraphLoss": "Loss",
         "statLossNetwork": "Frames lost (network)",
         "statLossJitter": "Frames dropped (jitter)",

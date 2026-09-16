@@ -634,9 +634,10 @@ body.streaming-active::after {
     /* The card reserves 24px on the right for the × button; the strip claws
        that back so the curves span the same width as the rows above them. */
     margin-right: -12px;
-    /* Reading the curves is not dragging the card, but the card-wide drag
-       handler still gets the pointer — cursor stays consistent with it. */
     pointer-events: auto;
+    /* Hovering the strip with a mouse draws a crosshair with every curve's
+       value at that instant; the card can still be dragged from here. */
+    cursor: crosshair;
 }
 
 .stats-line {

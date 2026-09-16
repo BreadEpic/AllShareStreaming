@@ -131,6 +131,17 @@ describe('StatsGraph', () => {
         expect(g.latency.max()).toBe(1800);
     });
 
+    it('draws its reference line at the mean of what it holds, gaps excluded', () => {
+        // The lane's reference is a value the user can read, not a ceiling in
+        // a corner: it has to be the true average of the plotted samples.
+        const g = fresh();
+        tick(g, 0, { latencyMs: 20 });
+        tick(g, 1, { latencyMs: NaN });
+        tick(g, 2, { latencyMs: 40 });
+        expect(g.latency.mean()).toBe(30);
+        expect(fresh().latency.mean()).toBeNaN();
+    });
+
     it('marks the tick where something had to be recovered', () => {
         const g = fresh();
         tick(g, 0);
