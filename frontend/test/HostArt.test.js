@@ -9,6 +9,7 @@ import {
     CANVAS_H,
     CANVAS_W,
     DEVICE_IDS,
+    SUB,
     WALLPAPERS,
     hashKey,
     hostArtFor,
@@ -17,9 +18,22 @@ import {
     renderDevice,
 } from '../js/ui/HostArt.js';
 
-/** The pixel layer of a picture: its vector overlay and the glow it uses left out. */
-const pixelsOf = (svg) =>
-    svg.replace(/<defs>.*?<\/defs>/, '').replace(/<g transform="matrix[\s\S]*(?=<\/svg>)/, '');
+/** The whole-pixel layer of a picture: what its screen shows on the fine grid left out. */
+const pixelsOf = (svg) => svg.replace(/<g transform="scale[\s\S]*?<\/g>/, '');
+
+/** The fine layer of a picture, in sub-pixels. */
+const fineOf = (svg) => (svg.match(/<g transform="scale[^>]*>([\s\S]*?)<\/g>/) || [])[1] || '';
+
+/** Every cell of a layer, by colour: "x,y" → colour. */
+function cellsOf(layer) {
+    const cells = new Map();
+    for (const [, d, colour] of layer.matchAll(/<path d="([^"]*)" fill="([^"]*)"/g)) {
+        for (const [, x, y, w] of d.matchAll(/M(-?\d+) (-?\d+)h(\d+)/g)) {
+            for (let i = 0; i < +w; i++) cells.set(`${+x + i},${+y}`, colour);
+        }
+    }
+    return cells;
+}
 
 const dev = (os, display, extra = {}) => ({
     os,
@@ -141,23 +155,46 @@ describe('HostArt', () => {
             }
         });
 
-        it('writes the attract-mode line on monitors, in the plane of the screen', () => {
+        it('paints a Windows screen in pixels too: no vector, no text, no filter', () => {
             expect(Object.keys(ARCADE_LINES)).toEqual(WALLPAPERS);
-            for (const [sprite, [line]] of Object.entries(ARCADE_LINES)) {
-                for (const id of ['windows-monitor', 'windows-monitor-4x3']) {
+            for (const id of ['windows-laptop', 'windows-monitor', 'windows-monitor-4x3']) {
+                for (const sprite of WALLPAPERS) {
                     const svg = hostArtSvg(id, sprite);
-                    expect(svg, `${id} ${sprite}`).toContain(`>${line}</text>`);
-                    // The isometric slope of a front face: one down for two across.
-                    expect(svg).toContain('transform="matrix(1 0.5 0 1 ');
-                    expect(svg).toContain('filter="url(#mw-host-art-glow)"');
+                    expect(fineOf(svg), `${id} ${sprite}`).not.toBe('');
+                    expect(svg).not.toMatch(/<text|<filter|matrix\(|geometricPrecision/);
+                    expect(svg).toContain(`scale(${(1 / SUB).toFixed(6)})`);
                 }
             }
-            // A laptop lid has the sprite and no room for its line.
-            const laptop = hostArtSvg('windows-laptop', 'coin');
-            expect(laptop).toContain('transform="matrix(1 0.5 0 1 ');
-            expect(laptop).not.toContain('<text');
-            // Nothing else draws over its screen.
-            expect(hostArtSvg('linux-monitor')).not.toContain('matrix(');
+            // Nothing else paints over its screen.
+            expect(fineOf(hostArtSvg('linux-monitor'))).toBe('');
+        });
+
+        it('keeps what a screen shows on the screen, following its slope', () => {
+            for (const id of ['windows-laptop', 'windows-monitor', 'windows-monitor-4x3']) {
+                for (const sprite of WALLPAPERS) {
+                    const svg = hostArtSvg(id, sprite);
+                    const body = cellsOf(pixelsOf(svg));
+                    for (const key of cellsOf(fineOf(svg)).keys()) {
+                        const [x, y] = key.split(',').map(Number);
+                        const under = body.get(`${Math.floor(x / SUB)},${Math.floor(y / SUB)}`);
+                        // The desktop, never the bezel, the stand or the outline.
+                        expect(under, `${id} ${sprite} ${key}`).toBe('#111a2b');
+                    }
+                }
+            }
+        });
+
+        it('writes the attract-mode line on monitors, and only the sprite on a laptop', () => {
+            // Sprites whose colours are not their line's, so the line shows by its colour.
+            const lineColour = { invader: '#00e5ff', ghost: '#fcee0a', coin: '#00e5ff' };
+            for (const [sprite, colour] of Object.entries(lineColour)) {
+                for (const id of ['windows-monitor', 'windows-monitor-4x3']) {
+                    const colours = new Set(cellsOf(fineOf(hostArtSvg(id, sprite))).values());
+                    expect(colours, `${id} ${sprite}`).toContain(colour);
+                }
+                const lid = new Set(cellsOf(fineOf(hostArtSvg('windows-laptop', sprite))).values());
+                expect(lid, `windows-laptop ${sprite}`).not.toContain(colour);
+            }
         });
 
         it('gives the iMac G3 the same wallpaper as the other Macs', () => {

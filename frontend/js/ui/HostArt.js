@@ -64,8 +64,8 @@ export const CANVAS_W = 44;
 export const CANVAS_H = 54;
 
 /**
- * A box. `front` and `top` colour its faces pixel by pixel; `overlay` draws
- * vectors over its front face, inside a one-unit bezel (see deviceSvg).
+ * A box. `front` and `top` colour its faces pixel by pixel; `fine` paints what
+ * its front face shows inside a one-unit bezel, on a finer grid (see SUB).
  */
 function box(x0, x1, y0, y1, z0, z1, mat, opt = {}) {
     return {
@@ -79,9 +79,19 @@ function box(x0, x1, y0, y1, z0, z1, mat, opt = {}) {
         r: opt.r || 0,
         front: opt.front,
         top: opt.top,
-        overlay: opt.overlay,
+        fine: opt.fine,
     };
 }
+
+/**
+ * How many sub-pixels a picture pixel is split into on a screen's content.
+ * The machine is drawn in whole pixels; what its screen shows is drawn on a
+ * grid this many times finer, so a sprite or a line keeps its definition and
+ * still steps along the screen's slope like everything else in the picture:
+ * one image, one kind of edge. Three leaves a text legible at card size and
+ * still visibly made of pixels; a vector overlay looked pasted on.
+ */
+export const SUB = 3;
 
 function inside(p, x, y, z) {
     if (z < p.z0 || z > p.z1 || x < p.x0 || x > p.x1 || y < p.y0 || y > p.y1) return false;
@@ -96,7 +106,7 @@ const STEP = 0.2;
 /** Above the tallest device: a ray starts here and walks down. */
 const T_MAX = 40;
 
-/** Rasterises a device. Returns its pixels, floor shadow and bounding box. */
+/** Rasterises a device. Returns its pixels, floor shadow, screen content and bounding box. */
 export function renderDevice(prims) {
     const hits = new Map();
     const shadows = new Set();
@@ -146,12 +156,17 @@ export function renderDevice(prims) {
                     // one: a 0.2 step would make a screen's content jitter.
                     const te = face === 'top' ? p.z1 : face === 'front' ? p.y1 - by : p.x1 - bx;
                     let col = null;
+                    let glass = false;
                     if (face === 'front' && p.front) {
-                        col = p.front(bx + te - p.x0, p.z1 - te, p.x1 - p.x0, p.z1 - p.z0);
+                        const a = bx + te - p.x0;
+                        const b = p.z1 - te;
+                        col = p.front(a, b, p.x1 - p.x0, p.z1 - p.z0);
+                        // Inside the bezel: where a fine painter may draw.
+                        glass = a >= 1 && a < p.x1 - p.x0 - 1 && b >= 1 && b < p.z1 - p.z0 - 1;
                     } else if (face === 'top' && p.top) {
                         col = p.top(bx + te - p.x0, by + te - p.y0, p.x1 - p.x0, p.y1 - p.y0);
                     }
-                    hit = { p, face, col: col || MATS[p.mat][face], tex: !!col };
+                    hit = { p, face, col: col || MATS[p.mat][face], tex: !!col, glass };
                     break;
                 }
             }
@@ -220,34 +235,49 @@ export function renderDevice(prims) {
     }
     const floor = [...shadows].filter((k) => !pixels.has(k));
     const bottom = floor.reduce((m, k) => Math.max(m, Number(k.split(',')[1])), maxY + 1);
+
+    // What a screen shows, on the fine grid. A point (a, b) of the screen's
+    // inner area sits in the world at x = x0 + 1 + a, y = y1, z = z1 − 1 − b,
+    // so on the canvas at X = a + e and Y = a/2 + b + f. Each sub-cell of the
+    // content is put on the sub-pixel under its centre — which steps down one
+    // sub-pixel every two columns, the 2:1 slope of the panel itself — and is
+    // kept only where the picture already shows that panel's glass: at the
+    // edge, a sub-cell can round onto a pixel the bezel won.
+    const S = SUB;
+    const fine = new Map();
+    for (const p of prims) {
+        if (!p.fine) continue;
+        const e = p.x0 + 1 - p.y1;
+        const f = (p.x0 + 1 + p.y1) / 2 - p.z1 + 1;
+        const cells = p.fine(p.x1 - p.x0 - 2, p.z1 - p.z0 - 2, S);
+        for (const [key, col] of cells) {
+            const [u, v] = key.split(',').map(Number);
+            const X = u + Math.floor(e * S + 0.5);
+            const Y = v + Math.floor(f * S + u / 2 + 0.75);
+            const under = hits.get(`${Math.floor(X / S)},${Math.floor(Y / S)}`);
+            if (under && under.p === p && under.glass) fine.set(`${X},${Y}`, col);
+        }
+    }
     return {
         pixels,
         shadows: floor,
-        overlays: prims.filter((p) => p.overlay),
+        fine,
+        sub: S,
         bbox: { minX: minX - 1, maxX: maxX + 1, minY: minY - 1, maxY: bottom },
     };
 }
 
-/** The SVG of a rendered device, centred on the shared canvas, one path per colour. */
-export function deviceSvg({ pixels, shadows, overlays = [], bbox }) {
-    const ox = Math.floor((CANVAS_W - (bbox.maxX - bbox.minX + 1)) / 2) - bbox.minX;
-    const oy = Math.floor((CANVAS_H - (bbox.maxY - bbox.minY + 1)) / 2) - bbox.minY;
+/** Pixel runs of a colour map, one path per colour, offset by (ox, oy). */
+function runs(cells, ox, oy, keep = () => true) {
     const rows = new Map(); // colour → y → sorted xs
-    const add = (col, key) => {
+    for (const [key, col] of cells) {
         const [x, y] = key.split(',').map(Number);
+        if (!keep(x + ox, y + oy)) continue;
         if (!rows.has(col)) rows.set(col, new Map());
         const byY = rows.get(col);
         if (!byY.has(y)) byY.set(y, []);
         byY.get(y).push(x);
-    };
-    // The floor shadow runs back-right past a wide device; the canvas cuts it
-    // rather than shrinking every picture to fit a shadow.
-    for (const k of shadows) {
-        const [x, y] = k.split(',').map(Number);
-        if (x + ox >= 0 && x + ox < CANVAS_W && y + oy >= 0 && y + oy < CANVAS_H) add('shadow', k);
     }
-    for (const [k, col] of pixels) add(col, k);
-
     let paths = '';
     for (const [col, byY] of rows) {
         let d = '';
@@ -266,25 +296,29 @@ export function deviceSvg({ pixels, shadows, overlays = [], bbox }) {
                 ? `<path d="${d}" fill="#000" fill-opacity=".32"/>`
                 : `<path d="${d}" fill="${col}"/>`;
     }
+    return paths;
+}
 
-    // Vectors in a front face's plane. A point (a, b) of the face, from the
-    // inner corner of its bezel, sits in the world at x = x0 + 1 + a, y = y1,
-    // z = z1 − 1 − b, so on the canvas at X = a + (x0 + 1 − y1) + ox and
-    // Y = a/2 + b + ((x0 + 1 + y1)/2 − z1 + 1) + oy: the same slope the pixels
-    // follow, exactly.
-    let vectors = '';
-    for (const p of overlays) {
-        const e = p.x0 + 1 - p.y1 + ox;
-        const f = (p.x0 + 1 + p.y1) / 2 - p.z1 + 1 + oy;
-        const inner = p.overlay(p.x1 - p.x0 - 2, p.z1 - p.z0 - 2);
-        vectors +=
-            `<g transform="matrix(1 0.5 0 1 ${e.toFixed(3)} ${f.toFixed(3)})" ` +
-            `shape-rendering="geometricPrecision">${inner}</g>`;
-    }
+/** The SVG of a rendered device, centred on the shared canvas, one path per colour. */
+export function deviceSvg({ pixels, shadows, fine = new Map(), sub = 1, bbox }) {
+    const ox = Math.floor((CANVAS_W - (bbox.maxX - bbox.minX + 1)) / 2) - bbox.minX;
+    const oy = Math.floor((CANVAS_H - (bbox.maxY - bbox.minY + 1)) / 2) - bbox.minY;
+    // The floor shadow runs back-right past a wide device; the canvas cuts it
+    // rather than shrinking every picture to fit a shadow.
+    const shadow = runs(
+        new Map(shadows.map((k) => [k, 'shadow'])),
+        ox,
+        oy,
+        (x, y) => x >= 0 && x < CANVAS_W && y >= 0 && y < CANVAS_H,
+    );
+    const body = runs(pixels, ox, oy);
+    // Screen content on its finer grid: the same pixel runs, drawn smaller.
+    const content = fine.size
+        ? `<g transform="scale(${(1 / sub).toFixed(6)})">${runs(fine, ox * sub, oy * sub)}</g>`
+        : '';
     return (
         `<svg class="app-icon-sprite" viewBox="0 0 ${CANVAS_W} ${CANVAS_H}" ` +
-        `shape-rendering="crispEdges" aria-hidden="true">` +
-        `${vectors ? GLOW_FILTER : ''}${paths}${vectors}</svg>`
+        `shape-rendering="crispEdges" aria-hidden="true">${shadow}${body}${content}</svg>`
     );
 }
 
@@ -454,10 +488,11 @@ export const ARCADE_LINES = {
 };
 
 const TASKBAR = 1.2;
+const DESKTOP = '#111a2b';
 
 /**
  * A Windows screen, in the picture's own pixels: a dark desktop over a
- * taskbar. What shows on it is drawn over it by arcadeOverlay.
+ * taskbar. What shows on it is painted on the fine grid by arcadeFine.
  */
 function windowsDesktop(a, b, W, H) {
     if (b >= H - TASKBAR) {
@@ -467,63 +502,107 @@ function windowsDesktop(a, b, W, H) {
         if (inRect(a, b, c + 1, H - 1, 1, 1)) return '#e3a53d';
         return '#1c2533';
     }
-    return '#111a2b';
+    return DESKTOP;
+}
+
+/** The attract-mode font: one sub-cell of stroke, five wide and seven high. */
+const FONT = {
+    A: ['.###.', '#...#', '#...#', '#####', '#...#', '#...#', '#...#'],
+    C: ['.###.', '#...#', '#....', '#....', '#....', '#...#', '.###.'],
+    D: ['####.', '#...#', '#...#', '#...#', '#...#', '#...#', '####.'],
+    E: ['#####', '#....', '#....', '####.', '#....', '#....', '#####'],
+    I: ['###', '.#.', '.#.', '.#.', '.#.', '.#.', '###'],
+    L: ['#....', '#....', '#....', '#....', '#....', '#....', '#####'],
+    N: ['#...#', '##..#', '#.#.#', '#..##', '#...#', '#...#', '#...#'],
+    O: ['.###.', '#...#', '#...#', '#...#', '#...#', '#...#', '.###.'],
+    P: ['####.', '#...#', '#...#', '####.', '#....', '#....', '#....'],
+    R: ['####.', '#...#', '#...#', '####.', '#.#..', '#..#.', '#...#'],
+    S: ['.####', '#....', '#....', '.###.', '....#', '....#', '####.'],
+    T: ['#####', '..#..', '..#..', '..#..', '..#..', '..#..', '..#..'],
+    Y: ['#...#', '#...#', '.#.#.', '..#..', '..#..', '..#..', '..#..'],
+    0: ['.###.', '#...#', '#..##', '#.#.#', '##..#', '#...#', '.###.'],
+    1: ['..#..', '.##..', '..#..', '..#..', '..#..', '..#..', '.###.'],
+    '!': ['#', '#', '#', '#', '#', '.', '#'],
+    ' ': ['...', '...', '...', '...', '...', '...', '...'],
+};
+
+/** Two colours mixed: the halo a lit sprite leaves on the dark glass around it. */
+function mix(a, b, t) {
+    const c = (h, i) => parseInt(h.slice(i, i + 2), 16);
+    const ch = (i) => Math.round(c(a, i) * (1 - t) + c(b, i) * t);
+    return `#${[1, 3, 5].map((i) => ch(i).toString(16).padStart(2, '0')).join('')}`;
 }
 
 /**
- * The sprite and its line on a Windows screen, as vectors in the screen's own
- * plane. Rasterised into the picture's pixels a sprite came out coarse, and
- * text could not be both legible and on the slope; drawn over the panel with
- * the isometric transform (deviceSvg), both keep their definition and follow
- * the screen's angle. Units are the screen's, from its inner top-left corner.
+ * The sprite and its line on a Windows screen, painted on the screen's fine
+ * grid (S sub-cells per unit, from the inner top-left corner). A sprite cell
+ * is a whole number of sub-cells, so every cell is the same size, and a letter
+ * is drawn one sub-cell thick; two dimming rings of sub-cells stand in for the
+ * glow the sprite leaves on the glass.
  */
-const arcadeOverlay =
+const arcadeFine =
     (sprite, { line = false } = {}) =>
-    (W, H) => {
+    (W, H, S) => {
         const rows = ARCADE_ROWS[sprite];
         const cols = rows[0].length;
-        const avail = H - TASKBAR;
-        const fontSize = line ? avail * 0.16 : 0;
-        const gap = line ? avail * 0.08 : 0;
-        const spriteH = Math.min(avail * (line ? 0.5 : 0.72), (W * 0.5 * rows.length) / cols);
-        const cell = spriteH / rows.length;
-        const top = (avail - spriteH - gap - fontSize) / 2;
-        const left = (W - cols * cell) / 2;
+        const Wp = Math.round(W * S);
+        const avail = Math.floor((H - TASKBAR) * S);
+        const textH = line ? 7 : 0;
+        const gap = line ? Math.round(avail * 0.1) : 0;
+        const cell = Math.max(
+            1,
+            Math.round(Math.min((avail * (line ? 0.55 : 0.75)) / rows.length, (Wp * 0.5) / cols)),
+        );
+        const top = Math.floor((avail - rows.length * cell - gap - textH) / 2);
+        const left = Math.floor((Wp - cols * cell) / 2);
 
-        const byColour = {};
+        const cells = new Map();
+        const put = (u, v, w, h, col) => {
+            for (let j = 0; j < h; j++)
+                for (let i = 0; i < w; i++) cells.set(`${u + i},${v + j}`, col);
+        };
         rows.forEach((row, y) => {
-            for (let x = 0; x < row.length; ) {
-                const ch = row[x];
-                let end = x + 1;
-                while (end < row.length && row[end] === ch) end++;
-                if (ARCADE_COLOURS[ch])
-                    byColour[ch] = (byColour[ch] || '') + `M${x} ${y}h${end - x}v1h-${end - x}z`;
-                x = end;
+            for (let x = 0; x < row.length; x++) {
+                const col = ARCADE_COLOURS[row[x]];
+                if (col) put(left + x * cell, top + y * cell, cell, cell, col);
             }
         });
-        const paths = Object.entries(byColour)
-            .map(([ch, d]) => `<path d="${d}" fill="${ARCADE_COLOURS[ch]}"/>`)
-            .join('');
-        let out =
-            `<g transform="translate(${left.toFixed(3)} ${top.toFixed(3)}) scale(${cell.toFixed(4)})" ` +
-            `filter="url(#mw-host-art-glow)">${paths}</g>`;
+        // The halo of the sprite: two rings of sub-cells around it, each dimmer.
+        const halo = new Map();
+        let ring = cells;
+        for (const t of [0.22, 0.09]) {
+            const next = new Map();
+            for (const [key, col] of ring) {
+                const [u, v] = key.split(',').map(Number);
+                for (let dv = -1; dv <= 1; dv++) {
+                    for (let du = -1; du <= 1; du++) {
+                        const k = `${u + du},${v + dv}`;
+                        if (cells.has(k) || halo.has(k) || next.has(k)) continue;
+                        next.set(k, col);
+                    }
+                }
+            }
+            for (const [k, col] of next) halo.set(k, mix(DESKTOP, col, t));
+            ring = next;
+        }
+        // The line: letters spaced by S sub-cells, no halo, the stroke stays fine.
         if (line) {
             const [label, colour] = ARCADE_LINES[sprite];
-            out +=
-                `<text x="${(W / 2).toFixed(3)}" y="${(top + spriteH + gap + fontSize * 0.8).toFixed(3)}" ` +
-                `font-family="'Share Tech Mono', monospace" font-size="${fontSize.toFixed(3)}" ` +
-                `letter-spacing="${(fontSize * 0.2).toFixed(3)}" text-anchor="middle" ` +
-                `fill="${ARCADE_COLOURS[colour]}">${label}</text>`;
+            const glyphs = [...label].map((ch) => FONT[ch] || FONT[' ']);
+            const width = glyphs.reduce((w, g) => w + g[0].length + S, -S);
+            let u = Math.floor((Wp - width) / 2);
+            const v = top + rows.length * cell + gap;
+            for (const g of glyphs) {
+                g.forEach((r, y) => {
+                    for (let x = 0; x < r.length; x++) {
+                        if (r[x] === '#') put(u + x, v + y, 1, 1, ARCADE_COLOURS[colour]);
+                    }
+                });
+                u += g[0].length + S;
+            }
         }
-        return out;
+        return new Map([...halo, ...cells]);
     };
-
-/** The glow the arcade sprites have on a Windows screen, defined once per picture. */
-const GLOW_FILTER =
-    '<defs><filter id="mw-host-art-glow" x="-40%" y="-40%" width="180%" height="180%">' +
-    '<feGaussianBlur stdDeviation="0.7" result="blur"/>' +
-    '<feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>' +
-    '</filter></defs>';
 
 const bezel =
     (screen, { notch = false, chin = 0 } = {}) =>
@@ -547,16 +626,16 @@ const keyboard = (trackpoint) => (a, b, W, H) => {
 
 /* ── Devices ───────────────────────────────────────────────────────────────── */
 
-const laptop = (mat, screen, { lid = 17, notch = false, trackpoint = false, overlay } = {}) => [
-    box(0, 24, 0, 2.2, 1.6, lid, mat, { front: bezel(screen, { notch }), overlay }),
+const laptop = (mat, screen, { lid = 17, notch = false, trackpoint = false, fine } = {}) => [
+    box(0, 24, 0, 2.2, 1.6, lid, mat, { front: bezel(screen, { notch }), fine }),
     box(0, 24, 0, 16, 0, 1.6, mat, { top: keyboard(trackpoint) }),
 ];
 
 /** A monitor on a stand. `z0` is where the panel's bottom edge sits. */
-const monitor = (mat, screen, { w = 38, h = 23, z0 = 5, overlay } = {}) => {
+const monitor = (mat, screen, { w = 38, h = 23, z0 = 5, fine } = {}) => {
     const c = w / 2;
     return [
-        box(0, w, 2.2, 3.6, z0, z0 + h, mat, { front: bezel(screen), overlay }),
+        box(0, w, 2.2, 3.6, z0, z0 + h, mat, { front: bezel(screen), fine }),
         box(c - 1.4, c + 1.4, 1, 2.2, 1, z0 + 6, mat),
         box(c - 6, c + 6, 0, 8, 0, 1, mat),
     ];
@@ -596,22 +675,21 @@ const linuxBadge = (a, b, W, H) =>
 /** Every picture, by id. Windows screens take the arcade sprite as a parameter. */
 const DEVICES = {
     // A laptop's lid is too small for a legible line: the sprite alone, bigger.
-    'windows-laptop': (w) =>
-        laptop('gray', windowsDesktop, { lid: 18.6, overlay: arcadeOverlay(w) }),
+    'windows-laptop': (w) => laptop('gray', windowsDesktop, { lid: 18.6, fine: arcadeFine(w) }),
     // Monitors are drawn as big as the canvas allows beside a laptop, which
     // leaves room for the attract-mode line under the sprite.
     'windows-monitor': (w) =>
         monitor('black', windowsDesktop, {
             w: 40,
             h: 25,
-            overlay: arcadeOverlay(w, { line: true }),
+            fine: arcadeFine(w, { line: true }),
         }),
     'windows-monitor-4x3': (w) =>
         monitor('black', windowsDesktop, {
             w: 40,
             h: 30,
             z0: 4,
-            overlay: arcadeOverlay(w, { line: true }),
+            fine: arcadeFine(w, { line: true }),
         }),
     'windows-mini': () => miniPc('black', windowsBadge),
     'linux-laptop': () => laptop('black', gnome, { trackpoint: true }),
