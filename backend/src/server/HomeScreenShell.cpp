@@ -103,16 +103,9 @@ QByteArray manifest(const QByteArray& json, const QString& title, const QString&
     return QJsonDocument(obj).toJson(QJsonDocument::Indented);
 }
 
-QByteArray shell(const QByteArray& html, const QString& title, const QByteArray& icon180,
-                 const QString& manifestHref)
+QByteArray shell(const QByteArray& html, const QString& title, const QByteArray& icon180)
 {
     QString page = QString::fromUtf8(html);
-
-    if (!manifestHref.isEmpty()) {
-        static const QRegularExpression manifestLink(
-            QString::fromLatin1(R"re(<link\s+rel="manifest"[^>]*\shref="([^"]*)")re"));
-        replaceCaptured(page, manifestLink, htmlAttribute(manifestHref));
-    }
 
     if (!title.isEmpty()) {
         static const QRegularExpression appTitle(QString::fromLatin1(

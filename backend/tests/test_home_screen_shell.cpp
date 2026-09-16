@@ -79,12 +79,13 @@ void run_home_screen_shell_tests()
             "<link rel=\"manifest\" href=\"/manifest.webmanifest\" />\n"
             "<link rel=\"apple-touch-icon\" sizes=\"180x180\" href=\"/assets/icon-180.png\" />\n"
             "</head>";
-        const QString out =
-            QString::fromUtf8(hs::shell(html, "A&B [\\1 \"x\"]", "P180", "/api/app/web-manifest"));
+        const QString out = QString::fromUtf8(hs::shell(html, "A&B [\\1 \"x\"]", "P180"));
         CHECK(out.contains("content=\"A&amp;B [\\1 &quot;x&quot;]\""));
         CHECK(out.contains("href=\"data:image/png;base64," +
                            QString::fromLatin1(QByteArray("P180").toBase64()) + "\""));
-        CHECK(out.contains("rel=\"manifest\" href=\"/api/app/web-manifest\""));
+        // The manifest link stays on the file: the service worker's cache
+        // answers it while the page is paused behind the share sheet.
+        CHECK(out.contains("rel=\"manifest\" href=\"/manifest.webmanifest\""));
         CHECK(!out.contains("/assets/icon-180.png"));
     }
 }

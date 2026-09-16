@@ -129,6 +129,9 @@ window.addEventListener('unhandledrejection', (evt) => {
 /** Marks a home-screen shortcut's key apart from the host key sharing `#k=`
  *  (AuthManager::HOME_SCREEN_KEY_PREFIX on the host). */
 const HOME_SCREEN_KEY_PREFIX = 'hs-';
+// The bootstrap's cache of the application's files (bootstrap/sw.js SHELL_CACHE),
+// the one its service worker answers /manifest.webmanifest from.
+const SHELL_CACHE = 'mw-shell';
 
 /** An address rendered as a clickable, copyable link in a banner. */
 const linkHtml = (u) =>
@@ -1130,16 +1133,33 @@ const MoonlightApp = {
      * signed-in session (/api/app/web-manifest), and keeps this browser's list of
      * machines beside it, handed over when the key is spent.
      *
-     * Two steps, both best-effort. The list goes to the host first; then the
-     * manifest link is pointed at a fresh URL, because the browser read it when
-     * the page loaded — before the PIN, on a first visit — and that copy
-     * carries no key.
+     * Three steps, all best-effort. The list goes to the host first. Then the
+     * manifest with the key is fetched and written over the copy the service
+     * worker holds — the phone reads the manifest while its share sheet is up,
+     * with this page's scripts paused behind it, so a request the worker would
+     * send to this page waits out the worker's timeout and the shortcut is made
+     * with nothing; the worker's cache answers on its own. Last, the manifest
+     * link is pointed at a fresh URL, because the browser read it when the
+     * page loaded — before the PIN, on a first visit — and that copy carries
+     * no key.
      */
-    _offerHomeScreenHandoff() {
+    async _offerHomeScreenHandoff() {
         if (!tunnelHostId()) return;
         BackendClient.shareInstancesForHomeScreen(listInstances()).catch(() => {});
+        try {
+            const fresh = await fetch(`/api/app/web-manifest?t=${Date.now()}`, {
+                cache: 'no-store',
+            });
+            if (!fresh.ok) return;
+            // The bootstrap's cache, under the file's own name: what the worker
+            // matches a request for /manifest.webmanifest against (sw.js).
+            const shell = await caches.open(SHELL_CACHE);
+            await shell.put('/manifest.webmanifest', fresh);
+        } catch {
+            return; // the shortcut asks for the PIN, as before
+        }
         const link = document.querySelector('link[rel="manifest"]');
-        if (link) link.setAttribute('href', `/api/app/web-manifest?t=${Date.now()}`);
+        if (link) link.setAttribute('href', `/manifest.webmanifest?t=${Date.now()}`);
     },
 
     /**

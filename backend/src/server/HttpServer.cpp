@@ -745,11 +745,13 @@ void HttpServer::personaliseForHomeScreen(const HttpRequest& req, HttpResponse& 
             mw::homescreen::manifest(resp.body, title, who.hostId, who.handoffKey,
                                      icon("/assets/icon-192.png"), icon("/assets/icon-512.png"));
     else if (resp.contentType.startsWith(QLatin1String("text/html")))
-        // The manifest is read from the API rather than the file: the service
-        // worker answers the file from its cache, the same copy for everyone,
-        // and the key in it belongs to one session.
-        resp.body = mw::homescreen::shell(resp.body, title, icon("/assets/icon-180.png"),
-                                          QStringLiteral("/api/app/web-manifest"));
+        // The manifest link is left on the file. The phone reads the manifest
+        // while its share sheet is up, with the page's scripts paused behind
+        // it — a request the service worker's cache can answer, and one it
+        // sends to the page cannot (it waits out the worker's timeout, then the
+        // shortcut is made with nothing). So the signed-in page fetches
+        // /api/app/web-manifest itself and writes it over the cached file.
+        resp.body = mw::homescreen::shell(resp.body, title, icon("/assets/icon-180.png"));
     else
         return;
 

@@ -60,10 +60,8 @@ QByteArray manifest(const QByteArray& json, const QString& title, const QString&
                     const QString& handoffKey, const QByteArray& icon192,
                     const QByteArray& icon512);
 
-/// The shell with @p title as its apple-mobile-web-app-title, @p icon180
-/// inlined as its apple-touch-icon and, when given, @p manifestHref as where its
-/// manifest is read. Anything it does not find is left as it is.
-QByteArray shell(const QByteArray& html, const QString& title, const QByteArray& icon180,
-                 const QString& manifestHref = QString());
+/// The shell with @p title as its apple-mobile-web-app-title and @p icon180
+/// inlined as its apple-touch-icon. Anything it does not find is left as it is.
+QByteArray shell(const QByteArray& html, const QString& title, const QByteArray& icon180);
 
 } // namespace mw::homescreen
