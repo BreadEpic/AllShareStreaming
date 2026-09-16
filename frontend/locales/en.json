@@ -531,6 +531,7 @@
         "statLegHostNet": "Host link",
         "statLegServer": "Server",
         "statLegNet": "Network",
+        "statLegLinkQueue": "Link queue",
         "statLegJitter": "Jitter buffer",
         "statLegAudio": "Audio buffer",
         "statLegArrive": "Handoff",

@@ -727,6 +727,10 @@ export class StreamView {
         this._lastBpDrops = 0; // cumulative backend backpressure drops (stats msg)
         /** @type {{n: number, maxMs: number, lastMs: number} | null} link freezes the host saw (stats msg) */
         this._linkFreezes = null;
+        // How much later frames arrive than at the session's best, from the
+        // link report below (-1 until one is made): the queue in the transport,
+        // measured on the frames themselves. Shown as a leg of the latency.
+        this._linkOwdRiseMs = -1;
         this._lastPliCount = 0; // cumulative PLIs sent (media mode getStats)
         /** True once the transport has connected at least once (DCs open / media
          *  playing). Distinguishes a connection failure (→ chain fallback) from a
@@ -4606,6 +4610,7 @@ export class StreamView {
             this._linkTimer = null;
         }
         this._link = null;
+        this._linkOwdRiseMs = -1;
     }
 
     /**
@@ -5238,6 +5243,22 @@ export class StreamView {
                     scale: 0.5,
                     counts: true,
                 });
+                // The queue in the transport, when the host is told about it
+                // (the native host's link report): how much later the frames
+                // arrive than at the session's best. The ping above rides the
+                // same link and sees some of it, but this is measured on the
+                // picture itself, and it is the figure that read 2 s on a
+                // corporate Wi-Fi while the ping still said 20 ms
+                // (16/09/2026). Counted in the total: it is the picture's own
+                // path. One value, refreshed twice a second, so the leg's
+                // window is that value.
+                if (this._linkOwdRiseMs >= 0) {
+                    const rise = this._linkOwdRiseMs;
+                    legs.push({
+                        key: 'statLegLinkQueue',
+                        stats: { count: 1, avg: rise, percentile: () => rise },
+                    });
+                }
                 // The client stages carry their tail too ("stage" names the
                 // worker's snapshot entry): the p99 is the frame that was felt,
                 // and a mean that hides it is how a stutter reads as healthy.

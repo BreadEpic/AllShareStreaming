@@ -1350,6 +1350,16 @@ void DataChannelRelay::onInputMessage(const std::string& message)
             // Present, and true, only on the first report after the page came
             // back from the background (StreamView._resyncAfterHidden).
             fb.resumed = msg["resumed"].toBool(false);
+            // The reports come on a timer, whatever the viewer is doing: two
+            // of them missing is the link frozen upstream, held key or not —
+            // the input watchdog only sees a silence while something is held.
+            // The one report the browser itself delayed says so (`resumed`).
+            const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+            if (m_LastLinkstatsMs > 0 && !fb.resumed &&
+                nowMs - m_LastLinkstatsMs >= kLinkstatsSilentMs) {
+                m_Freezes.note(m_LastLinkstatsMs + kLinkstatsPeriodMs, nowMs);
+            }
+            m_LastLinkstatsMs = nowMs;
             if (!m_LinkReportsSeen) {
                 // Once: the loop is closed. The governor logs its own moves.
                 m_LinkReportsSeen = true;

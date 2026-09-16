@@ -531,6 +531,7 @@
         "statLegHostNet": "Lien hôte",
         "statLegServer": "Serveur",
         "statLegNet": "Réseau",
+        "statLegLinkQueue": "File d'attente du lien",
         "statLegJitter": "Tampon",
         "statLegAudio": "Tampon audio",
         "statLegArrive": "Remise",

@@ -202,6 +202,11 @@ private:
     /// setup for the freeze that made the difference. Matches the receiver's
     /// own patience with an incomplete frame (FRAME_TIMEOUT_MS).
     static constexpr int kVideoFrameLifetimeMs = 500;
+    /// The receiver's link reports come every kLinkstatsPeriodMs; a gap of
+    /// kLinkstatsSilentMs between two of them is the link frozen upstream,
+    /// held key or not.
+    static constexpr qint64 kLinkstatsPeriodMs = 500;
+    static constexpr qint64 kLinkstatsSilentMs = 2 * kLinkstatsPeriodMs;
 
     // Backpressure is measured in TIME, not bytes — see SendBacklog.h for why
     // a byte threshold could only ever be too late or too trigger-happy, and
@@ -209,8 +214,11 @@ private:
     // loop (it does not; libdatachannel's SCTP socket is non-blocking).
     SendBacklog m_Backlog;
     // Both directions of every link freeze — the backlog above, and the
-    // client's silence — counted for the stats card (see LinkFreezeLog.h).
+    // client's silence, read on its held inputs and on the cadence of its link
+    // reports — counted for the stats card (see LinkFreezeLog.h).
     LinkFreezeLog m_Freezes;
+    /// When the last `linkstats` arrived, 0 before the first. Input thread only.
+    qint64 m_LastLinkstatsMs = 0;
     // Deltas a GameStream engine may leave waiting on the sender thread before
     // the oldest is evicted (the native engine keeps one). See the constructor.
     static constexpr size_t kGameStreamQueuedDeltas = 2;

@@ -531,6 +531,7 @@
         "statLegHostNet": "主机链路",
         "statLegServer": "服务器",
         "statLegNet": "网络",
+        "statLegLinkQueue": "链路排队",
         "statLegJitter": "抖动缓冲",
         "statLegAudio": "音频缓冲",
         "statLegArrive": "交接",
