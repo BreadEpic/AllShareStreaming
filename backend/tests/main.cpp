@@ -30,6 +30,7 @@ void run_rendezvous_id_tests();
 void run_backend_probe_tests();
 void run_host_os_probe_tests();
 void run_send_backlog_tests();
+void run_link_freeze_log_tests();
 void run_tunnel_frame_tests();
 void run_app_manifest_tests();
 void run_wolf_coop_tests();
@@ -68,6 +69,7 @@ int main(int argc, char** argv)
     run_backend_probe_tests();
     run_host_os_probe_tests();
     run_send_backlog_tests();
+    run_link_freeze_log_tests();
     run_tunnel_frame_tests();
     run_app_manifest_tests();
     run_wolf_coop_tests();

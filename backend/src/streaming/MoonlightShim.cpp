@@ -919,9 +919,9 @@ void MoonlightShim::sendControllerRemoval(uint8_t controllerNumber, uint16_t act
 // Contract and rationale: InputWatchdog.h. The state and the timer live
 // there; this end only feeds it and puts its decisions on the wire.
 
-void MoonlightShim::noteClientAlive()
+qint64 MoonlightShim::noteClientAlive()
 {
-    m_Watchdog->noteClientAlive();
+    return m_Watchdog->noteClientAlive();
 }
 
 void MoonlightShim::releaseHeldInputs(bool includeHold)

@@ -18,6 +18,7 @@
 #pragma once
 
 #include "RelayBase.h"
+#include "LinkFreezeLog.h"
 #include "SendBacklog.h"
 #include "FrameSender.h"
 #include <QByteArray>
@@ -200,6 +201,9 @@ private:
     // for the correction to the old claim that dc->send() blocks the event
     // loop (it does not; libdatachannel's SCTP socket is non-blocking).
     SendBacklog m_Backlog;
+    // Both directions of every link freeze — the backlog above, and the
+    // client's silence — counted for the stats card (see LinkFreezeLog.h).
+    LinkFreezeLog m_Freezes;
     // Deltas a GameStream engine may leave waiting on the sender thread before
     // the oldest is evicted (the native engine keeps one). See the constructor.
     static constexpr size_t kGameStreamQueuedDeltas = 2;

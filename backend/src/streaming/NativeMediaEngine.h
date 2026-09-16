@@ -195,7 +195,7 @@ public:
     void syncHeldInputs(const QVector<HeldKey>& keys, quint32 buttonMask,
                         bool buttonsHold) override;
     void releaseHeldInputs(bool includeHold) override;
-    void noteClientAlive() override;
+    qint64 noteClientAlive() override;
 
     double takeHostProcessingLatencyMs() override;
     int64_t frameSubmitTimeUs() const override;

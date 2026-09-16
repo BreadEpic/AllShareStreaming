@@ -1224,8 +1224,14 @@ void DataChannelRelay::onInputMessage(const std::string& message)
     QString type = msg["type"].toString();
 
     // Any message at all proves the input link is alive — feeds the shim's
-    // dead-man switch, which releases held inputs when this goes silent.
-    if (m_Shim) m_Shim->noteClientAlive();
+    // dead-man switch, which releases held inputs when this goes silent. A
+    // silence it fired on was the upstream half of a link freeze.
+    if (m_Shim) {
+        if (const qint64 silentMs = m_Shim->noteClientAlive(); silentMs > 0) {
+            const int64_t nowMs = QDateTime::currentMSecsSinceEpoch();
+            m_Freezes.note(nowMs - silentMs, nowMs);
+        }
+    }
 
     // An invited player only gets what the owner ticked. Dropped in silence.
     if (!InputMsg::allowed(type, m_InputPolicy)) return;
@@ -1514,6 +1520,7 @@ void DataChannelRelay::sendFragmented(const QByteArray& data, bool isKeyframe,
         if (m_Backlog.note(bufAmt, backlogNowMs)) {
             m_DeltaDroppedCount++;
             m_BackpressureDropCount++;
+            m_Freezes.note(backlogNowMs - m_Backlog.ageMs(backlogNowMs), backlogNowMs);
 
             // Set sticky awaiting state and request IDR (throttled — absorbs bursts).
             //
@@ -1554,6 +1561,7 @@ void DataChannelRelay::sendFragmented(const QByteArray& data, bool isKeyframe,
         size_t bufAmt = dc->bufferedAmount();
         if (m_Backlog.note(bufAmt, backlogNowMs)) {
             m_KeyframeBackpressureWarnings++;
+            m_Freezes.note(backlogNowMs - m_Backlog.ageMs(backlogNowMs), backlogNowMs);
             if (m_KeyframeBackpressureWarnings <= 5) {
                 qInfo() << "[DataChannelRelay] Dropped keyframe (link not draining)"
                         << "bufferedAmount=" << bufAmt
@@ -1735,6 +1743,15 @@ void DataChannelRelay::onStatsTimerTick()
     // so this is its only signal that the link is saturated backend-side. It
     // drives the frontend's congestion monitor (automatic bitrate degradation).
     stats["bpDrops"] = bpDrops;
+    // Link freezes, cumulative: how many, the longest, the latest (ms). Absent
+    // until the first one, so a healthy session's message is unchanged.
+    if (const LinkFreezeLog::Snapshot fz = m_Freezes.snapshot(); fz.count > 0) {
+        QJsonObject freezes;
+        freezes["n"] = fz.count;
+        freezes["maxMs"] = static_cast<qint64>(fz.maxMs);
+        freezes["lastMs"] = static_cast<qint64>(fz.lastMs);
+        stats["freezes"] = freezes;
+    }
     // Host-side stage latencies (present → acquire → convert → encode → queue
     // → send), mean and tail over this window. Only an engine that stamps its
     // own frames has any; the GameStream message is unchanged.

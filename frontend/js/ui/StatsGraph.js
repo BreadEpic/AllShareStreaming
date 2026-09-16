@@ -208,7 +208,7 @@ class Ring {
  * @property {number} [frameSpan]    Cumulative frames the host said it sent.
  * @property {number} [dropStale]    Cumulative frames dropped at the render stage.
  * @property {number} [decoded]      Cumulative frames decoded.
- * @property {number} [events]       Cumulative recoveries + stalls + ride-outs.
+ * @property {number} [events]       Cumulative recoveries + stalls + ride-outs + link freezes.
  */
 
 export class StatsGraph {

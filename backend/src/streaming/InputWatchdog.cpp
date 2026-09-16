@@ -89,12 +89,18 @@ bool InputWatchdog::padAtRest(int buttonFlags, unsigned char leftTrigger,
            qAbs(rightStickX) < kStickAtRest && qAbs(rightStickY) < kStickAtRest;
 }
 
-void InputWatchdog::noteClientAlive()
+qint64 InputWatchdog::noteClientAlive()
 {
     QMutexLocker lock(&m_Mutex);
-    m_LastAliveMs = m_Now();
+    const qint64 now = m_Now();
+    // Only a silence the tick acted on: an idle client that simply had
+    // nothing to say, with nothing held, is not a freeze.
+    const qint64 silentMs =
+        (m_ShortFired || m_LongFired) && m_LastAliveMs >= 0 ? now - m_LastAliveMs : 0;
+    m_LastAliveMs = now;
     m_ShortFired = false;
     m_LongFired = false;
+    return silentMs;
 }
 
 bool InputWatchdog::anythingHeld() const

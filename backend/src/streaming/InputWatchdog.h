@@ -108,8 +108,10 @@ public:
                           short leftStickX, short leftStickY, short rightStickX, short rightStickY);
 
     /// Refresh the client-liveness timestamp. Call on every inbound client
-    /// message, whatever its type.
-    void noteClientAlive();
+    /// message, whatever its type. Returns how long the client had been
+    /// silent when that silence was long enough to fire the watchdog, 0
+    /// otherwise — a freeze of the link's upstream, for the stats.
+    qint64 noteClientAlive();
 
     // ── Heartbeat ────────────────────────────────────────────────────────────
 

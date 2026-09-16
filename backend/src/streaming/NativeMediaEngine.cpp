@@ -877,7 +877,7 @@ void NativeMediaEngine::releaseHeldInputs(bool includeHold)
     m_Watchdog->release(includeHold);
 }
 
-void NativeMediaEngine::noteClientAlive()
+qint64 NativeMediaEngine::noteClientAlive()
 {
-    m_Watchdog->noteClientAlive();
+    return m_Watchdog->noteClientAlive();
 }

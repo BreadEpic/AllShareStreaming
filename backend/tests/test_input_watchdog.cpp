@@ -148,6 +148,29 @@ void run_input_watchdog_tests()
         CHECK_EQ(wire.keysUp.size(), 1);
     }
 
+    // ── The message that ends a silence says how long it was ────────────────
+    {
+        FakeWire wire;
+        InputWatchdog wd(wire.sink());
+        qint64 now = 0;
+        wd.setClock([&now]() { return now; });
+
+        wd.sync({}, 0, false);
+        CHECK_EQ(wd.noteClientAlive(), qint64(0));
+        wd.noteKey(key('A'), true);
+        // A gap the tick never acted on is not a freeze.
+        now = 100;
+        CHECK_EQ(wd.noteClientAlive(), qint64(0));
+        // One it fired on is: the upstream half of a link freeze.
+        now = 100 + InputWatchdog::kStaleMs;
+        wd.tick();
+        now = 400;
+        CHECK_EQ(wd.noteClientAlive(), qint64(300));
+        // Reported once, by the message that ended it.
+        now = 450;
+        CHECK_EQ(wd.noteClientAlive(), qint64(0));
+    }
+
     // ── The heartbeat restores what was released, and only that ─────────────
     {
         FakeWire wire;

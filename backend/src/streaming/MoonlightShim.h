@@ -167,7 +167,7 @@ public:
     // session logic shared with the native engine, and this class only says
     // what letting go means on the GameStream wire (its Sink, built in the
     // constructor). These three are the relays' entry points into it.
-    void noteClientAlive() override;
+    qint64 noteClientAlive() override;
     void releaseHeldInputs(bool includeHold) override;
     void syncHeldInputs(const QVector<HeldKey>& keys, quint32 buttonMask,
                         bool buttonsHold) override;

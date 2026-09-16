@@ -205,8 +205,9 @@ public:
     virtual void releaseHeldInputs(bool includeHold) = 0;
 
     /// Refresh the client-liveness timestamp. Called from every relay on every
-    /// inbound client message, whatever its type.
-    virtual void noteClientAlive() = 0;
+    /// inbound client message, whatever its type. Returns the silence this
+    /// message ended when the input watchdog had fired on it (ms), else 0.
+    virtual qint64 noteClientAlive() = 0;
 
     // ── Metrics ─────────────────────────────────────────────────────────────
 

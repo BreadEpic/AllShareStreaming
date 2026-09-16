@@ -724,6 +724,8 @@ export class StreamView {
         this._congEvents = [];
         this._congFiredAt = 0;
         this._lastBpDrops = 0; // cumulative backend backpressure drops (stats msg)
+        /** @type {{n: number, maxMs: number, lastMs: number} | null} link freezes the host saw (stats msg) */
+        this._linkFreezes = null;
         this._lastPliCount = 0; // cumulative PLIs sent (media mode getStats)
         /** True once the transport has connected at least once (DCs open / media
          *  playing). Distinguishes a connection failure (→ chain fallback) from a
@@ -5451,6 +5453,18 @@ export class StreamView {
                 (tStats.rideOutFailed || 0) +
                 '</span>' +
                 '</div>';
+            // Times the link stopped carrying anything, in either direction,
+            // and the longest of them — what a latency average cannot show.
+            const fz = this._linkFreezes;
+            html +=
+                '<div class="stats-row">' +
+                '<span class="stats-label">' +
+                escapeHtml(t('stream.statFreezes')) +
+                '</span>' +
+                '<span class="stats-value">' +
+                (fz && fz.n > 0 ? fz.n + ' · ' + Math.round(fz.maxMs) + 'ms' : '0') +
+                '</span>' +
+                '</div>';
         }
 
         // ── Pipeline observations ───────────────────────────────────────────
@@ -5517,7 +5531,10 @@ export class StreamView {
             dropStale: diagSnap ? diagSnap.dropStale || 0 : NaN,
             decoded: this.stats.decoded,
             events:
-                (this.stats.recoveries || 0) + (tStats.stalls || 0) + (tStats.rideOutFailed || 0),
+                (this.stats.recoveries || 0) +
+                (tStats.stalls || 0) +
+                (tStats.rideOutFailed || 0) +
+                (this._linkFreezes ? this._linkFreezes.n : 0),
         });
         this._drawStatsGraph(showDetail);
     }
@@ -5781,6 +5798,12 @@ export class StreamView {
                     );
                 }
                 this._lastBpDrops = msg.bpDrops;
+            }
+            // Link freezes the host saw, both directions, cumulative. Absent
+            // until the first one. The only figure that shows the link stopping
+            // outright: a 2 s ping and frameId gaps both miss it.
+            if (msg.freezes && typeof msg.freezes.n === 'number') {
+                this._linkFreezes = msg.freezes;
             }
         }
     }
