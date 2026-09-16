@@ -26,6 +26,7 @@ import { WebRtcDataChannel } from '../api/WebRtcDataChannel.js';
 import { WebRtcMedia } from '../api/WebRtcMedia.js';
 import { BackendClient } from '../api/BackendClient.js';
 import { Toast } from './Toast.js';
+import { StatsGraph } from './StatsGraph.js';
 import { AudioPipeline } from '../audio/AudioPipeline.js';
 import { JitterController } from '../stream/JitterController.js';
 import { FramePacer } from '../stream/FramePacer.js';
@@ -79,6 +80,18 @@ import { ShareMenu } from './ShareMenu.js';
 import { StreamViewKeyboard } from './StreamViewKeyboard.js';
 import { StreamViewTouch } from './StreamViewTouch.js';
 import { StreamViewFullscreen } from './StreamViewFullscreen.js';
+
+/**
+ * Lane name → the i18n key the card already uses for that value. The graph
+ * names its lanes with the very words of the rows it plots: two names for one
+ * number would read as two measurements.
+ */
+const GRAPH_LABEL_KEYS = {
+    latency: 'statLatency',
+    framerate: 'statFramerate',
+    bitrate: 'statBitrate',
+    loss: 'statGraphLoss',
+};
 
 /**
  * Whose mouse pointer the viewer sees, when the host hands the pointer over
@@ -1804,6 +1817,15 @@ export class StreamView {
         this._statsBodyEl.className = 'stats-content';
         this._overlayEl.appendChild(this._statsBodyEl);
         this._overlayEl.appendChild(this._makeOverlayCloseBtn());
+        // The last minute of every value above, drawn under them when the
+        // breakdown is open. A SIBLING of the stats markup, not a child: that
+        // markup is replaced wholesale twice a second, and a canvas inside it
+        // would be destroyed — with its bitmap — on every tick.
+        this._statsGraph = new StatsGraph();
+        this._statsGraphEl = document.createElement('canvas');
+        this._statsGraphEl.className = 'stats-graph';
+        this._statsGraphEl.style.display = 'none';
+        this._overlayEl.appendChild(this._statsGraphEl);
         // Hidden until the first frame: there is nothing to measure yet, and
         // the centered startup overlay already reports the connection
         // progress. The CSS carries no display of its own, so without this the
@@ -4699,6 +4721,9 @@ export class StreamView {
             // Left button only — a right-click on the card must not toggle.
             if (e.pointerType === 'mouse' && e.button !== 0) return;
             if (e.target.closest && e.target.closest('.overlay-close-btn')) return;
+            // Reading the curves is not a request to hide them: a tap on the
+            // graph must not collapse the panel it lives in.
+            if (e.target.closest && e.target.closest('.stats-graph')) return;
             if (performance.now() - downT > 600) return;
             if (Math.abs(e.clientX - downX) > 8 || Math.abs(e.clientY - downY) > 8) return;
             this._setLatencyDetail(!this._latencyDetail);
@@ -5106,6 +5131,10 @@ export class StreamView {
         // "–" rather than dropping out of the list.
         let avgLatency = '--';
         let latencyDetail = '';
+        // Kept outside the block below: the graph plots them, and the strings
+        // the card shows cannot be plotted.
+        let latencyTotalMs = NaN;
+        let latencyP99Ms = NaN;
         {
             // Sunshine is a single leg: capture→encode is all the host reports.
             // Everything downstream is measured separately, so it is split.
@@ -5164,6 +5193,12 @@ export class StreamView {
                 });
             }
             let latency = 0;
+            // The same sum taken on the tails instead of the means: not a
+            // percentile of the total (the stages' worst frames are not the
+            // same frame), but the composed worst case — the line the graph
+            // draws above the average, and the gap between the two is the
+            // stream's roughness.
+            let latencyP99 = 0;
             let haveLatency = false;
             const rows = [];
             const legRow = (label, value) =>
@@ -5182,6 +5217,8 @@ export class StreamView {
                 if (leg.stats.count > 0) {
                     const ms = leg.stats.avg * (leg.scale || 1);
                     latency += ms;
+                    const p99 = this._legP99(leg);
+                    latencyP99 += (p99 >= 0 ? p99 : leg.stats.avg) * (leg.scale || 1);
                     if (leg.counts) haveLatency = true;
                     value = ms.toFixed(1) + this._legTailSuffix(leg) + 'ms';
                 }
@@ -5273,6 +5310,8 @@ export class StreamView {
             if (haveLatency) {
                 avgLatency = latency.toFixed(1) + 'ms';
                 latencyDetail = rows.join('');
+                latencyTotalMs = latency;
+                latencyP99Ms = latencyP99;
             }
         }
         const showDetail = this._latencyDetail && latencyDetail !== '';
@@ -5388,6 +5427,73 @@ export class StreamView {
         html += '</div>';
 
         this._statsBodyEl.innerHTML = html;
+
+        // ── The last minute, under the numbers ──────────────────────────────
+        // Sampled on EVERY tick, whether or not the breakdown is open: the
+        // point of a history is that it already exists when you go looking for
+        // it. Opening the panel after a hitch must show the minute that
+        // contains the hitch, not an empty box that fills in once it is over.
+        // Cumulative counters go in raw — StatsGraph differences them, so the
+        // curves show what happened during the tick where the rows above show
+        // the session's average.
+        const tStats = /** @type {any} */ ((this.webrtc && this.webrtc.stats) || {});
+        this._statsGraph.sample(now, {
+            latencyMs: latencyTotalMs,
+            latencyP99Ms: latencyP99Ms,
+            fpsIn: fps,
+            // The <video> element presents on its own: nothing counts the
+            // frames it actually put on screen, so there is no second curve.
+            fpsOut: isMedia ? NaN : this._presentedFps,
+            bytes: isMedia ? NaN : this._totalBytes,
+            mbps: bitrateMbps,
+            netLost: this.stats.networkLost,
+            frameSpan:
+                this._lastFrameId >= 0 && this._firstFrameId >= 0
+                    ? this._lastFrameId - this._firstFrameId + 1
+                    : NaN,
+            dropStale: diagSnap ? diagSnap.dropStale || 0 : NaN,
+            decoded: this.stats.decoded,
+            events:
+                (this.stats.recoveries || 0) + (tStats.stalls || 0) + (tStats.rideOutFailed || 0),
+        });
+        this._drawStatsGraph(showDetail);
+    }
+
+    /**
+     * Paint the history strip under the card, or hide it. Sized from the card's
+     * own width every tick — the card grows and shrinks with its longest row,
+     * and a bitmap that does not follow it would blur or clip.
+     *
+     * @param {boolean} show
+     */
+    _drawStatsGraph(show) {
+        const el = this._statsGraphEl;
+        if (!el) return;
+        // Existing labels, minus their trailing ':' — the rows above are a list
+        // of "label: value", a lane header is a title.
+        const label = (key) => t('stream.' + GRAPH_LABEL_KEYS[key]).replace(/[\s:：]+$/, '');
+        const h = this._statsGraph.height(label);
+        if (!show || h <= 0) {
+            if (el.style.display !== 'none') el.style.display = 'none';
+            return;
+        }
+        el.style.display = 'block';
+        if (el.style.height !== h + 'px') el.style.height = h + 'px';
+        const cssW = el.clientWidth;
+        if (cssW <= 0) return;
+        // Capped: a 3x-DPR phone gains nothing visible from a 3x bitmap of
+        // hairlines, and pays for it in fill rate while a game is streaming.
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        const bw = Math.round(cssW * dpr);
+        const bh = Math.round(h * dpr);
+        if (el.width !== bw || el.height !== bh) {
+            el.width = bw;
+            el.height = bh;
+        }
+        const ctx = el.getContext('2d');
+        if (!ctx) return;
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        this._statsGraph.draw(ctx, cssW, label);
     }
 
     /**
@@ -5397,14 +5503,21 @@ export class StreamView {
      */
     _legTailSuffix(leg) {
         if (!leg.stage) return '';
-        let p99 = -1;
-        if (this._useWorker) {
-            const s = this._clientStages ? this._clientStages[leg.stage] : null;
-            if (s && s.n > 0) p99 = s.p99;
-        } else if (leg.stats.count > 0) {
-            p99 = leg.stats.percentile(0.99);
-        }
+        const p99 = this._legP99(leg);
         return p99 >= 0 ? ' / ' + p99.toFixed(1) : '';
+    }
+
+    /**
+     * A leg's p99 in ms, or -1 when its tail is unknown. Worker mode reads the
+     * worker's own snapshot (its clock) for the client stages; every other leg
+     * keeps its own sliding window and can be asked directly.
+     */
+    _legP99(leg) {
+        if (this._useWorker && leg.stage) {
+            const s = this._clientStages ? this._clientStages[leg.stage] : null;
+            return s && s.n > 0 ? s.p99 : -1;
+        }
+        return leg.stats.count > 0 ? leg.stats.percentile(0.99) : -1;
     }
 
     /**

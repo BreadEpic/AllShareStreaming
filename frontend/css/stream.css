@@ -622,6 +622,23 @@ body.streaming-active::after {
     background: rgba(255, 255, 255, 0.12);
 }
 
+/* The 60-second history strip, drawn under the card's numbers when the latency
+   breakdown is open. A canvas: four lanes of hairlines at 2 Hz cost nothing to
+   paint, and cost nothing at all while the panel is closed.
+   No border of its own — the separator is drawn inside the bitmap, so the box
+   the canvas reports is exactly the surface it draws on. */
+.stats-graph {
+    display: block;
+    width: 100%;
+    margin-top: 4px;
+    /* The card reserves 24px on the right for the × button; the strip claws
+       that back so the curves span the same width as the rows above them. */
+    margin-right: -12px;
+    /* Reading the curves is not dragging the card, but the card-wide drag
+       handler still gets the pointer — cursor stays consistent with it. */
+    pointer-events: auto;
+}
+
 .stats-line {
     white-space: nowrap;
 }

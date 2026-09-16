@@ -544,6 +544,7 @@
         "statStageQueue": "主机 · 队列",
         "statStageSend": "主机 · 发送",
         "statStageTotal": "主机 · 合计",
+        "statGraphLoss": "丢帧",
         "statLossNetwork": "丢失帧（网络）",
         "statLossJitter": "丢弃帧（抖动）",
         "statRecovery": "恢复次数（解码器 · 停滞 · 等待刷新）",
