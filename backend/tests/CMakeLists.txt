@@ -80,6 +80,7 @@ add_executable(run_tests
     test_native_capabilities_json.cpp
     test_edition.cpp
     test_router_port_core.cpp
+    test_logger_rotation.cpp
     # In-scope production units (+ their real deps)
     # The router-port allocation policy, behind its gateway seam: the rules
     # that keep two MoonlightWeb hosts on one LAN out of each other's holes.

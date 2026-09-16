@@ -20,6 +20,7 @@
 #include <QObject>
 #include <QFile>
 #include <QMutex>
+#include <QStringList>
 #include <QTextStream>
 
 class Logger : public QObject
@@ -37,8 +38,58 @@ public:
 
     static Logger* instance();
 
-    void setLogFile(const QString& path);
+    /**
+     * What the host keeps, kept entirely by the host itself — there is no button
+     * anywhere that asks the user to tidy their own log.
+     *
+     * The log was pure append with no ceiling until 16/09/2026, and on the
+     * machine that had been running longest it had reached 472 MB over 70 days
+     * — a median of 7.4 MB a day, 69% of it the per-host `serverinfo` poll that
+     * runs every ~7 s whether or not anyone is streaming. That is not a
+     * developer-only shape: a one-host install still writes that poll at the
+     * same cadence, so an ordinary user was on course for about a gigabyte a
+     * year of a file nothing ever truncated, on the system disk.
+     *
+     * The promise is a DURATION, not a size: seven days of history. Size is the
+     * consequence, and it follows the number of hosts actually being polled all
+     * by itself — a host that stops answering stops writing lines, so it stops
+     * costing disk, with no activity tracking to build and no bytes-per-host
+     * constant to keep up to date as log lines are added or removed. Measured
+     * 16/09: ~1.1 MB per host per day, so seven days is ~10 MB for a one-host
+     * install and ~135 MB for the eighteen-host bench.
+     *
+     * kMaxTotalBytes is NOT the budget — it is a brake. It exists for the case
+     * the duration cannot defend against: a host logging abnormally (an error
+     * loop, a reconnection that never succeeds) would fill a system disk long
+     * before seven days were up. In ordinary use it never bites; when it does,
+     * retention drops below seven days and the log says so.
+     */
+    static constexpr int kRetentionDays = 7;
+    static constexpr qint64 kMaxTotalBytes = 128 * 1024 * 1024;
+    /// Roll point for the live file. Small enough that expiry is granular (a
+    /// whole archive leaves at once, so this is the resolution of the seven-day
+    /// edge), large enough that a busy host is not renaming files all day.
+    static constexpr qint64 kMaxFileBytes = 5 * 1024 * 1024;
+
+    /**
+     * Open `path` for appending, rolling it over first if it is already at the
+     * ceiling. Rotation is also checked as lines are written.
+     *
+     * `rotating` false keeps the old unbounded behaviour, for the callers whose
+     * file is not a long-lived server log: a `--log` path the operator chose for
+     * one run, and a per-session stream worker's own file, which dies with the
+     * session. Rolling those would cut a capture in half for no benefit.
+     */
+    void setLogFile(const QString& path, bool rotating = true);
     void log(Level level, const QString& message);
+
+    /// Bytes the live log and its archives occupy together.
+    qint64 logFootprintBytes() const;
+
+    /// Shrink the budget so the TNR can watch it work: seven real days cannot be
+    /// waited for, and pushing 128 MB through a path that flushes every line
+    /// would dominate the run. Retention is given in SECONDS here.
+    void setBudgetForTests(qint64 maxFileBytes, qint64 maxTotalBytes, qint64 retentionSeconds);
 
     /// Route ALL console echo to stderr (worker mode: stdout is the JSON
     /// event protocol and must stay clean).
@@ -53,9 +104,37 @@ private:
     explicit Logger(QObject* parent = nullptr);
     QString levelString(Level level);
 
+    /// Characters written between two size checks. Small enough that the file
+    /// never overshoots the ceiling by more than this, large enough that the
+    /// stat costs nothing against the poll traffic that fills the log.
+    static constexpr qint64 kSizeCheckInterval = 64 * 1024;
+
+    /// Rename the live file to `name.<yyyyMMdd-hhmmss>`. Timestamped rather than
+    /// a shifting .1/.2/.3 chain: retention is by age, so the count of archives
+    /// is whatever seven days happen to need, not a number fixed in advance.
+    /// Caller holds m_Mutex and the file must be closed.
+    void rollOver();
+    /// Close, roll and reopen when the live file has reached the roll point.
+    /// Caller holds m_Mutex.
+    void rotateIfNeeded();
+    /// Drop archives past the retention window, then — only if the brake is hit
+    /// — the oldest survivors until the total fits. Caller holds m_Mutex.
+    void pruneArchives();
+    /// Every `name.*` beside the live file, oldest first by modification time,
+    /// which is when its last line was written. Caller holds m_Mutex.
+    QStringList archivePathsOldestFirst() const;
+    /// logFootprintBytes without taking the lock. Caller holds m_Mutex.
+    qint64 footprintLocked() const;
+
     QFile m_File;
     QTextStream m_Stream;
-    QMutex m_Mutex;
+    mutable QMutex m_Mutex;
     bool m_FileOpen;
     bool m_ForceStderr = false;
+    bool m_Rotating = false;
+    qint64 m_MaxFileBytes = kMaxFileBytes;
+    qint64 m_MaxTotalBytes = kMaxTotalBytes;
+    qint64 m_RetentionSecs = qint64(kRetentionDays) * 24 * 60 * 60;
+    /// Written since the last size check, so the common path costs no syscall.
+    qint64 m_BytesSinceCheck = 0;
 };

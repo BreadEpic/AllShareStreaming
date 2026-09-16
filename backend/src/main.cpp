@@ -1350,18 +1350,66 @@ int main(int argc, char* argv[])
             }
         }
     }
+    // Where this process logs is decided HERE, from raw argv, and not after
+    // parser.process() — CrashHandler::install() just below writes its first
+    // line, so anything decided later would have leaked that line into the
+    // server's log first. It did, until 16/09/2026: every `--native-bench`,
+    // `--status` or worker run left a lone "Minidump handler installed" in the
+    // installed host's log, with no server running and nothing following it. A
+    // bench matrix is 30-odd of those, 17 s apart, which reads exactly like a
+    // host crash-looping — a full morning was spent chasing that ghost.
+    //
+    // The rule: only the long-lived server writes the shared log. A worker gets
+    // its own file (two processes appending to one file interleave), an
+    // operator command that prints and exits gets none, and an explicit --log
+    // wins over all of it.
     {
         const QString logDir =
             QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/logs";
         QDir().mkpath(logDir);
-        // The console probe runs in the user's session, where the tray client
-        // already owns moonlightweb.log; two processes appending to one file
-        // interleave, so it gets a file of its own.
-        bool probe = false;
-        for (int i = 1; i < argc; ++i)
-            if (qstrcmp(argv[i], "--native-probe") == 0) probe = true;
-        Logger::instance()->setLogFile(logDir +
-                                       (probe ? "/moonlightweb-probe.log" : "/moonlightweb.log"));
+
+        QString explicitLog;
+        bool probe = false, worker = false, transient = false;
+        for (int i = 1; i < argc; ++i) {
+            // --log <path> and --log=<path>, the two spellings QCommandLineParser
+            // accepts; read here so the very first line lands in the right file.
+            if (qstrcmp(argv[i], "--log") == 0 && i + 1 < argc)
+                explicitLog = QString::fromLocal8Bit(argv[++i]);
+            else if (qstrncmp(argv[i], "--log=", 6) == 0)
+                explicitLog = QString::fromLocal8Bit(argv[i] + 6);
+            else if (qstrcmp(argv[i], "--native-probe") == 0)
+                probe = true;
+            else if (qstrcmp(argv[i], "--stream-worker") == 0)
+                worker = true;
+            else {
+                // Commands that print and exit. Both spellings again: --status
+                // and --native-bench=<spec>. Matching the bare prefix would also
+                // swallow a future --status-something, so require the boundary.
+                for (const char* flag : {"--native-bench", "--status", "--new-pin",
+                                         "--set-admin-password", "--enable-internet"}) {
+                    const size_t n = qstrlen(flag);
+                    if (qstrncmp(argv[i], flag, int(n)) == 0 &&
+                        (argv[i][n] == '\0' || argv[i][n] == '='))
+                        transient = true;
+                }
+            }
+        }
+
+        if (!explicitLog.isEmpty()) {
+            // An operator chose this path for one run: never roll it, or a
+            // capture they asked for could lose its own beginning.
+            Logger::instance()->setLogFile(explicitLog, /*rotating=*/false);
+        } else if (worker) {
+            Logger::instance()->setLogFile(logDir + QStringLiteral("/moonlightweb-worker-%1.log")
+                                                        .arg(QCoreApplication::applicationPid()),
+                                           /*rotating=*/false); // dies with the session
+        } else if (probe) {
+            // The console probe runs in the user's session, where the tray
+            // client already owns moonlightweb.log.
+            Logger::instance()->setLogFile(logDir + QStringLiteral("/moonlightweb-probe.log"));
+        } else if (!transient) {
+            Logger::instance()->setLogFile(logDir + QStringLiteral("/moonlightweb.log"));
+        }
     }
     if (!capabilityNote.isEmpty()) qInfo().noquote() << "[caps]" << capabilityNote;
 
@@ -1482,8 +1530,8 @@ int main(int argc, char* argv[])
 
     parser.process(app);
 
-    // Configure logging
-    if (parser.isSet(logOption)) Logger::instance()->setLogFile(parser.value(logOption));
+    // Logging was configured from raw argv before the crash handler was
+    // installed — see the block above main's parser. Nothing to do here.
 
     // Bench: no server, no lock, no browser. It needs the interactive desktop
     // (Desktop Duplication), so it is a terminal command, never a service one.
@@ -1493,17 +1541,12 @@ int main(int argc, char* argv[])
 
     // ── Stream-worker child process ─────────────────────────────────────────
     // Branch BEFORE the single-instance lock (the worker is a deliberate second
-    // process of the same binary) and log to a separate file (two processes on
-    // one log file would interleave/rotate-race). stdout carries the worker's
-    // JSON event protocol — Logger writes to file/stderr only.
+    // process of the same binary). Its log file was already chosen from argv
+    // above — a per-PID file, because two processes on one log file would
+    // interleave. stdout carries the worker's JSON event protocol — Logger
+    // writes to file/stderr only.
     if (parser.isSet(streamWorkerOption)) {
         Logger::instance()->setConsoleToStderr(true);
-        if (!parser.isSet(logOption)) {
-            const QString logDir =
-                QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/logs";
-            Logger::instance()->setLogFile(logDir + QStringLiteral("/moonlightweb-worker-%1.log")
-                                                        .arg(QCoreApplication::applicationPid()));
-        }
         return runStreamWorker(app);
     }
 
