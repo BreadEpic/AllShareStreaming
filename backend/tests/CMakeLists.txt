@@ -59,6 +59,7 @@ add_executable(run_tests
     test_auth_manager.cpp
     test_connection_guard.cpp
     test_static_files.cpp
+    test_home_screen_shell.cpp
     test_http_parser.cpp
     test_request_guard.cpp
     test_api_csrf.cpp
@@ -104,6 +105,7 @@ add_executable(run_tests
     ${_src}/src/server/AuthManager.cpp
     ${_src}/src/server/ConnectionGuard.cpp
     ${_src}/src/server/StaticFileHandler.cpp
+    ${_src}/src/server/HomeScreenShell.cpp
     ${_src}/src/server/HttpParser.cpp
     ${_src}/src/server/RequestGuard.cpp
     ${_src}/src/server/SessionPool.cpp

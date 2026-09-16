@@ -22,9 +22,12 @@
 #include "RestRouter.h"
 #include "StaticFileHandler.h"
 #include "server/AuthManager.h"
+#include "server/HomeScreenShell.h"
+#include "common/Edition.h"
 #include "common/Logger.h"
 
 #include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QJsonArray>
 #include <QDir>
 #include <QDirIterator>
@@ -726,6 +729,38 @@ QMap<QString, QString> HttpServer::securityHeaders(const QString& hostHeader)
     return headers;
 }
 
+void HttpServer::personaliseForHomeScreen(HttpResponse& resp, const QString& ifNoneMatch) const
+{
+    const HomeScreenIdentity who = m_HomeScreenIdentity();
+    const QString title = mw::homescreen::title(mw::edition::displayName(), who.machineName);
+    // The served copies, so a DEV identity's shortcut wears its blue icons.
+    const auto icon = [this](const char* path) {
+        const HttpResponse file = m_StaticFiles->serveFile(QString::fromLatin1(path));
+        return file.statusCode == 200 ? file.body : QByteArray();
+    };
+
+    if (resp.contentType.startsWith(QLatin1String("application/manifest+json")))
+        resp.body =
+            mw::homescreen::manifest(resp.body, title, who.hostId, icon("/assets/icon-192.png"),
+                                     icon("/assets/icon-512.png"));
+    else if (resp.contentType.startsWith(QLatin1String("text/html")))
+        resp.body = mw::homescreen::shell(resp.body, title, icon("/assets/icon-180.png"));
+    else
+        return;
+
+    const QString etag =
+        QLatin1Char('"') +
+        QString::fromLatin1(
+            QCryptographicHash::hash(resp.body, QCryptographicHash::Sha1).toHex().left(16)) +
+        QLatin1Char('"');
+    resp.headers["ETag"] = etag;
+    resp.headers.remove("Last-Modified");
+    if (!ifNoneMatch.isEmpty() && ifNoneMatch.contains(etag)) {
+        resp.statusCode = 304;
+        resp.body.clear();
+    }
+}
+
 QString HttpServer::cookieFromRequest(const HttpRequest& req, const QString& name)
 {
     QString cookie = req.headers.value("cookie");
@@ -1182,10 +1217,24 @@ void HttpServer::serveRequest(HttpRequest req, Arrival arrival, ResponseCallback
         // its own: a frontend edit under an unchanged build would leave every
         // bootstrapped browser pinned to the old files with no way to notice
         // (the service worker serves that shelf without revalidating).
-        HttpResponse manifest = HttpResponse::json(QJsonObject{
-            {QStringLiteral("version"), QCoreApplication::applicationVersion() + QLatin1Char('-') +
-                                            m_StaticFiles->contentTag()},
-            {QStringLiteral("files"), files}});
+        //
+        // Through the tunnel the shell and the manifest also carry this machine's
+        // name and identifier (see below), so those join the fingerprint: a
+        // rename has to reach a cached copy the same way an edited file does.
+        QString version =
+            QCoreApplication::applicationVersion() + QLatin1Char('-') + m_StaticFiles->contentTag();
+        if (viaTunnel && m_HomeScreenIdentity) {
+            const HomeScreenIdentity who = m_HomeScreenIdentity();
+            version +=
+                QLatin1Char('-') +
+                QString::fromLatin1(QCryptographicHash::hash(
+                                        (who.hostId + QLatin1Char('|') + who.machineName).toUtf8(),
+                                        QCryptographicHash::Md5)
+                                        .toHex()
+                                        .left(8));
+        }
+        HttpResponse manifest = HttpResponse::json(
+            QJsonObject{{QStringLiteral("version"), version}, {QStringLiteral("files"), files}});
         manifest.headers["Cache-Control"] = "no-store";
         respond(manifest);
         return;
@@ -1217,18 +1266,29 @@ void HttpServer::serveRequest(HttpRequest req, Arrival arrival, ResponseCallback
             return;
         }
 
+        const QString lastSegment = req.path.section(QLatin1Char('/'), -1);
+        const bool looksLikeFile = lastSegment.contains(QLatin1Char('.'));
+
+        // What a home-screen shortcut is made of, rewritten for a page reached
+        // through the introduction server (HomeScreenShell.h has the why). The
+        // file's own ETag no longer describes those bytes, so the conditional
+        // request is answered after the rewrite rather than by the file.
+        const bool homeScreen = viaTunnel && m_HomeScreenIdentity &&
+                                (!looksLikeFile || req.path == QLatin1String("/index.html") ||
+                                 req.path == QLatin1String("/manifest.webmanifest"));
         const QString ifNoneMatch = req.headers.value("if-none-match");
-        HttpResponse resp = m_StaticFiles->serveFile(req.path, ifNoneMatch);
+        const QString fileIfNoneMatch = homeScreen ? QString() : ifNoneMatch;
+
+        HttpResponse resp = m_StaticFiles->serveFile(req.path, fileIfNoneMatch);
         // SPA fallback: a path with no file extension is a frontend route
         // (/admin, /settings) and gets index.html so the History API can pick it
         // up on reload. A path that names a file is a genuine miss and must say
         // so — answering 200 with the app shell for /settings.json or /.git/config
         // makes every probe look like a hit, both to a scanner and to a reader
         // trying to tell a real leak from the fallback.
-        const QString lastSegment = req.path.section(QLatin1Char('/'), -1);
-        const bool looksLikeFile = lastSegment.contains(QLatin1Char('.'));
         if (resp.statusCode == 404 && !looksLikeFile)
-            resp = m_StaticFiles->serveFile("/", ifNoneMatch);
+            resp = m_StaticFiles->serveFile("/", fileIfNoneMatch);
+        if (homeScreen && resp.statusCode == 200) personaliseForHomeScreen(resp, ifNoneMatch);
         // HEAD is the same response without the representation.
         if (req.method == QLatin1String("HEAD")) resp.body.clear();
         respond(resp);

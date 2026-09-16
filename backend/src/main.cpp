@@ -1650,6 +1650,10 @@ int main(int argc, char* argv[])
     server.setDomain(appSettings.domain());
     server.setCertPem(appSettings.certPem());
     server.setCertKey(appSettings.certKey());
+    server.setHomeScreenIdentity([&appSettings] {
+        return HttpServer::HomeScreenIdentity{appSettings.rendezvousId(),
+                                              appSettings.displayName()};
+    });
 
     // Initialize ComputerManager (Phase 2: host discovery)
     ComputerManager computerManager(&app);

@@ -210,6 +210,7 @@ add_executable(mw-server
     src/server/RequestGuard.cpp
     src/server/CertManager.cpp
     src/server/StaticFileHandler.cpp
+    src/server/HomeScreenShell.cpp
     src/server/RestRouter.cpp
     src/server/ShareManager.cpp
     src/server/SessionPool.cpp
