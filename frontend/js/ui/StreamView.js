@@ -1869,7 +1869,8 @@ export class StreamView {
 
         // The stats card can sit over the game; let the user drag it out of the
         // way. Position is intentionally not persisted so it resets to the
-        // top-left default on every new streaming session.
+        // default (under the header, see _positionStatsOverlay) on every new
+        // streaming session.
         this._makeStatsDraggable(this._overlayEl);
         // × hides the stats card for the rest of the session.
         this._overlayEl.addEventListener('click', (e) => {
@@ -3329,6 +3330,8 @@ export class StreamView {
             setTimeout(() => this._hideStartupOverlay(), 500);
             // There is a picture now: the header can grow its real controls.
             this._revealStreamControls();
+            // After the reveal: the controls it adds can change the bar's height.
+            this._positionStatsOverlay();
             // Show keyboard shortcuts slide (5s auto-hide)
             this._showShortcutsSlide();
             if (first) this._maybeShowMultiSeatInputNotice();
@@ -3389,6 +3392,7 @@ export class StreamView {
         if (this._firstFrameRendered) {
             if (this._overlayEl && this._showPerfStats && !this._statsClosed)
                 this._overlayEl.style.display = '';
+            this._positionStatsOverlay();
         }
         // Desktop gaming mode: best-effort pointer-lock re-acquisition. The
         // retiring view still holds the lock at promote time and loses it when
@@ -4942,6 +4946,23 @@ export class StreamView {
      *  - Fullscreen (button hidden): back to the CSS default (top-center).
      * No-op once the user has dragged the card (manual position wins).
      */
+    /**
+     * Place the stats card just under the header, not over it: on a phone the
+     * header holds the keyboard button, and a card parked on top of it had to
+     * be dragged away before the keyboard could be opened. When the header is
+     * hidden (fullscreen) the card goes back to the CSS corner.
+     * No-op once the user has dragged the card (manual position wins).
+     */
+    _positionStatsOverlay() {
+        const el = this._overlayEl;
+        if (!el || el.classList.contains('user-moved')) return;
+        const header = /** @type {HTMLElement} */ (this._rootEl?.querySelector('.stream-header'));
+        // A real rect only: the fullscreen CSS hides the header with display
+        // none, which collapses it to 0 rather than clearing any inline style.
+        const r = header ? header.getBoundingClientRect() : null;
+        el.style.top = r && r.height > 0 ? Math.round(r.bottom + 10) + 'px' : '';
+    }
+
     _positionGamingOverlay() {
         const el = this._gamingOverlay;
         if (!el) return;

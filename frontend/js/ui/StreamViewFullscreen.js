@@ -509,7 +509,9 @@ export class StreamViewFullscreen {
             this._mobileFsBtn.style.display = this._isDeviceLandscape() ? '' : 'none';
         }
 
-        // Reposition the reminder (header vs top-center).
+        // Reposition the reminder (header vs top-center) and the stats card
+        // (under the header vs top corner).
         this._positionGamingOverlay();
+        this._positionStatsOverlay();
     }
 }

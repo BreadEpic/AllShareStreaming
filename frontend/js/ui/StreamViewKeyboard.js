@@ -586,6 +586,8 @@ export class StreamViewKeyboard {
             this._hideKbToolbar();
             if (!this._standby) publishKbdInset(0);
         }
+        // The header moves with the visible area; the stats card sits under it.
+        this._positionStatsOverlay();
     }
 
     /**
