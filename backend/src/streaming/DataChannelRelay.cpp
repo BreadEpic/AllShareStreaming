@@ -858,20 +858,35 @@ void DataChannelRelay::createDataChannels()
     // --- Video DataChannel (server->browser, H.264 NAL units) ---
     // NOTE: this call is what publishes the SDP offer (see the ordering note
     // above) — nothing that must appear in it may be added after this point.
-    // Ordered + partial reliability (3 retransmits): an HEVC keyframe is
-    // ~11 chunks ≈ 140 UDP packets, so with 0 retransmits a single packet
-    // loss kills the whole frame and forces an IDR recovery cycle.
+    // Ordered + partial reliability: an HEVC keyframe is ~11 chunks ≈ 140 UDP
+    // packets, so with no retransmission at all a single packet loss kills
+    // the whole frame and forces an IDR recovery cycle.
     //
     // Ordered is required for video: frames reference their predecessor, so
     // delivery order IS decode order. With unordered delivery, a retransmitted
     // chunk made frame N complete AFTER frame N+1 — the frontend saw a frameId
     // gap (false loss), invalidated the reference and requested an IDR on every
-    // reorder. Ordered lets SCTP hold N+1 the ~RTT the retransmit takes; frames
-    // abandoned after 3 retransmits are skipped via FORWARD-TSN and surface as
-    // a real gap.
+    // reorder. Ordered lets SCTP hold N+1 the ~RTT the retransmit takes; a
+    // message SCTP gives up on is skipped via FORWARD-TSN and surfaces as a
+    // real gap.
+    //
+    // Given up on by AGE, not after a number of retransmits (16/09/2026). The
+    // count was 3, and on a corporate Wi-Fi that froze the link for a second
+    // every half minute it was the wrong measure: the retransmit timer expires
+    // and doubles under a freeze — 200, 400, 800 ms — so everything in flight
+    // when it began was still being retransmitted, in order, when the link
+    // came back, ahead of the keyframe the receiver was waiting for, and at
+    // the crawl of a window SCTP rebuilds from one segment after a timeout
+    // (one more per round trip). The receiver spent seconds decoding frames a
+    // second old and the pointer trailed the hand by as much. A message older
+    // than the
+    // lifetime is abandoned wherever it is, and the receiver jumps to what is
+    // current. A lone loss on a healthy link still gets its fast retransmit
+    // within a round trip, and one timer-driven retry inside the lifetime.
     rtc::DataChannelInit videoConfig;
     videoConfig.reliability.unordered = false;
-    videoConfig.reliability.maxRetransmits = 3; // Must match frontend negotiated channel config
+    // Must match the frontend's negotiated channel config.
+    videoConfig.reliability.maxPacketLifeTime = std::chrono::milliseconds(kVideoFrameLifetimeMs);
     videoConfig.negotiated = true;
     videoConfig.id = 0;
 
@@ -1079,7 +1094,22 @@ void DataChannelRelay::handleVideoFrame(const QByteArray& data, bool isKeyframe,
     // Awaiting IDR: drop all deltas until a keyframe resets the decoder reference.
     if (m_AwaitingIdr && !isKeyframe) {
         m_AwaitingIdrDropCount++;
-        sendIdrRequestThrottled(); // Throttle absorbs bursts; keeps requesting until IDR arrives
+        // The buffer is sampled here too, at frame rate: a link coming back is
+        // seen on the first delta after it, not on the next keyframe the
+        // backed-off cooldown lets through.
+        const int64_t nowMs = QDateTime::currentMSecsSinceEpoch();
+        const bool shedding = m_Backlog.note(m_VideoDc->bufferedAmount(), nowMs);
+        if (shedding) m_Freezes.note(nowMs - m_Backlog.ageMs(nowMs), nowMs);
+        if (m_IdrWaitsForDrain) {
+            if (!m_Backlog.backedUp()) requestIdrOnDrain();
+        } else if (shedding) {
+            // A request now would only produce a keyframe for the gate to drop.
+            m_IdrWaitsForDrain = true;
+            m_IdrWaitSinceMs = nowMs;
+        } else {
+            // Throttle absorbs bursts; keeps requesting until the IDR arrives.
+            sendIdrRequestThrottled();
+        }
         return;
     }
 
@@ -1522,7 +1552,10 @@ void DataChannelRelay::sendFragmented(const QByteArray& data, bool isKeyframe,
             m_BackpressureDropCount++;
             m_Freezes.note(backlogNowMs - m_Backlog.ageMs(backlogNowMs), backlogNowMs);
 
-            // Set sticky awaiting state and request IDR (throttled — absorbs bursts).
+            // Set sticky awaiting state. The keyframe is asked for when the
+            // buffer drains (requestIdrOnDrain): asked for now, it would come
+            // back a frame later into the same backed-up buffer and be dropped
+            // by the keyframe gate below.
             //
             // Skipped entirely when the stream refreshes by intra-refresh and
             // the client rides out damage. This is the single place the two
@@ -1534,7 +1567,10 @@ void DataChannelRelay::sendFragmented(const QByteArray& data, bool isKeyframe,
             // the refresh wave repair the picture instead.
             if (!ridingOutLoss()) {
                 m_AwaitingIdr = true;
-                sendIdrRequestThrottled();
+                if (!m_IdrWaitsForDrain) {
+                    m_IdrWaitsForDrain = true;
+                    m_IdrWaitSinceMs = backlogNowMs;
+                }
             }
 
             if (m_DeltaDroppedCount <= 3 || m_DeltaDroppedCount % 120 == 0) {
@@ -1554,10 +1590,11 @@ void DataChannelRelay::sendFragmented(const QByteArray& data, bool isKeyframe,
         //
         // If the buffer is still above the watermark, a previous keyframe/frames
         // have not drained yet: drop this keyframe too and keep awaiting IDR.
-        // m_AwaitingIdr stays sticky and the throttled IDR request keeps firing,
-        // so the moment the buffer drains below the watermark the NEXT keyframe
-        // goes through fresh. This caps the buffer at ~watermark + one keyframe,
-        // bounding latency to well under a second instead of letting it run away.
+        // m_AwaitingIdr stays sticky, and the next keyframe is asked for the
+        // moment the buffer drains (the awaiting-IDR gate watches it at frame
+        // rate), so it goes through fresh. This caps the buffer at ~watermark
+        // + one keyframe, bounding latency to well under a second instead of
+        // letting it run away.
         size_t bufAmt = dc->bufferedAmount();
         if (m_Backlog.note(bufAmt, backlogNowMs)) {
             m_KeyframeBackpressureWarnings++;
@@ -1569,12 +1606,19 @@ void DataChannelRelay::sendFragmented(const QByteArray& data, bool isKeyframe,
                         << "warnCount=" << m_KeyframeBackpressureWarnings;
             }
             m_AwaitingIdr = true;
-            sendIdrRequestThrottled();
+            // The request was honoured — this is the keyframe it produced —
+            // and the drop is ours, not the link's: nothing to back off for.
+            m_IdrOutstanding = false;
+            if (!m_IdrWaitsForDrain) {
+                m_IdrWaitsForDrain = true;
+                m_IdrWaitSinceMs = backlogNowMs;
+            }
             return;
         }
         // Keyframe sent successfully: clear sticky state and backpressure counters,
         // and reset the IDR cooldown backoff (recovery completed).
         m_AwaitingIdr = false;
+        m_IdrWaitsForDrain = false;
         m_BackpressureDropCount = 0;
         m_IdrOutstanding = false;
         m_IdrCooldownMs = kIdrCooldownBaseMs;
@@ -1934,9 +1978,24 @@ void DataChannelRelay::requestIdrFrame()
     sendIdrRequestThrottled();
 }
 
+void DataChannelRelay::requestIdrOnDrain()
+{
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    qInfo() << "[DataChannelRelay] link draining again after" << (nowMs - m_IdrWaitSinceMs)
+            << "ms — keyframe requested at once";
+    m_IdrWaitsForDrain = false;
+    m_IdrOutstanding = false;
+    m_IdrCooldownMs = kIdrCooldownBaseMs;
+    m_IdrCooldownTimer.invalidate();
+    sendIdrRequestThrottled();
+}
+
 void DataChannelRelay::sendIdrRequestThrottled()
 {
     if (m_Stopping.load() || !m_Shim) return;
+
+    // The gate is dropping keyframes until the buffer moves; the drain asks.
+    if (m_IdrWaitsForDrain) return;
 
     // Cooldown: absorb requests arriving within the adaptive cooldown window.
     if (m_IdrCooldownTimer.isValid() && m_IdrCooldownTimer.elapsed() < m_IdrCooldownMs) {

@@ -845,18 +845,23 @@ export class WebRtcDataChannel {
     }
 
     _createDataChannels() {
-        // Video DataChannel (ID=0, ordered=true, maxRetransmits=3)
+        // Video DataChannel (ID=0, ordered=true, maxPacketLifeTime=500 ms)
         // Must match backend DataChannelRelay::createDataChannels().
         // Partial reliability: a keyframe spans ~140 UDP packets, so with zero
         // retransmits a single loss kills the whole frame and forces IDR recovery.
         // Ordered: frames reference their predecessor, so delivery order IS
         // decode order — unordered delivery turned every SCTP retransmit into a
         // false frameId gap (frame N completing after N+1) and an IDR cycle.
+        // A lifetime, not a retransmit count (16/09/2026): on a link that
+        // freezes for a second, a count kept retransmitting second-old frames
+        // in order ahead of the keyframe once the link was back — the picture
+        // trailed by as much. Past 500 ms (our own FRAME_TIMEOUT_MS) the
+        // sender gives a message up and we skip to what is current.
         const videoInit = {
             negotiated: true,
             id: 0,
             ordered: true,
-            maxRetransmits: 3,
+            maxPacketLifeTime: 500,
         };
         this.dataChannels.video = this.pc.createDataChannel('video', videoInit);
         this._setupDataChannel('video', this.dataChannels.video);
@@ -1305,7 +1310,7 @@ export class WebRtcDataChannel {
         if (this._rideOutSince) this._rideOutFramesSeen++;
 
         // Ordered delivery: a frame this one overtook can never complete —
-        // its missing chunks were given up on by the sender (maxRetransmits)
+        // its missing chunks were given up on by the sender (their lifetime)
         // or they would have come first. Declare it lost now rather than
         // 500 ms from now (FRAME_TIMEOUT_MS), which is how long the picture
         // would otherwise stay one frame behind the one it could show. Every

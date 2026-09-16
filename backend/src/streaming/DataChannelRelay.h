@@ -45,7 +45,8 @@ class IMediaEngine;
 // WebRTC DataChannel relay that replaces StreamRelay.
 // Forwards video/audio from the media engine + input from the browser over a
 // hybrid PeerConnection:
-//   - video: DataChannel (SCTP, negotiated id=0, ordered, maxRetransmits=3)
+//   - video: DataChannel (SCTP, negotiated id=0, ordered, each message given
+//     up on after kVideoFrameLifetimeMs)
 //   - audio: rtc::Track (Opus over RTP) — not a DataChannel, despite the name
 //   - input: DataChannel (SCTP, negotiated id=2, reliable + ordered)
 //
@@ -196,6 +197,12 @@ private:
     static constexpr int kFragHeaderSize = 17;
     static constexpr int kMaxPayloadSize = 16000;
 
+    /// How long a video message may wait in the transport before SCTP gives
+    /// up on it — a lifetime, not a retransmit count. See the video channel's
+    /// setup for the freeze that made the difference. Matches the receiver's
+    /// own patience with an incomplete frame (FRAME_TIMEOUT_MS).
+    static constexpr int kVideoFrameLifetimeMs = 500;
+
     // Backpressure is measured in TIME, not bytes — see SendBacklog.h for why
     // a byte threshold could only ever be too late or too trigger-happy, and
     // for the correction to the old claim that dc->send() blocks the event
@@ -231,8 +238,13 @@ private:
     // Coalescing IDR throttle: all IDR requests (frontend + internal) go through
     // this method. Requests arriving within the adaptive cooldown of the last
     // effective request are absorbed to prevent LiRequestIdrFrame flooding.
-    // Caller holds m_VideoMutex.
+    // Caller holds m_VideoMutex. A no-op while m_IdrWaitsForDrain: the gate
+    // would drop the keyframe, and the drain asks (requestIdrOnDrain).
     void sendIdrRequestThrottled();
+    // The buffer moved again after the gate held keyframes back: ask now, on
+    // a fresh cooldown, instead of when the backed-off timer would have.
+    // Caller holds m_VideoMutex.
+    void requestIdrOnDrain();
 
     IMediaEngine* m_Shim;
 
@@ -338,6 +350,14 @@ private:
     QElapsedTimer m_IdrCooldownTimer;            // Monotonic timer; invalid until first request
     qint64 m_IdrCooldownMs = kIdrCooldownBaseMs; // Current adaptive cooldown
     bool m_IdrOutstanding = false; // True from an effective request until a keyframe is sent
+    // The backlog gate is dropping frames, keyframes included: no request is
+    // made until the buffer drains, and then one is made at once. Before this
+    // (16/09/2026), every keyframe the gate dropped counted as a request that
+    // produced nothing, the cooldown doubled under it — 300, 600, 1200 ms —
+    // and once the link was back the picture stayed frozen until that timer
+    // ran out: half a second to five, per freeze. Guarded by m_VideoMutex.
+    bool m_IdrWaitsForDrain = false;
+    qint64 m_IdrWaitSinceMs = 0; // For the log line, when the wait began
 
     // Awaiting IDR: true when a delta was dropped (backpressure or DC not ready).
     // All delta frames are dropped and IDR requested until a keyframe is sent.
