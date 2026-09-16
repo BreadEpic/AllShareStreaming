@@ -19,6 +19,9 @@ import { StatsGraph } from '../js/ui/StatsGraph.js';
 /** Lane labels are the card's own; the test only needs them to be distinct. */
 const name = (k) => k;
 
+/** A graph that plots from the first tick — the warm-up has its own test. */
+const fresh = (opts = {}) => new StatsGraph({ warmupMs: 0, ...opts });
+
 /** One tick's worth of a healthy stream, at t = 1000 + i * 500. */
 function tick(g, i, over = {}) {
     g.sample(1000 + i * 500, {
@@ -38,13 +41,13 @@ function tick(g, i, over = {}) {
 
 describe('StatsGraph', () => {
     it('draws no lane before it has been fed', () => {
-        const g = new StatsGraph();
+        const g = fresh();
         expect(g.lanes(name)).toEqual([]);
         expect(g.height(name)).toBe(0);
     });
 
     it('keeps the values it is given, newest last', () => {
-        const g = new StatsGraph();
+        const g = fresh();
         tick(g, 0);
         tick(g, 1, { latencyMs: 90 });
         expect(g.latency.count).toBe(2);
@@ -53,7 +56,7 @@ describe('StatsGraph', () => {
     });
 
     it('ignores a repaint that lands between two ticks', () => {
-        const g = new StatsGraph();
+        const g = fresh();
         tick(g, 0);
         // _setLatencyDetail repaints the card off-tick so the panel follows the
         // pointer: that must not push a zero-length sample.
@@ -62,7 +65,7 @@ describe('StatsGraph', () => {
     });
 
     it('differences the byte counter instead of plotting the session average', () => {
-        const g = new StatsGraph();
+        const g = fresh();
         tick(g, 0);
         tick(g, 1);
         // 1.25 MB in 500 ms = 20 Mbps, whatever the session has averaged.
@@ -70,28 +73,66 @@ describe('StatsGraph', () => {
     });
 
     it('falls back to a reported bitrate when no byte counter is given', () => {
-        const g = new StatsGraph();
+        const g = fresh();
         g.sample(1000, { mbps: 12, bytes: NaN });
         g.sample(1500, { mbps: 12, bytes: NaN });
         expect(g.mbps.last()).toBe(12);
     });
 
-    it('rates losses over the tick, not the session', () => {
-        const g = new StatsGraph();
+    it('rates losses over the last seconds of frames, not the session', () => {
+        const g = fresh();
         tick(g, 0);
         tick(g, 1);
-        // 3 of this tick's 30 frames lost, 6 of its 30 dropped late.
+        // 3 lost out of the 60 frames of the two ticks in the rate window.
         tick(g, 2, { netLost: 3, dropStale: 6 });
-        expect(g.lossNet.last()).toBeCloseTo(10, 6);
-        expect(g.lossJit.last()).toBeCloseTo(20, 6);
-        // A quiet tick after a lossy one goes back to zero — the loss belongs
-        // to the moment it happened, not to everything that follows.
-        tick(g, 3, { netLost: 3, dropStale: 6 });
+        expect(g.lossNet.last()).toBeCloseTo(5, 6);
+        expect(g.lossJit.last()).toBeCloseTo(10, 6);
+        // The loss ages out of the window instead of staying in the average.
+        for (let i = 3; i < 16; i++) tick(g, i, { netLost: 3, dropStale: 6 });
         expect(g.lossNet.last()).toBe(0);
     });
 
+    it('still rates losses when a tick carries no new frame', () => {
+        // An idle desktop at 2 fps: most 500ms ticks have nothing in them, and
+        // a per-tick rate would be a dotted line of gaps.
+        const g = fresh();
+        let span = 0;
+        for (let i = 0; i < 12; i++) {
+            if (i % 2 === 0) span += 1;
+            tick(g, i, { frameSpan: span, decoded: span, netLost: 0, dropStale: 0 });
+        }
+        expect(Number.isFinite(g.lossNet.last())).toBe(true);
+        expect(g.lossNet.last()).toBe(0);
+    });
+
+    it('measures through the warm-up but plots none of it', () => {
+        const g = new StatsGraph({ warmupMs: 3000 });
+        // The opening seconds: late first frames, a cold decoder, counters that
+        // jump on their own. Kept out of the window they would otherwise flatten.
+        for (let i = 0; i < 6; i++) tick(g, i, { latencyMs: 900 });
+        expect(g.latency.count).toBe(0);
+        tick(g, 6, { latencyMs: 35 });
+        expect(g.latency.count).toBe(1);
+        expect(g.latency.last()).toBe(35);
+        // The counters were tracked through it, so the first bitrate kept is one
+        // tick's worth and not the whole warm-up's.
+        expect(g.mbps.last()).toBeCloseTo(20, 3);
+    });
+
+    it('sets the axis on the bulk of the window, not on one spike', () => {
+        const g = fresh();
+        for (let i = 0; i < 40; i++) tick(g, i, { latencyMs: 35, latencyP99Ms: 48 });
+        tick(g, 40, { latencyMs: 1800, latencyP99Ms: 1900 });
+        for (let i = 41; i < 60; i++) tick(g, i, { latencyMs: 35, latencyP99Ms: 48 });
+        // max() would put the ceiling at 2000 and squash a minute of readings
+        // onto the baseline; the 95th percentile keeps the curve readable and
+        // the spike is marked at the top edge instead.
+        expect(g.latency.percentile(0.95)).toBeLessThan(100);
+        expect(g.latency.max()).toBe(1800);
+    });
+
     it('marks the tick where something had to be recovered', () => {
-        const g = new StatsGraph();
+        const g = fresh();
         tick(g, 0);
         tick(g, 1);
         tick(g, 2, { events: 1 });
@@ -102,7 +143,7 @@ describe('StatsGraph', () => {
     });
 
     it('drops a lane nothing ever reported', () => {
-        const g = new StatsGraph();
+        const g = fresh();
         // The native media track: no frame counters, so no loss lane.
         for (let i = 0; i < 4; i++) {
             g.sample(1000 + i * 500, {
@@ -119,7 +160,7 @@ describe('StatsGraph', () => {
     });
 
     it('forgets samples older than its window', () => {
-        const g = new StatsGraph({ windowMs: 2000, periodMs: 500 });
+        const g = fresh({ windowMs: 2000, periodMs: 500 });
         for (let i = 0; i < 20; i++) tick(g, i, { latencyMs: i });
         expect(g.latency.count).toBe(5);
         expect(g.latency.last()).toBe(19);
@@ -127,10 +168,10 @@ describe('StatsGraph', () => {
     });
 
     it('raises the ceiling at once and lowers it only after a quiet run', () => {
-        const g = new StatsGraph();
+        const g = fresh();
         const steps = [20, 50, 100, 200];
         expect(g.ceiling('l', steps, 12)).toBe(20);
-        // A spike is honoured on the spot: a curve must never leave its plot.
+        // A rise is honoured on the spot — the plot must hold what it is given.
         expect(g.ceiling('l', steps, 140)).toBe(200);
         // Coming back down takes four quiet ticks, so a stream that spikes every
         // few seconds is not drawn on a rescaling axis.
@@ -141,18 +182,18 @@ describe('StatsGraph', () => {
     });
 
     it('gives each lane its own scale', () => {
-        const g = new StatsGraph();
+        const g = fresh();
         expect(g.ceiling('a', [10, 100], 90)).toBe(100);
         expect(g.ceiling('b', [10, 100], 5)).toBe(10);
     });
 
     it('grows the strip with the lanes that have data', () => {
-        const g = new StatsGraph();
+        const g = fresh();
         tick(g, 0);
         tick(g, 1);
         const four = g.height(name);
         expect(g.lanes(name).length).toBe(4);
-        const g2 = new StatsGraph();
+        const g2 = fresh();
         g2.sample(1000, { latencyMs: 30 });
         g2.sample(1500, { latencyMs: 30 });
         expect(g2.lanes(name).length).toBe(1);

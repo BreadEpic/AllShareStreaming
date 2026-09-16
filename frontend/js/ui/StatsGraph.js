@@ -58,6 +58,19 @@ export const GRAPH_WINDOW_MS = 60000;
 /** Nominal spacing between samples — the overlay's own refresh period. */
 const SAMPLE_PERIOD_MS = 500;
 
+/** Opening seconds of a stream, measured but never plotted (see sample()). */
+const WARMUP_MS = 3000;
+
+/** Ticks a loss rate is taken over — enough frames to mean something at 2 fps. */
+const RATE_TICKS = 10;
+
+/**
+ * Where the axis is set: the 95th percentile of the window, not its maximum.
+ * The few samples above it are drawn clipped, with a mark at the top edge, so
+ * an outlier is still SEEN without being allowed to flatten everything else.
+ */
+const SCALE_PERCENTILE = 0.95;
+
 /** One lane: header line + plot. */
 const LANE_LABEL_H = 12;
 const LANE_PLOT_H = 22;
@@ -98,8 +111,8 @@ const FONT_STACK = "'SF Mono', 'Cascadia Code', 'Consolas', monospace";
  * stream moving when only the axis did.
  */
 const STEPS_MS = [20, 50, 100, 150, 200, 300, 500, 750, 1000, 2000];
-const STEPS_FPS = [30, 60, 90, 120, 144, 240, 360];
-const STEPS_MBPS = [2, 5, 10, 20, 30, 50, 75, 100, 150, 200, 500];
+const STEPS_FPS = [5, 10, 15, 30, 60, 90, 120, 144, 240, 360];
+const STEPS_MBPS = [0.5, 1, 2, 5, 10, 20, 30, 50, 75, 100, 150, 200, 500];
 const STEPS_PCT = [1, 2, 5, 10, 25, 50, 100];
 
 /** A fixed-size ring of numbers; NaN marks "no sample". */
@@ -144,6 +157,35 @@ class Ring {
         return Number.isFinite(this.max());
     }
 
+    /**
+     * The value below which `p` of the window's samples fall. The SCALE reads
+     * this rather than max(): one 2-second spike at stream start otherwise owns
+     * the axis for a full minute, and every real reading is squashed onto the
+     * baseline — the exact opposite of what a history is for.
+     * @param {number} p 0…1
+     */
+    percentile(p) {
+        const vals = [];
+        for (let i = 0; i < this._count; i++) {
+            const v = this.at(i);
+            if (Number.isFinite(v)) vals.push(v);
+        }
+        if (!vals.length) return NaN;
+        vals.sort((a, b) => a - b);
+        const idx = Math.min(vals.length - 1, Math.max(0, Math.round(p * (vals.length - 1))));
+        return vals[idx];
+    }
+
+    /** Sum of the last `n` samples, skipping the gaps. */
+    tailSum(n) {
+        let total = 0;
+        for (let i = Math.max(0, this._count - n); i < this._count; i++) {
+            const v = this.at(i);
+            if (Number.isFinite(v)) total += v;
+        }
+        return total;
+    }
+
     /** Most recent finite value, or NaN. */
     last() {
         for (let i = this._count - 1; i >= 0; i--) {
@@ -170,8 +212,14 @@ class Ring {
  */
 
 export class StatsGraph {
-    constructor({ windowMs = GRAPH_WINDOW_MS, periodMs = SAMPLE_PERIOD_MS } = {}) {
+    constructor({
+        windowMs = GRAPH_WINDOW_MS,
+        periodMs = SAMPLE_PERIOD_MS,
+        warmupMs = WARMUP_MS,
+    } = {}) {
         this._periodMs = periodMs;
+        this._warmupMs = warmupMs;
+        this._firstAt = NaN;
         const cap = Math.ceil(windowMs / periodMs) + 1;
         this._cap = cap;
         this.latency = new Ring(cap);
@@ -183,6 +231,15 @@ export class StatsGraph {
         this.lossJit = new Ring(cap);
         /** 1 where something had to be recovered, 0 otherwise. */
         this.events = new Ring(cap);
+        // Raw per-tick frame deltas, kept so the loss RATES can be taken over a
+        // few seconds of frames instead of one tick's worth. At 2 fps — an idle
+        // desktop, which is what a host streams most of the time — half the
+        // ticks contain no new frame at all, and a per-tick rate is undefined
+        // there: the curve came out as a dotted line that read like a bug.
+        this._dSpan = new Ring(cap);
+        this._dLost = new Ring(cap);
+        this._dDecoded = new Ring(cap);
+        this._dStale = new Ring(cap);
         /** Previous cumulative counters, for the per-tick deltas. */
         this._prev = null;
         this._lastAt = -Infinity;
@@ -214,6 +271,14 @@ export class StatsGraph {
         const prev = this._prev;
         const dt = prev ? (now - this._lastAt) / 1000 : 0;
         this._lastAt = now;
+        if (!Number.isFinite(this._firstAt)) this._firstAt = now;
+        // The opening seconds of a stream are not the stream: the first frames
+        // arrive late, the decoder is still cold and the loss counters jump on
+        // their own. Those readings are true and they are not representative —
+        // and on a shared axis one of them flattens the whole minute. Counters
+        // are still tracked through the warm-up, so the first sample kept is a
+        // real delta rather than the session's opening in disguise.
+        const warm = now - this._firstAt < this._warmupMs;
 
         const num = (v) => (Number.isFinite(v) ? v : NaN);
         /** Delta of a cumulative counter; NaN until there is a previous one. */
@@ -222,10 +287,12 @@ export class StatsGraph {
             return Math.max(0, s[key] - prev[key]);
         };
 
-        this.latency.push(num(s.latencyMs));
-        this.latencyP99.push(num(s.latencyP99Ms));
-        this.fpsIn.push(num(s.fpsIn));
-        this.fpsOut.push(num(s.fpsOut));
+        if (!warm) {
+            this.latency.push(num(s.latencyMs));
+            this.latencyP99.push(num(s.latencyP99Ms));
+            this.fpsIn.push(num(s.fpsIn));
+            this.fpsOut.push(num(s.fpsOut));
+        }
 
         // Bitrate: prefer a differenced byte count (the truth for this tick);
         // fall back to whatever instantaneous figure the caller has, which is
@@ -234,18 +301,26 @@ export class StatsGraph {
         const dBytes = delta('bytes');
         if (Number.isFinite(dBytes) && dt > 0) mbps = (dBytes * 8) / dt / 1e6;
         else if (Number.isFinite(s.mbps)) mbps = s.mbps;
-        this.mbps.push(mbps);
+        if (!warm) this.mbps.push(mbps);
 
-        // Loss rates over the tick's own frames, not the session's.
-        const dSpan = delta('frameSpan');
-        const dLost = delta('netLost');
-        this.lossNet.push(dSpan > 0 && Number.isFinite(dLost) ? (dLost / dSpan) * 100 : NaN);
-        const dDec = delta('decoded');
-        const dStale = delta('dropStale');
-        this.lossJit.push(dDec > 0 && Number.isFinite(dStale) ? (dStale / dDec) * 100 : NaN);
+        // Loss rates over the last few seconds of FRAMES, not of wall clock:
+        // the question is "of the frames that went by, how many were lost",
+        // and on a slow stream a tick is not enough frames to answer it.
+        this._dSpan.push(delta('frameSpan'));
+        this._dLost.push(delta('netLost'));
+        this._dDecoded.push(delta('decoded'));
+        this._dStale.push(delta('dropStale'));
+        if (!warm) {
+            const span = this._dSpan.tailSum(RATE_TICKS);
+            const lost = this._dLost.tailSum(RATE_TICKS);
+            this.lossNet.push(span > 0 ? (lost / span) * 100 : NaN);
+            const dec = this._dDecoded.tailSum(RATE_TICKS);
+            const stale = this._dStale.tailSum(RATE_TICKS);
+            this.lossJit.push(dec > 0 ? (stale / dec) * 100 : NaN);
 
-        const dEvents = delta('events');
-        this.events.push(Number.isFinite(dEvents) && dEvents > 0 ? 1 : 0);
+            const dEvents = delta('events');
+            this.events.push(Number.isFinite(dEvents) && dEvents > 0 ? 1 : 0);
+        }
 
         this._prev = {
             bytes: num(s.bytes),
@@ -258,14 +333,15 @@ export class StatsGraph {
     }
 
     /**
-     * The ceiling for a lane: the smallest allowed step above the window's max,
+     * The ceiling for a lane: the smallest allowed step above the reading it is
+     * given (the window's 95th percentile, not its max — see SCALE_PERCENTILE),
      * held on the way down. Shrinking the instant the peak scrolls out makes a
      * calm stream look like it is breathing; four quiet ticks below 55% of the
      * current step is a real change of regime, not a gap between spikes.
      *
      * @param {string} key lane identity (its own hysteresis state)
      * @param {number[]} steps
-     * @param {number} max
+     * @param {number} max the reading the axis must hold
      */
     ceiling(key, steps, max) {
         const st = this._scales[key] || (this._scales[key] = { step: steps[0], low: 0 });
@@ -335,6 +411,7 @@ export class StatsGraph {
                     { ring: this.lossJit, color: C_LOSS_SOFT, width: 1 },
                 ],
                 value: () => fmtPair(this.lossNet.last(), this.lossJit.last(), 2),
+                quiet: () => !(this.lossNet.last() > 0) && !(this.lossJit.last() > 0),
             },
         ];
         return all.filter((lane) => lane.series.some((s) => s.ring.hasData()));
@@ -419,19 +496,23 @@ export class StatsGraph {
             ctx.fillText(' ' + lane.unit, ctx.measureText(label).width, y + 9);
         }
         ctx.textAlign = 'right';
-        ctx.fillStyle = lane.series[0].color;
+        // The lane's own colour carries its identity — except where the colour
+        // is a warning: a loss lane sitting at 0.00 must not be written in red,
+        // or the card cries about nothing for the whole session.
+        const quiet = lane.quiet && lane.quiet();
+        ctx.fillStyle = quiet ? 'rgba(255,255,255,0.55)' : lane.series[0].color;
         ctx.font = `10px ${FONT_STACK}`;
         ctx.fillText(lane.value(), w, y + 9);
 
         // Baseline at zero, and the ceiling as a dotted rule with its figure —
         // a curve with no scale is decoration.
-        const max = Math.max(
+        const high = Math.max(
             ...lane.series.map((s) => {
-                const m = s.ring.max();
+                const m = s.ring.percentile(SCALE_PERCENTILE);
                 return Number.isFinite(m) ? m : 0;
             }),
         );
-        const ceil = this.ceiling(lane.key, lane.steps, max);
+        const ceil = this.ceiling(lane.key, lane.steps, high);
         ctx.fillStyle = INK_AXIS;
         ctx.fillRect(0, plotBottom, w, 1);
         ctx.save();
@@ -472,6 +553,8 @@ export class StatsGraph {
         let lastX = 0;
         let lastY = 0;
         const fillPts = [];
+        /** x of every sample the axis could not hold. */
+        const over = [];
         ctx.beginPath();
         for (let i = 0; i < n; i++) {
             const v = ring.at(i);
@@ -481,6 +564,11 @@ export class StatsGraph {
             }
             const x = xAt(i, n, w);
             const yy = yOf(v);
+            // Above the axis: the line is clipped to the plot, so the sample
+            // would silently read as "exactly the ceiling". A mark on the top
+            // edge says it went past — the scale stays readable AND the outlier
+            // is still there to be seen.
+            if (v > ceil) over.push(x);
             if (!open) {
                 ctx.moveTo(x, yy);
                 open = true;
@@ -514,6 +602,9 @@ export class StatsGraph {
             }
         }
         ctx.stroke();
+
+        ctx.fillStyle = s.color;
+        for (const x of over) ctx.fillRect(Math.max(0, x - 1.5), top, 3, 2);
 
         // The now-end of the line gets a dot: on a 22px lane it is the
         // difference between "the value is there" and "the value stopped".
