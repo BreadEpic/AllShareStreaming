@@ -269,7 +269,7 @@
         "fpsSuffix": "{{fps}} FPS",
         "hdr": "HDR",
         "hdrDesc": "高动态范围——更丰富的色彩与对比度。MoonlightWeb 原生主机不看此选项：只要两端屏幕都处于 HDR，就以 HDR 串流。",
-        "hdrDeviceSdr": "此设备未启用 HDR。",
+        "hdrDeviceSdr": "此屏幕当前未处于 HDR 模式：在其开启 HDR 之前，串流保持 SDR。",
         "hdrBrowserUnsupported": "此浏览器不支持 HDR。",
         "chroma444": "4:4:4 色度",
         "chroma444Desc": "全分辨率色彩（4:4:4）而非 4:2:0。需要主机和客户端 GPU 均支持所选编解码器的 4:4:4。需要显著更高的带宽。",

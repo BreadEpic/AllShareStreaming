@@ -730,24 +730,27 @@ export class SettingsView {
         const psDisabled = this._powerSave ? ' disabled' : '';
         const psLocked = this._powerSave ? ' settings-field-locked' : '';
 
-        // HDR is offered only to a client that can show it: a display in an HDR
-        // mode, WebGPU (the one renderer with an HDR surface) and a 10-bit
-        // decoder. matchMedia tracks the OS switch too (Windows "HDR off" → no
-        // match), so the box greys out the moment the desktop drops to SDR. On
-        // such a device the preference is also forced off: a saved "true" would
-        // otherwise still ask the host for HDR and hand PQ pixels to an SDR
-        // output. The note says which half is missing — the screen, or the
-        // browser.
+        // HDR is greyed out only on a client that could never show it: no WebGPU
+        // (the one renderer with an HDR surface) or no 10-bit decoder. The
+        // screen being in SDR right now is not that — Windows reports "HDR off"
+        // exactly like a screen that has no HDR at all (matchMedia cannot tell
+        // them apart), and greying the box there, forcing the saved preference
+        // off with it, left no way to prepare HDR before switching the screen
+        // over. So the box stays, with a note; the launch gate (app.js) streams
+        // SDR while the screen is SDR, and a native host follows the screen
+        // live whatever the box says.
         const displayHdr = supportsDisplayHdr();
         const hdrCap = this._hdrCapability || { webgpu: !!this._webgpuUsable, decode: true };
-        const hdrAvailable = displayHdr && hdrCap.webgpu && hdrCap.decode;
+        const hdrAvailable = hdrCap.webgpu && hdrCap.decode;
         if (!hdrAvailable) this._hdrEnabled = false;
         const hdrDisabled = hdrAvailable ? psDisabled : ' disabled';
         const hdrLocked = hdrAvailable ? psLocked : ' settings-field-locked';
         const hdrChecked = this._hdrEnabled ? 'checked' : '';
-        const hdrNote = hdrAvailable
-            ? ''
-            : `<div class="settings-note">${t(displayHdr ? 'settings.hdrBrowserUnsupported' : 'settings.hdrDeviceSdr')}</div>`;
+        const hdrNote = !hdrAvailable
+            ? `<div class="settings-note">${t('settings.hdrBrowserUnsupported')}</div>`
+            : displayHdr
+              ? ''
+              : `<div class="settings-note">${t('settings.hdrDeviceSdr')}</div>`;
 
         // 4:4:4 arrives as HEVC RExt or H.264 High 4:4:4, and not every browser
         // decodes either — Chrome on Windows decodes neither, and a stream asked
