@@ -65,6 +65,20 @@ namespace mw::native::encode {
 ///    at once — the target goes back to where the link had left it — instead
 ///    of being climbed back in five quiet raises. A cut a real overuse made
 ///    before the page went away stays.
+///  - **Back to a rate the link has proven**: every kGoodHoldMs the target is
+///    sampled, and a sample the link then carried for the whole window
+///    without a single overuse becomes the link's last good rate. Below it,
+///    quiet raises by kFastRaisePercent instead of kRaisePercent; above it,
+///    the slow climb stays. Measured on a corporate Wi-Fi (16/09/2026): the
+///    link froze for 0.3 to 1.2 s both ways every 20 to 30 s and was clean in
+///    between. One freeze is a string of overuse reports while the queue
+///    drains — 20 Mbps cut to the 4 Mbps floor in 3.5 s — and the slow climb
+///    then kept the picture soft for 30 s on a link long healthy again. The
+///    cut still happens at once; only the way back is quicker.
+///  - **A probe that fails**: an overuse during a fast climb, or within
+///    kProbeGraceMs of its last step, says the link really narrowed. The
+///    good rate falls back to where the climb started, so the next climb is
+///    a slow one: the rate can overshoot once, not oscillate.
 ///
 /// Pure and clocked by the caller, so it can be tested without a network.
 class RateGovernor
@@ -79,6 +93,9 @@ public:
     static constexpr int64_t kHoldAfterCutMs = 2000;
     static constexpr int64_t kQuietBeforeRaiseMs = 3000;
     static constexpr int64_t kSilenceMs = 4000;
+    static constexpr int kFastRaisePercent = 25;
+    static constexpr int64_t kGoodHoldMs = 5000;
+    static constexpr int64_t kProbeGraceMs = 5000;
 
     /// @p settingKbps the viewer's ceiling. Starts there.
     void start(int settingKbps, int64_t nowMs)
@@ -89,6 +106,12 @@ public:
         m_LastReportMs = nowMs;
         m_HoldUntilMs = 0;
         m_SilenceCut = false;
+        // Nothing is proven yet: a session's first seconds climb slowly.
+        m_GoodKbps = 0;
+        rearmGoodSample(nowMs);
+        m_ClimbStartKbps = 0;
+        m_LastFastRaiseMs = kNever;
+        m_LastRaiseFast = false;
     }
 
     /// The viewer moved the ceiling (the frontend's ladder, or a new session
@@ -98,6 +121,8 @@ public:
         if (settingKbps <= 0) return;
         m_Setting = settingKbps;
         if (m_Target > m_Setting) m_Target = m_Setting;
+        if (m_GoodKbps > m_Setting) m_GoodKbps = m_Setting;
+        if (m_GoodSampleKbps > m_Setting) m_GoodSampleKbps = m_Setting;
     }
 
     /// One report from the receiver at @p nowMs. Returns true when the target
@@ -105,6 +130,7 @@ public:
     bool report(const LinkFeedback& fb, int64_t nowMs)
     {
         m_LastReportMs = nowMs;
+        m_LastRaiseFast = false;
         if (fb.resumed) {
             const bool restore = m_SilenceCut && m_TargetBeforeSilence > m_Target;
             m_SilenceCut = false;
@@ -126,7 +152,20 @@ public:
             m_QuietSinceMs = nowMs;
             m_HoldUntilMs = nowMs + kHoldAfterCutMs;
             m_Overuses++;
-            return cut();
+            // A fast climb that ran into a queue: the good rate was not the
+            // link's any more.
+            if (m_LastFastRaiseMs != kNever && nowMs - m_LastFastRaiseMs < kProbeGraceMs)
+                m_GoodKbps = m_ClimbStartKbps;
+            m_LastFastRaiseMs = kNever;
+            const bool changed = cut();
+            rearmGoodSample(nowMs);
+            return changed;
+        }
+        // No queue growing: the sample taken at the start of the window was
+        // carried all through it.
+        if (nowMs - m_GoodSampleMs >= kGoodHoldMs) {
+            if (m_GoodSampleKbps > m_GoodKbps) m_GoodKbps = m_GoodSampleKbps;
+            rearmGoodSample(nowMs);
         }
         if (!quiet) {
             // Neither: the queue is present but not growing. Hold.
@@ -135,7 +174,7 @@ public:
         }
         if (nowMs < m_HoldUntilMs) return false;
         if (nowMs - m_QuietSinceMs < kQuietBeforeRaiseMs) return false;
-        return raise();
+        return raise(nowMs);
     }
 
     /// Called on the host's own clock between reports. Returns true when the
@@ -148,7 +187,13 @@ public:
         m_HoldUntilMs = nowMs + kHoldAfterCutMs;
         m_QuietSinceMs = nowMs;
         m_Silences++;
-        return cut();
+        m_LastRaiseFast = false;
+        m_LastFastRaiseMs = kNever;
+        const bool changed = cut();
+        // A silence proves nothing about the link, either way: the good rate
+        // stays, and the window that saw no report starts over.
+        rearmGoodSample(nowMs);
+        return changed;
     }
 
     int targetKbps() const { return m_Target; }
@@ -162,8 +207,22 @@ public:
     int overuses() const { return m_Overuses; }
     int silences() const { return m_Silences; }
     int changes() const { return m_Changes; }
+    /// The rate the link last carried through a whole kGoodHoldMs, 0 until
+    /// one is proven.
+    int goodKbps() const { return m_GoodKbps; }
+    /// The last report raised the target by the fast step, back toward the
+    /// good rate. For the log line.
+    bool lastRaiseFast() const { return m_LastRaiseFast; }
 
 private:
+    static constexpr int64_t kNever = INT64_MIN;
+
+    void rearmGoodSample(int64_t nowMs)
+    {
+        m_GoodSampleKbps = m_Target;
+        m_GoodSampleMs = nowMs;
+    }
+
     bool cut()
     {
         int next = m_Target - m_Target * kCutPercent / 100;
@@ -176,10 +235,20 @@ private:
         return true;
     }
 
-    bool raise()
+    bool raise(int64_t nowMs)
     {
         if (m_Target >= m_Setting) return false;
-        int next = m_Target + m_Target * kRaisePercent / 100;
+        int next;
+        if (m_Target < m_GoodKbps) {
+            // The first fast step of a climb remembers where it left from.
+            if (m_LastFastRaiseMs == kNever) m_ClimbStartKbps = m_Target;
+            m_LastFastRaiseMs = nowMs;
+            m_LastRaiseFast = true;
+            next = m_Target + m_Target * kFastRaisePercent / 100;
+            if (next > m_GoodKbps) next = m_GoodKbps;
+        } else {
+            next = m_Target + m_Target * kRaisePercent / 100;
+        }
         if (next > m_Setting) next = m_Setting;
         if (next == m_Target) next = m_Setting; // a rounding stall never sticks
         m_Target = next;
@@ -196,6 +265,14 @@ private:
     /// Where the link had left the target when the reports stopped, for the
     /// receiver that comes back and says the silence was its own.
     int m_TargetBeforeSilence = 0;
+    int m_GoodKbps = 0;
+    int m_GoodSampleKbps = 0;
+    int64_t m_GoodSampleMs = 0;
+    /// Where the current fast climb started, and when its last step was:
+    /// kNever when no climb is under way or on probation.
+    int m_ClimbStartKbps = 0;
+    int64_t m_LastFastRaiseMs = kNever;
+    bool m_LastRaiseFast = false;
     int m_Overuses = 0;
     int m_Silences = 0;
     int m_Changes = 0;

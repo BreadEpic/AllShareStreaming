@@ -570,6 +570,95 @@ void run_rate_control_tests()
         CHECK_EQ(h.overuses(), 1);
     }
 
+    SECTION("RateGovernor — a freeze on a proven link climbs back fast");
+    {
+        // The corporate Wi-Fi of 16/09/2026: a link that carried the setting,
+        // then froze, and a string of overuse reports while its queue drained.
+        RateGovernor g;
+        g.start(20000, 0);
+        LinkFeedback quiet;
+        for (int64_t t = 500; t <= 6000; t += 500)
+            g.report(quiet, t);
+        CHECK_EQ(g.goodKbps(), 20000);
+        LinkFeedback frozen;
+        frozen.owdRiseMs = 200;
+        for (int64_t t = 6500; t <= 10000; t += 500)
+            g.report(frozen, t);
+        CHECK_EQ(g.targetKbps(), 4000); // the floor, as before
+        CHECK_EQ(g.goodKbps(), 20000);  // a freeze proves nothing against it
+        // Hold and quiet as before: nothing until 13 000.
+        CHECK(!g.report(quiet, 10500));
+        CHECK(!g.report(quiet, 12500));
+        CHECK(g.report(quiet, 13000));
+        CHECK(g.lastRaiseFast());
+        CHECK_EQ(g.targetKbps(), 5000);
+        // 5 000 → 6 250 → 7 812 → 9 765 → 12 206 → 15 257 → 19 071 → 20 000.
+        int64_t t = 13500;
+        int steps = 1;
+        while (g.limiting() && steps < 100) {
+            g.report(quiet, t);
+            t += 500;
+            steps++;
+        }
+        CHECK_EQ(g.targetKbps(), 20000);
+        CHECK_EQ(steps, 8); // four seconds, where 5 % steps took thirty
+    }
+
+    SECTION("RateGovernor — a fast climb that runs into a queue falls back to a slow one");
+    {
+        RateGovernor g;
+        g.start(20000, 0);
+        LinkFeedback quiet;
+        for (int64_t t = 500; t <= 6000; t += 500)
+            g.report(quiet, t);
+        LinkFeedback frozen;
+        frozen.owdRiseMs = 200;
+        for (int64_t t = 6500; t <= 10000; t += 500)
+            g.report(frozen, t);
+        CHECK(g.report(quiet, 13000));
+        CHECK(g.report(quiet, 13500));
+        CHECK_EQ(g.targetKbps(), 6250);
+        // The link really narrowed: overuse in the middle of the climb.
+        LinkFeedback rising;
+        rising.owdRiseMs = 45;
+        CHECK(g.report(rising, 14000));
+        CHECK_EQ(g.targetKbps(), 5000);
+        CHECK_EQ(g.goodKbps(), 4000); // where the climb had started
+        // The next climb is the slow one.
+        CHECK(!g.report(quiet, 16500));
+        CHECK(g.report(quiet, 17000));
+        CHECK(!g.lastRaiseFast());
+        CHECK_EQ(g.targetKbps(), 5250);
+    }
+
+    SECTION("RateGovernor — a session's first seconds prove nothing");
+    {
+        RateGovernor g;
+        g.start(20000, 0);
+        LinkFeedback rising;
+        rising.owdRiseMs = 45;
+        CHECK(g.report(rising, 500));
+        CHECK_EQ(g.goodKbps(), 0);
+        LinkFeedback quiet;
+        CHECK(!g.report(quiet, 3000));
+        CHECK(g.report(quiet, 3500));
+        CHECK(!g.lastRaiseFast());
+        CHECK_EQ(g.targetKbps(), 16800);
+    }
+
+    SECTION("RateGovernor — a lowered ceiling lowers the good rate with it");
+    {
+        RateGovernor g;
+        g.start(20000, 0);
+        LinkFeedback quiet;
+        for (int64_t t = 500; t <= 5000; t += 500)
+            g.report(quiet, t);
+        CHECK_EQ(g.goodKbps(), 20000);
+        g.setSetting(10000);
+        CHECK_EQ(g.goodKbps(), 10000);
+        CHECK_EQ(g.targetKbps(), 10000);
+    }
+
     SECTION("EffectiveCadence — the clock closes windows of one second");
     {
         EffectiveCadence c;
