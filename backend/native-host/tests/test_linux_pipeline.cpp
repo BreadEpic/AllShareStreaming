@@ -29,6 +29,7 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <vector>
 
 // The Linux capture and conversion against the real display and the real GPU.
 //
@@ -40,6 +41,53 @@
 
 void run_linux_pipeline_tests()
 {
+    SECTION("VA-API — a keyframe without its parameter sets is caught");
+#if !defined(MW_NATIVE_LINUX_GFX)
+    std::fprintf(stderr, "  skipped: Linux graphics backend not built\n");
+#else
+    {
+        using mw::native::Codec;
+        using mw::native::encode::carriesParameterSets;
+        // What a Radeon 610M really sent on 16/09/2026: the IDR alone, one start
+        // code in the whole frame. This is the shape no client can decode.
+        const std::vector<uint8_t> headlessHevc = {0x00, 0x00, 0x00, 0x01, 0x26, 0x01,
+                                                   0xaf, 0x70, 0x98, 0xa0, 0x1b, 0xa4};
+        CHECK(!carriesParameterSets(headlessHevc, Codec::Hevc));
+        // And what a Radeon 780M sent, same binary, same minute: AUD, VPS, SPS,
+        // PPS, IDR.
+        const std::vector<uint8_t> goodHevc = {
+            0x00, 0x00, 0x00, 0x01, 0x46, 0x01, 0x10, 0x00, 0x00, 0x00, 0x01, 0x40,
+            0x01, 0x0c, 0x01, 0x00, 0x00, 0x00, 0x01, 0x42, 0x01, 0x01, 0x00, 0x00,
+            0x00, 0x01, 0x44, 0x01, 0xc0, 0x00, 0x00, 0x00, 0x01, 0x26, 0x01, 0xaf};
+        CHECK(carriesParameterSets(goodHevc, Codec::Hevc));
+        // A VPS and an SPS are not enough: without the PPS the decoder still has
+        // nothing to configure.
+        const std::vector<uint8_t> noPps = {0x00, 0x00, 0x00, 0x01, 0x40, 0x01, 0x0c,
+                                            0x00, 0x00, 0x00, 0x01, 0x42, 0x01, 0x01,
+                                            0x00, 0x00, 0x00, 0x01, 0x26, 0x01, 0xaf};
+        CHECK(!carriesParameterSets(noPps, Codec::Hevc));
+
+        // H.264 reads the type from five bits of a single byte: 0x67 is an SPS,
+        // 0x68 a PPS, 0x65 an IDR slice. Three-byte start codes, as a driver
+        // that drops the leading zero writes them.
+        const std::vector<uint8_t> goodH264 = {0x00, 0x00, 0x01, 0x67, 0x64, 0x00, 0x2a,
+                                               0x00, 0x00, 0x01, 0x68, 0xee, 0x3c, 0xb0,
+                                               0x00, 0x00, 0x01, 0x65, 0x88, 0x84};
+        CHECK(carriesParameterSets(goodH264, Codec::H264));
+        const std::vector<uint8_t> sliceOnly = {0x00, 0x00, 0x00, 0x01, 0x65, 0x88, 0x84, 0x00};
+        CHECK(!carriesParameterSets(sliceOnly, Codec::H264));
+        // The same bytes read as the other codec mean something else entirely —
+        // which is why the codec is passed in rather than guessed.
+        CHECK(!carriesParameterSets(goodH264, Codec::Hevc));
+        // Nothing at all, and nothing to crash on.
+        CHECK(!carriesParameterSets({}, Codec::H264));
+        CHECK(!carriesParameterSets({0x00, 0x00}, Codec::Hevc));
+        // AV1 carries its sequence header inside the frame: there is no separate
+        // parameter set to look for, so the question does not apply.
+        CHECK(carriesParameterSets({0x12, 0x00}, Codec::Av1));
+    }
+#endif
+
     SECTION("Linux — KMS capture → EGL conversion → VA-API surface");
 
 #if !defined(MW_NATIVE_LINUX_GFX)

@@ -96,6 +96,29 @@ VABufferID refreshBand(VADisplay display, VAContextID context, int position, int
 
 } // namespace
 
+bool carriesParameterSets(const std::vector<uint8_t>& bitstream, Codec codec)
+{
+    bool sps = false;
+    bool pps = false;
+    for (size_t i = 0; i + 3 < bitstream.size(); ++i) {
+        if (bitstream[i] != 0 || bitstream[i + 1] != 0 || bitstream[i + 2] != 1) continue;
+        const uint8_t header = bitstream[i + 3];
+        if (codec == Codec::Hevc) {
+            const uint8_t type = static_cast<uint8_t>((header >> 1) & 0x3F);
+            if (type == 33) sps = true; // SPS_NUT
+            if (type == 34) pps = true; // PPS_NUT
+        } else {
+            const uint8_t type = static_cast<uint8_t>(header & 0x1F);
+            if (type == 7) sps = true;
+            if (type == 8) pps = true;
+        }
+        if (sps && pps) return true;
+    }
+    // AV1 has no NAL units and no separate parameter sets — its sequence header
+    // is an OBU inside the frame, and renderAv1() is unreachable anyway.
+    return codec == Codec::Av1;
+}
+
 struct VaapiEncoder::Impl
 {
     int renderFd = -1;
@@ -376,6 +399,8 @@ bool VaapiEncoder::init(const std::string& renderNode, Codec codec, int width, i
     m_RateDirty = true;
     m_RefreshPosition = 0;
 
+    if (!parameterSetsAreWritten(error)) return false;
+
     log::info("[native] VA-API ready: " + std::to_string(m_Width) + "x" + std::to_string(m_Height) +
               "@" + std::to_string(m_Fps) + " " + toString(codec) + " CBR " +
               std::to_string(m_BitrateKbps) + " kbps, VBV " +
@@ -388,6 +413,44 @@ bool VaapiEncoder::init(const std::string& renderNode, Codec codec, int width, i
                    : ", keyframes on demand") +
               ", headers by the driver" +
               (m_Tuning.isDefault() ? "" : " [bench: " + m_Tuning.describe() + "]"));
+    return true;
+}
+
+/// Encode one IDR that nobody will ever see, and check it carries its parameter
+/// sets. See the ⚠️ in the header for the machine that made this necessary.
+///
+/// The input surface holds whatever it was created with — undefined pixels, and
+/// that is fine: what is read back is the SHAPE of the bitstream, not its
+/// picture. Costs one frame's encode at start-up (about 4 ms at 1080p, less at
+/// every rebuild the load cap triggers), and every trace of it is wiped
+/// afterwards so the first real frame is still frame zero.
+bool VaapiEncoder::parameterSetsAreWritten(std::string& error)
+{
+    EncoderOutput probe = {};
+    if (!encode(true, 0, probe, error)) {
+        error = "the encoder refused its first frame: " + error;
+        return false;
+    }
+    const bool written = carriesParameterSets(m_Bitstream, m_Codec);
+    releaseOutput();
+
+    // Back to a freshly initialized encoder: the probe never happened.
+    m_FrameNum = 0;
+    m_IdrPicId = 0;
+    m_HaveReference = false;
+    m_RateDirty = true;
+    m_RefreshPosition = 0;
+    for (auto& state : d->reconState)
+        state = {};
+    d->reconCurrent = 0;
+    d->referenceSlot = -1;
+
+    if (!written) {
+        error = std::string("this driver ") + kNoParameterSets + " — its " + toString(m_Codec) +
+                " keyframes carry the picture alone, and no client can configure a decoder from "
+                "that";
+        return false;
+    }
     return true;
 }
 

@@ -711,8 +711,35 @@ private:
             log::info("[native] the portal gives shared memory, not DMA-BUF — encoding on the CPU, "
                       "which is the only route that can read it");
         }
-        m_UsingCpuPair = m_Target.encoder == EncoderApi::Software || sharedMemory;
+        m_UsingCpuPair =
+            m_Target.encoder == EncoderApi::Software || sharedMemory || m_GpuEncoderUnusable;
 
+        if (!buildPair(outputWidth, outputHeight, error)) {
+            // ⚠️ The one hardware failure worth surviving: a driver that encodes
+            // but writes no VPS/SPS/PPS (a Radeon 610M does exactly that — see
+            // VaapiEncoder.h). Nothing downstream can work around it, and the
+            // CPU pair always can, so take that road rather than end the stream
+            // on a machine whose only fault is its driver. Remembered, so the
+            // rebuilds the load cap asks for do not pay for the discovery again.
+            if (m_UsingCpuPair ||
+                error.find(encode::VaapiEncoder::kNoParameterSets) == std::string::npos)
+                return false;
+            log::info("[native] " + error + ". Encoding on the CPU instead, which writes its own");
+            m_GpuEncoderUnusable = true;
+            m_UsingCpuPair = true;
+            if (!buildPair(outputWidth, outputHeight, error)) return false;
+        }
+        m_PipelineCaptureWidth = m_Capture->width();
+        m_PipelineCaptureHeight = m_Capture->height();
+        return true;
+    }
+
+    /// The pair itself, once m_UsingCpuPair is settled: pick the codec that pair
+    /// can produce, build it, start it. Separate because it is run twice when a
+    /// GPU encoder turns out to be unusable.
+    bool buildPair(int outputWidth, int outputHeight, std::string& error)
+    {
+        m_Pipeline.reset();
         // ⚠️ The codec has to follow the pair. The Selector picked HEVC because
         // the GPU offers it, and it was right about the GPU — but a pair that
         // encodes on the CPU encodes with OpenH264, which does H.264 and
@@ -752,12 +779,9 @@ private:
             m_Pipeline = std::make_unique<CpuPipeline>();
         else
             m_Pipeline = std::make_unique<GpuPipeline>();
-        if (!m_Pipeline->init(*m_Capture, m_Codec, outputWidth, outputHeight, m_EncodeFps,
-                              m_Config.bitrateKbps, m_Config.intraRefresh, m_Config.tuning, error))
-            return false;
-        m_PipelineCaptureWidth = m_Capture->width();
-        m_PipelineCaptureHeight = m_Capture->height();
-        return true;
+        return m_Pipeline->init(*m_Capture, m_Codec, outputWidth, outputHeight, m_EncodeFps,
+                                m_Config.bitrateKbps, m_Config.intraRefresh, m_Config.tuning,
+                                error);
     }
 
     convert::CursorDraw cursorDraw() const
@@ -1619,6 +1643,10 @@ private:
     /// Which pair buildPipeline actually made. Not derivable from m_Target: the
     /// portal can force the CPU pair on a machine whose GPU could have encoded.
     bool m_UsingCpuPair = false;
+
+    /// Set when the GPU encoder was tried and found to write no parameter sets.
+    /// Every later rebuild then goes straight to the CPU pair.
+    bool m_GpuEncoderUnusable = false;
 
     /// The size the session was opened at, which the cap scales FROM — never
     /// from the current one, or a run of reductions would compound.

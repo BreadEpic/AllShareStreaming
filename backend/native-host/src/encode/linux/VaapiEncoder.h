@@ -55,8 +55,37 @@
 // are supported by both and used by FFmpeg; they are NOT sent here until a
 // measurement shows the driver's own are missing something (the VUI's
 // bitstream_restriction, say — the B8 lesson from NVENC).
+//
+// ⚠️ And on one machine they were missing EVERYTHING. Measured 16/09/2026 on a
+// Radeon 610M (radeonsi "raphael_mendocino", Mesa 25.2.8): every IDR came out as
+// the picture alone — `00 00 00 01 26 01 …`, one start code in 39 920 bytes, no
+// VPS, no SPS, no PPS. The same binary on a 780M writes all four. A browser
+// cannot configure a decoder from that, so it asks for another IDR, gets another
+// headless one, and gives up 15 seconds later with "decoder_unsupported": a
+// stream that never starts and says nothing useful about why.
+//
+// Writing the parameter sets here instead is a bitstream writer that has to
+// agree, bit for bit, with slice headers the driver still writes — new risk for
+// every GPU that works today, to rescue one that does not. So the encoder does
+// the cheap, certain thing: init() encodes ONE throwaway IDR and looks. A driver
+// that writes its parameter sets is used as before; one that does not is refused
+// by name, and the session falls back to the CPU pair, which always works.
 
 namespace mw::native::encode {
+
+/// Whether an Annex-B run carries the parameter sets a decoder must have before
+/// it can be configured: SPS and PPS, plus the VPS HEVC puts in front of them.
+///
+/// Walks start codes rather than parsing: the NAL type is the only field read,
+/// and both codecs put it in the first byte after the code (H.264: bits 0-4 of
+/// one byte; HEVC: bits 1-6 of the first of two). Three- and four-byte start
+/// codes both occur — a four-byte one simply has a zero where the loop is
+/// already looking. AV1 answers true: it has no NAL units, and its sequence
+/// header is an OBU inside the frame.
+///
+/// Out here rather than inside the encoder because it is the one piece of this
+/// file that can be tested without a GPU.
+bool carriesParameterSets(const std::vector<uint8_t>& bitstream, Codec codec);
 
 class VaapiEncoder
 {
@@ -66,6 +95,12 @@ public:
 
     VaapiEncoder(const VaapiEncoder&) = delete;
     VaapiEncoder& operator=(const VaapiEncoder&) = delete;
+
+    /// How init() names the one failure a caller can do something about: this
+    /// driver encodes, but writes no parameter sets, so no client can decode it.
+    /// The Linux session matches on this to fall back to the CPU pair rather
+    /// than end the stream — see LinuxSession::buildPipeline.
+    static constexpr const char* kNoParameterSets = "writes no parameter sets";
 
     /// Open VA-API on @p renderNode and configure a @p codec encoder for
     /// @p width × @p height at @p fps and @p bitrateKbps. H.264 and HEVC; AV1
@@ -120,6 +155,7 @@ private:
     bool renderH264(bool idr, std::string& error);
     bool renderHevc(bool idr, std::string& error);
     bool renderAv1(bool key, std::string& error);
+    bool parameterSetsAreWritten(std::string& error);
 
     Codec m_Codec = Codec::H264;
     int m_Width = 0;
