@@ -11,10 +11,10 @@
 # can be downloaded from a manual CI run's artifacts and tested before a tag is
 # cut. Three channels, told apart by the version they stamp:
 #   • v* tag         → `0.3.0`, PROD edition, published to every user.
-#   • channel=staging → `<last tag>-<3-char sha>-stg` (e.g. 0.3.0-b7c-stg), PROD
+#   • channel=staging → `<last tag>.g<3-char sha>-stg` (e.g. 0.3.0.gb7c-stg), PROD
 #     edition (MoonlightWeb, installs over the release, production
 #     introduction server), artifacts only — a hidden production build.
-#   • channel=dev (the default) → `<last tag>-<3-char sha>-dev`, DEV edition:
+#   • channel=dev (the default) → `<last tag>.g<3-char sha>-dev`, DEV edition:
 #     MoonlightWebDev installs BESIDE a production MoonlightWeb instead of over
 #     it, under its own name, state, ports, staging server and blue icons
 #     (backend/src/common/Edition.h), so testing it never touches the release.
@@ -108,10 +108,10 @@ jobs:
       # Single version string for every platform job (installer file names,
       # MW_VERSION baked into the binary, artifact names):
       #   • v* tag push     → the tag, verbatim minus the "v" (v1.2.3 → 1.2.3)
-      #   • channel=staging → last v* tag + 3-char sha + -stg (0.3.0-b7c-stg)
-      #   • channel=dev     → last v* tag + 3-char sha + -dev (0.2.4-e8f-dev)
+      #   • channel=staging → last v* tag + .g + 3-char sha + -stg (0.3.0.gb7c-stg)
+      #   • channel=dev     → last v* tag + .g + 3-char sha + -dev (0.3.0.g412-dev)
       # `label` names the workflow artifacts: the version behind a "v" on every
-      # channel (v0.3.0, v0.3.0-b7c-stg). Only a pushed v* git TAG releases; an
+      # channel (v0.3.0, v0.3.0.gb7c-stg). Only a pushed v* git TAG releases; an
       # artifact name never does. The version itself stays bare: dpkg wants a
       # leading digit, and macOS bundle versions are numeric.
       - id: ver
@@ -128,12 +128,13 @@ jobs:
             esac
             tag=$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || echo v0.2.1)
             # cut, not `rev-parse --short=3`: git refuses to abbreviate below 4.
-            v="${tag#v}-$(git rev-parse HEAD | cut -c1-3)-$suffix"
+            # Three characters can collide between two commits; that is accepted.
+            v="${tag#v}.g$(git rev-parse HEAD | cut -c1-3)-$suffix"
           fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
           echo "label=v$v" >> "$GITHUB_OUTPUT"
           # rpm rejects '-' in the Version field, so the Linux packages use a
-          # dotted variant (0.3.0-b7c-stg → 0.3.0.b7c.stg). Identical on a tag
+          # dotted variant (0.3.0.gb7c-stg → 0.3.0.gb7c.stg). Identical on a tag
           # build. Sorts after the 0.3.0 it was cut from and before 0.3.1, as
           # the commit does.
           echo "pkg_version=${v//-/.}" >> "$GITHUB_OUTPUT"
@@ -901,7 +902,7 @@ jobs:
   # consults Gatekeeper.
   #
   # Runs only on a v* tag: the cask points at a release asset URL, which does
-  # not exist for the untagged 0.2.1-b7c builds. Skipped, loudly, when
+  # not exist for the untagged 0.3.0.gb7c-dev builds. Skipped, loudly, when
   # HOMEBREW_TAP_TOKEN is unset — same posture as the SignPath steps above.
   homebrew:
     needs: [setup, macos]

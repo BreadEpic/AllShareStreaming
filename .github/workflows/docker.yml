@@ -124,7 +124,7 @@ jobs:
           fetch-depth: 0 # `git describe` needs the last v* tag
 
       # Same version string the installers carry (release.yml `setup.ver`):
-      # a v* tag ships 1.2.3, anything else <last tag>-<3-char sha>. Baked into
+      # a v* tag ships 1.2.3, anything else <last tag>.g<3-char sha>. Baked into
       # the binary, so `moonlightweb --version` inside the container names the
       # exact commit the image came from.
       - id: ver
@@ -133,7 +133,7 @@ jobs:
             v="${GITHUB_REF_NAME#v}"
           else
             tag=$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || echo v0.2.1)
-            v="${tag#v}-$(git rev-parse HEAD | cut -c1-3)"
+            v="${tag#v}.g$(git rev-parse HEAD | cut -c1-3)"
           fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
 

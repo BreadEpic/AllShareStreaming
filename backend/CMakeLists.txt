@@ -15,8 +15,9 @@ project(moonlightweb-backend VERSION 0.0.0 LANGUAGES C CXX)
 # Single source of truth for the shipped version string. Priority:
 #   1. -DMW_VERSION=x.y.z on the command line (release CI passes the v* tag)
 #   2. `git describe` against the latest v* tag (local/dev builds; a build
-#      past the tag reports e.g. 0.1.1.3.g6f79dad — dots, not dashes, so the
-#      string stays legal for rpm and parses as newer in UpdateChecker)
+#      past the tag reports e.g. 0.3.0.g412 — dots, not dashes, so the
+#      string stays legal for rpm; UpdateChecker reads it as the tag itself,
+#      so the release it was cut from is never offered as an update)
 #   3. 0.0.0-dev, and nothing else. There is deliberately no literal release
 #      number to fall back on: such a literal stops being true the day the
 #      next release ships, and a build carrying it then claims to BE that
@@ -38,7 +39,12 @@ if(NOT MW_VERSION)
             ERROR_QUIET)
     endif()
     if(Git_FOUND AND _mw_git_rc EQUAL 0)
+        # v0.3.0-55-g41221df2 → 0.3.0.g412: the commit count is dropped and the
+        # sha cut to three characters, as CI stamps it. Two commits sharing
+        # those three characters then read the same; that is accepted.
         string(REGEX REPLACE "^v" "" _mw_git_describe "${_mw_git_describe}")
+        string(REGEX REPLACE "-[0-9]+-g([0-9a-f][0-9a-f][0-9a-f])[0-9a-f]*$" ".g\\1"
+               _mw_git_describe "${_mw_git_describe}")
         string(REPLACE "-" "." _mw_git_describe "${_mw_git_describe}")
         set(MW_VERSION "${_mw_git_describe}")
         # Watching these makes a plain `cmake --build` re-configure and pick up

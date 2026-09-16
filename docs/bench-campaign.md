@@ -646,7 +646,7 @@ left `QT_DEBUG`, a release binary could not be measured for click-to-photon.
 
 No tag is needed. `ci.yml` runs the full packaging as its last stage, and **a
 manual run on a branch only uploads workflow artifacts** — the version is
-`<last tag>-<3-char sha>`, nothing is published.
+`<last tag>.g<3-char sha>-dev`, nothing is published.
 
 1. Push the commits (Bruno's gesture; `ci.yml` has no branch push trigger on
    purpose, so the multi-platform matrix is never spent by accident).

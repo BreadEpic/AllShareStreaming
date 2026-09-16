@@ -151,7 +151,7 @@ Ports, volume layout, backups, non-root operation and troubleshooting: [`docker/
 
 ## 9.4bis Editions — PROD and DEV side by side
 
-Every installer comes in two editions, decided by `release.yml`: a `v*` tag builds **PROD** (`MoonlightWeb`), a CI dispatch with `channel=staging` builds the same PROD edition as a hidden, unpublished build (`0.3.0-b7c-stg`), and every other run — a CI dispatch on `main` with the default `channel=dev` — builds **DEV** (`MoonlightWebDev`). DEV is how a pre-release reaches a tester who may also run the release: it installs **beside** production, never over it. Operating systems key firewall rules, TCC grants, services and packages on names, so everything a system knows an install by differs (`-DMW_EDITION=dev`, [`backend/src/common/Edition.h`](../../backend/src/common/Edition.h)):
+Every installer comes in two editions, decided by `release.yml`: a `v*` tag builds **PROD** (`MoonlightWeb`), a CI dispatch with `channel=staging` builds the same PROD edition as a hidden, unpublished build (`0.3.0.gb7c-stg`), and every other run — a CI dispatch on `main` with the default `channel=dev` — builds **DEV** (`MoonlightWebDev`). DEV is how a pre-release reaches a tester who may also run the release: it installs **beside** production, never over it. Operating systems key firewall rules, TCC grants, services and packages on names, so everything a system knows an install by differs (`-DMW_EDITION=dev`, [`backend/src/common/Edition.h`](../../backend/src/common/Edition.h)):
 
 | | PROD | DEV |
 |---|---|---|
@@ -163,7 +163,7 @@ Every installer comes in two editions, decided by `release.yml`: a `v*` tag buil
 | Ports | 80 / 443 | 48080 / 48443, signaling 48501 — the `--dev` block |
 | Introduction server | `stream.moonlightweb.top` | `stream.dev.moonlightweb.top` (staging) |
 | Icons (exe, tray, tab, shortcuts) | steel grey | cobalt `#3D6BFF` (`scripts/make-dev-icons.py`); logos and website unchanged |
-| Version shown | `0.3.0` | `0.3.0-b7c-dev` |
+| Version shown | `0.3.0` | `0.3.0.gb7c-dev` |
 | In-app update | yes | no — the only release it could be offered is PROD, a different app |
 
 The app itself is otherwise identical: same pages, same logos, the version string is the one visible difference. `--dev` on any build borrows the DEV look, ports and staging server while keeping its own state name (`MoonlightWeb-dev`), so a scratch instance cannot be mistaken for the installed one either. Uninstalling one edition with "delete my configuration" erases only that edition's state — the parent `HKCU\Software\MoonlightWeb` key holds the other's pairings too.

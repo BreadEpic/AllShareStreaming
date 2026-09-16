@@ -35,13 +35,12 @@ void run_edition_tests()
 
     // The version carries the suffix once, and only in DEV.
     CHECK_EQ(versionFor(QStringLiteral("0.3.0"), false), QStringLiteral("0.3.0"));
-    CHECK_EQ(versionFor(QStringLiteral("0.3.0-b7c"), true), QStringLiteral("0.3.0-b7c-dev"));
+    CHECK_EQ(versionFor(QStringLiteral("0.3.0.gb7c"), true), QStringLiteral("0.3.0.gb7c-dev"));
     CHECK_EQ(versionFor(QStringLiteral("0.0.0-dev"), true), QStringLiteral("0.0.0-dev"));
-    CHECK_EQ(versionFor(QStringLiteral("0.3.0-b7c-dev"), true), QStringLiteral("0.3.0-b7c-dev"));
-    CHECK_EQ(versionFor(QStringLiteral("0.3.0.b7c.dev"), true), QStringLiteral("0.3.0.b7c.dev"));
-    CHECK_EQ(versionFor(QStringLiteral("0.3.0-b7c-stg"), false), QStringLiteral("0.3.0-b7c-stg"));
-    CHECK_EQ(versionFor(QStringLiteral("0.2.4.12.g6f79dad"), true),
-             QStringLiteral("0.2.4.12.g6f79dad-dev"));
+    CHECK_EQ(versionFor(QStringLiteral("0.3.0.gb7c-dev"), true), QStringLiteral("0.3.0.gb7c-dev"));
+    CHECK_EQ(versionFor(QStringLiteral("0.3.0.gb7c.dev"), true), QStringLiteral("0.3.0.gb7c.dev"));
+    CHECK_EQ(versionFor(QStringLiteral("0.3.0.gb7c-stg"), false), QStringLiteral("0.3.0.gb7c-stg"));
+    CHECK_EQ(versionFor(QStringLiteral("0.3.0.g412"), true), QStringLiteral("0.3.0.g412-dev"));
 
     // The DEV ports stay off the production ones and off the GameStream range.
     CHECK(kDevHttpPort != 80 && kDevHttpsPort != 443);
