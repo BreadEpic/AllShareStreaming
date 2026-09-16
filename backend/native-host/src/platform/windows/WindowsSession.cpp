@@ -48,6 +48,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <cwchar>
 #include <exception>
 #include <memory>
 #include <mutex>
@@ -81,6 +82,12 @@ constexpr float kMaxCursorMagnify = 2.5f;
 /// one exists because the request arrives as a number from a browser and the
 /// loop divides by it. High enough to be no limit at all in practice.
 constexpr int kMaxFloorFps = 480;
+
+/// How often an FP16 session re-reads the desktop's SDR white level. The
+/// slider is live, its change repaints the Settings window (so a frame comes
+/// to show it), and a QueryDisplayConfig costs about a tenth of a millisecond:
+/// once a second is invisible both ways.
+constexpr int64_t kSdrWhitePollUs = 1000000;
 
 int64_t steadyNowUs()
 {
@@ -231,15 +238,16 @@ public:
 
         // HDR is carried only when the whole chain can. The Selector has checked
         // the display, the GPU and the codec; the capture has the last word,
-        // and it is not a matter of opinion — asking DuplicateOutput1 for FP16
-        // does not guarantee getting it. A display that left HDR mode between
-        // the probe and the click hands back 8-bit, and a session that went on
-        // believing it had scRGB would run the PQ curve over sRGB bytes and
-        // paint a blown-out picture rather than fail.
+        // and it is not a matter of opinion — the duplication hands over the
+        // desktop as it is. A display that left HDR mode between the probe and
+        // the click hands back 8-bit, and a session that went on believing it
+        // had scRGB would run the PQ curve over sRGB bytes and paint a
+        // blown-out picture rather than fail.
         //
-        // An SDR session, conversely, opens the capture in 8-bit and DXGI tone
-        // maps an HDR desktop for it — which is exactly the picture an SDR
-        // stream should carry.
+        // An SDR session on an HDR desktop gets the same FP16 frames and the
+        // converter tone-maps them itself (buildPipeline): DXGI's own 8-bit
+        // rendition clips at 80 nits, under every window on a desktop whose
+        // SDR brightness slider has been touched.
         if (!openCapture(error)) return false;
         if (!convert::ColorConvert::supportsSource(m_Capture->format())) {
             error = "the display delivers frames in a format this build cannot convert (" +
@@ -616,8 +624,8 @@ private:
             // it: the driver has no hardware pointer. See PaintedPointer.h.
             ddaError = "it paints the pointer into the picture";
         } else if (!forceWgc) {
-            m_Capture = std::make_unique<capture::DxgiDuplication>(
-                m_Target.captureAdapterHandle, m_Target.outputIndex, m_Target.hdr);
+            m_Capture = std::make_unique<capture::DxgiDuplication>(m_Target.captureAdapterHandle,
+                                                                   m_Target.outputIndex);
             if (m_Capture->start(ddaError)) {
                 m_CaptureApi = CaptureApi::DxgiDuplication;
                 return true;
@@ -673,17 +681,18 @@ private:
         // frames to another GPU, in which case both stages live over there and
         // read the bridge's copy.
         m_Converter = std::make_unique<convert::ColorConvert>();
-        // The HDR flag has to match the format the capture is REALLY handing
-        // over, not what was negotiated: a rebuild happens after a mode change,
-        // and turning Windows HDR off is one of the changes that triggers it.
-        // The converter refuses a mismatch rather than misreading the bytes,
-        // and this is what keeps it from ever seeing one.
-        const bool hdr = convert::ColorConvert::isHdrSource(m_Capture->format());
-        if (m_Target.hdr != hdr) {
-            log::info(hdr ? "[native] the display is now HDR — rebuilding on the PQ path"
-                          : "[native] the display left HDR — rebuilding on the SDR path");
-            m_Target.hdr = hdr;
-            m_Info.hdr = hdr;
+        // HDR only while the capture REALLY hands FP16 over, whatever was
+        // negotiated: a rebuild happens after a mode change, and turning
+        // Windows HDR off is one of the changes that triggers it. The
+        // converter refuses PQ over 8-bit rather than misreading the bytes,
+        // and this is what keeps it from ever seeing that. The other way —
+        // FP16 into an SDR session — is the tone map, and a session that
+        // started SDR stays SDR: the client negotiated that, not the desktop.
+        const bool hdr = m_Target.hdr && convert::ColorConvert::isHdrSource(m_Capture->format());
+        if (m_Target.hdr && !hdr) {
+            log::info("[native] the display left HDR — rebuilding on the SDR path");
+            m_Target.hdr = false;
+            m_Info.hdr = false;
         }
 
         if (!m_Converter->init(pipelineDevice(), m_Capture->format(), m_Capture->width(),
@@ -692,6 +701,12 @@ private:
                                                : convert::ColorConvert::Chroma::C420,
                                hdr, error))
             return false;
+        if (m_Converter->toneMapsToSdr())
+            log::info("[native] SDR stream of an HDR desktop — tone-mapped on the GPU");
+        // A new converter starts at the 80-nit default; the display's real
+        // level goes in before the first frame, and the log says what it was.
+        m_SdrWhite = 0.0f;
+        if (m_Converter->scRgbSource()) applySdrWhite(readSdrWhite());
 
         // The encoder the Selector chose, not one guessed from the display.
         switch (m_Target.encoder) {
@@ -923,13 +938,13 @@ private:
         return Restart::Restarted;
     }
 
-    /// Whether the display is in an HDR mode right now, asked of the output
-    /// itself. Not read off the capture: an SDR session opens the duplication
-    /// in 8-bit whatever the desktop is, so its frames never say.
-    bool displayHdrActive() const
+    /// The output this session captures, as DXGI enumerates it — for what the
+    /// frames do not say about the display. Null when it cannot be found,
+    /// which a display that just went away is allowed to be.
+    Microsoft::WRL::ComPtr<IDXGIOutput6> findOutput() const
     {
         Microsoft::WRL::ComPtr<IDXGIFactory1> factory;
-        if (FAILED(::CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) return false;
+        if (FAILED(::CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) return nullptr;
         Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
         for (UINT i = 0;
              factory->EnumAdapters1(i, adapter.ReleaseAndGetAddressOf()) != DXGI_ERROR_NOT_FOUND;
@@ -941,14 +956,88 @@ private:
                 static_cast<uint64_t>(desc.AdapterLuid.LowPart);
             if (luid != m_Target.captureAdapterHandle) continue;
             Microsoft::WRL::ComPtr<IDXGIOutput> output;
-            if (FAILED(adapter->EnumOutputs(m_Target.outputIndex, &output))) return false;
+            if (FAILED(adapter->EnumOutputs(m_Target.outputIndex, &output))) return nullptr;
             Microsoft::WRL::ComPtr<IDXGIOutput6> output6;
-            if (FAILED(output.As(&output6))) return false;
-            DXGI_OUTPUT_DESC1 desc1 = {};
-            if (FAILED(output6->GetDesc1(&desc1))) return false;
-            return desc1.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+            if (FAILED(output.As(&output6))) return nullptr;
+            return output6;
         }
-        return false;
+        return nullptr;
+    }
+
+    /// Whether the display is in an HDR mode right now, asked of the output
+    /// itself. Not read off the capture: the WGC fallback is 8-bit whatever
+    /// the desktop is, so its frames never say.
+    bool displayHdrActive() const
+    {
+        const Microsoft::WRL::ComPtr<IDXGIOutput6> output = findOutput();
+        if (!output) return false;
+        DXGI_OUTPUT_DESC1 desc1 = {};
+        if (FAILED(output->GetDesc1(&desc1))) return false;
+        return desc1.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+    }
+
+    /// Where the desktop's SDR white sits in scRGB on this display: the "SDR
+    /// content brightness" slider, as DISPLAYCONFIG_SDR_WHITE_LEVEL reports it
+    /// — 1000 is 80 nits, scRGB 1.0. The frames do not carry it, and it is the
+    /// one number that decides whether an SDR stream of an HDR desktop is right
+    /// or blown out. 1.0 when it cannot be read, which is the 80-nit default.
+    ///
+    /// Joined to the output the way the probe joins its modes: by the source's
+    /// GDI device name, which DXGI and QueryDisplayConfig both report.
+    float readSdrWhite() const
+    {
+        const Microsoft::WRL::ComPtr<IDXGIOutput6> output = findOutput();
+        if (!output) return 1.0f;
+        DXGI_OUTPUT_DESC desc = {};
+        if (FAILED(output->GetDesc(&desc))) return 1.0f;
+
+        UINT32 pathCount = 0;
+        UINT32 modeCount = 0;
+        if (::GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &pathCount, &modeCount) !=
+            ERROR_SUCCESS)
+            return 1.0f;
+        std::vector<DISPLAYCONFIG_PATH_INFO> paths(pathCount);
+        std::vector<DISPLAYCONFIG_MODE_INFO> modes(modeCount);
+        if (::QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &pathCount, paths.data(), &modeCount,
+                                 modes.data(), nullptr) != ERROR_SUCCESS)
+            return 1.0f;
+
+        for (UINT32 i = 0; i < pathCount; ++i) {
+            const DISPLAYCONFIG_PATH_INFO& path = paths[i];
+            DISPLAYCONFIG_SOURCE_DEVICE_NAME source = {};
+            source.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+            source.header.size = sizeof(source);
+            source.header.adapterId = path.sourceInfo.adapterId;
+            source.header.id = path.sourceInfo.id;
+            if (::DisplayConfigGetDeviceInfo(&source.header) != ERROR_SUCCESS) continue;
+            if (::wcscmp(source.viewGdiDeviceName, desc.DeviceName) != 0) continue;
+
+            // A cloned source has several targets; the first that answers is
+            // the desktop's level, they all render the same framebuffer.
+            DISPLAYCONFIG_SDR_WHITE_LEVEL white = {};
+            white.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL;
+            white.header.size = sizeof(white);
+            white.header.adapterId = path.targetInfo.adapterId;
+            white.header.id = path.targetInfo.id;
+            if (::DisplayConfigGetDeviceInfo(&white.header) != ERROR_SUCCESS) continue;
+            return static_cast<float>(white.SDRWhiteLevel) / 1000.0f;
+        }
+        return 1.0f;
+    }
+
+    /// Hand the converter a freshly read SDR white, and say so when it moved.
+    /// Capture thread only.
+    void applySdrWhite(float white)
+    {
+        if (white < 1.0f) white = 1.0f;
+        if (white == m_SdrWhite) return;
+        m_SdrWhite = white;
+        m_Converter->setSdrWhite(white);
+        char nits[16] = {};
+        std::snprintf(nits, sizeof(nits), "%.0f", static_cast<double>(white) * 80.0);
+        log::info("[native] the desktop's SDR white is " + std::string(nits) + " nits" +
+                  (m_Converter->toneMapsToSdr() ? " — the tone map brings it to white"
+                                                : " — the pointer is drawn at it"));
     }
 
     /// Tell the viewer what the display became, once the capture runs on it
@@ -1221,6 +1310,9 @@ private:
         // nothing is re-sent until a capture has converted a picture (see the
         // resize below).
         bool awaitingPicture = false;
+        // When the SDR white level was last asked of the display, for the FP16
+        // paths. buildPipeline read it once; this keeps up with the slider.
+        int64_t lastSdrWhiteUs = steadyNowUs();
         encode::EffectiveCadence effective;
         effective.start(m_EncodeFps, steadyNowUs());
         auto applyBitrate = [&](int kbps) {
@@ -1422,6 +1514,17 @@ private:
                     if (!emitPicture(resendStamps(steadyNowUs()))) return;
                 } else {
                     awaitingPicture = true;
+                }
+            }
+
+            // The SDR brightness slider is live, and it is the one thing about
+            // an HDR desktop the frames do not carry. Once a second, and only
+            // on the paths that read it.
+            if (m_Converter->scRgbSource()) {
+                const int64_t nowUs = steadyNowUs();
+                if (nowUs - lastSdrWhiteUs >= kSdrWhitePollUs) {
+                    lastSdrWhiteUs = nowUs;
+                    applySdrWhite(readSdrWhite());
                 }
             }
 
@@ -2182,6 +2285,10 @@ private:
     /// encoder are then built on. See CrossGpuBridge.
     std::unique_ptr<CrossGpuBridge> m_Bridge;
     std::unique_ptr<convert::ColorConvert> m_Converter;
+    /// The SDR white the converter holds, in scRGB; 0 until a pipeline has
+    /// read one, so the first read after a rebuild is always applied and
+    /// logged. Capture thread only — see applySdrWhite.
+    float m_SdrWhite = 0.0f;
     /// The last captured desktop, kept only while the pointer is on this
     /// screen — see retainDesktop().
     Microsoft::WRL::ComPtr<ID3D11Texture2D> m_DesktopCopy;

@@ -18,6 +18,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <thread>
 
@@ -38,10 +39,11 @@ void run_capture_tests()
     // ── The HDR/SDR pairing rules, which need no hardware at all ────────────
     //
     // These are static answers about which byte formats have a shader and which
-    // of them carry HDR, and they decide what the capture is OPENED with — long
-    // before any display is involved. They are checked here rather than left to
-    // a machine with an HDR panel because getting them wrong does not produce
-    // an error, it produces a picture with the wrong transfer curve.
+    // of them carry HDR — what the session reconciles a negotiated HDR against,
+    // and what picks the tone map for an SDR stream of an HDR desktop. They are
+    // checked here rather than left to a machine with an HDR panel because
+    // getting them wrong does not produce an error, it produces a picture with
+    // the wrong transfer curve.
     SECTION("Colour conversion — which sources exist, and which are HDR");
     {
         using convert::ColorConvert;
@@ -91,12 +93,29 @@ void run_capture_tests()
     }
 
     // The primary display, on the GPU that actually drives it — the pairing the
-    // whole zero-copy premise rests on.
+    // whole zero-copy premise rests on. MW_TEST_DISPLAY names another one, by
+    // its label or monitor ("Display 2", "VDD"): the HDR legs need a display in
+    // an HDR mode, and on a bench that is the virtual one, never the primary.
     const DisplayInfo* target = &caps.displays.front();
     for (const DisplayInfo& d : caps.displays) {
         if (d.primary) {
             target = &d;
             break;
+        }
+    }
+    if (const char* wanted = std::getenv("MW_TEST_DISPLAY"); wanted && *wanted) {
+        const DisplayInfo* named = nullptr;
+        for (const DisplayInfo& d : caps.displays) {
+            if (d.label.find(wanted) != std::string::npos ||
+                d.detail.find(wanted) != std::string::npos)
+                named = &d;
+        }
+        if (named) {
+            target = named;
+            std::fprintf(stderr, "  MW_TEST_DISPLAY: %s\n", target->label.c_str());
+        } else {
+            std::fprintf(stderr, "  MW_TEST_DISPLAY '%s' names no display — using the primary\n",
+                         wanted);
         }
     }
     const GpuInfo* gpu = caps.gpuFor(*target);
@@ -113,9 +132,10 @@ void run_capture_tests()
         if (d.gpuId == target->gpuId) ++outputIndex;
     }
 
-    // SDR, as every session is in this build: on a desktop with Windows HDR on
-    // this is what makes the duplication deliver BGRA8 rather than FP16.
-    capture::DxgiDuplication duplication(gpu->nativeHandle, outputIndex, /*hdr=*/false);
+    // The desktop as it is: BGRA8 on an SDR desktop, FP16 scRGB on an HDR one.
+    // The SDR legs below run either way — on an HDR desktop they exercise the
+    // tone map, which is how an SDR stream is made from one since 16/09/2026.
+    capture::DxgiDuplication duplication(gpu->nativeHandle, outputIndex);
 
     std::string error;
     if (!duplication.start(error)) {
@@ -232,13 +252,19 @@ void run_capture_tests()
     if (captured > 0) {
         convert::ColorConvert converter;
         std::string convertError;
+        // SDR whatever the desktop is: 8-bit through the BT.709 matrix, FP16
+        // through the tone map first. The output is NV12 either way, and the
+        // luma-range check below holds for both.
         if (!converter.init(duplication.device(), duplication.format(), duplication.width(),
                             duplication.height(), duplication.width(), duplication.height(),
-                            convert::ColorConvert::Chroma::C420,
-                            convert::ColorConvert::isHdrSource(duplication.format()),
-                            convertError)) {
+                            convert::ColorConvert::Chroma::C420, /*hdr=*/false, convertError)) {
             std::fprintf(stderr, "  conversion skipped: %s\n", convertError.c_str());
         } else {
+            CHECK(!converter.hdr());
+            CHECK_EQ(converter.toneMapsToSdr(),
+                     convert::ColorConvert::isHdrSource(duplication.format()));
+            if (converter.toneMapsToSdr())
+                std::fprintf(stderr, "  the desktop is HDR: this leg runs the tone map\n");
             // Grab one more frame to convert. The screen may be still, so allow
             // a generous window rather than failing on a quiet desktop.
             capture::CapturedFrame frame;
@@ -338,16 +364,12 @@ void run_capture_tests()
                     encode::IVideoEncoder& encoder = *encoderPtr;
                     std::fprintf(stderr, "  encoder: %s\n", toString(gpu->encoders.front()));
                     std::string encodeError;
-                    // H.264 has no HDR path, so this leg is SDR whatever the
-                    // desktop is doing. A converter that came up on the PQ path
-                    // would hand it P010, so skip rather than mislead.
-                    if (converter.hdr()) {
-                        std::fprintf(stderr, "  encode skipped: the desktop is HDR and this leg "
-                                             "encodes H.264 8-bit\n");
-                    } else if (!encoder.init(duplication.device(), Codec::H264,
-                                             converter.outputWidth(), converter.outputHeight(), 60,
-                                             20000, false, false, false, EncoderTuning{},
-                                             encodeError)) {
+                    // H.264 has no HDR path, and needs none: the converter above
+                    // is SDR whatever the desktop is doing, so this leg encodes
+                    // its NV12 on an HDR desktop too.
+                    if (!encoder.init(duplication.device(), Codec::H264, converter.outputWidth(),
+                                      converter.outputHeight(), 60, 20000, false, false, false,
+                                      EncoderTuning{}, encodeError)) {
                         std::fprintf(stderr, "  encode skipped: %s\n", encodeError.c_str());
                     } else {
                         encode::EncoderOutput encoded;
@@ -522,10 +544,9 @@ void run_capture_tests()
                 // native engine has to be able to honour it. Verified rather
                 // than assumed: the AYUV byte order is easy to get wrong, and
                 // getting it wrong swaps the colours instead of failing.
-                // 4:4:4 is 8-bit only, so an HDR desktop has nothing to offer
-                // this leg: the converter refuses HDR + C444 by construction.
-                if (gpu->supports444(Codec::H264) &&
-                    !convert::ColorConvert::isHdrSource(duplication.format())) {
+                // 4:4:4 is 8-bit only, which an HDR desktop reaches through the
+                // tone map like the 4:2:0 leg above; only HDR + C444 is refused.
+                if (gpu->supports444(Codec::H264)) {
                     convert::ColorConvert converter444;
                     std::string error444;
                     if (!converter444.init(duplication.device(), duplication.format(),
@@ -578,25 +599,24 @@ void run_capture_tests()
     // the only input the PQ shaders have. On an SDR desktop there
     // is nothing here to exercise and the leg says so.
     //
-    // Worth its own duplication because HDR is decided when the
-    // capture is OPENED, not per frame — and because the failure
-    // this catches is not a crash. A PQ curve applied to the wrong
-    // scale, or a P010 write that forgets the 6-bit shift, produces
-    // a picture that is merely dark or flat, and the range below is
-    // what tells the two apart from a working one.
+    // The failure this catches is not a crash. A PQ curve applied to
+    // the wrong scale, or a P010 write that forgets the 6-bit shift,
+    // produces a picture that is merely dark or flat, and the range
+    // below is what tells the two apart from a working one.
     //
-    // Placed AFTER the SDR duplication has been stopped, and that is not a
-    // matter of taste: DXGI allows one duplication per output per process, so
-    // opening the HDR one beside the SDR one is refused outright with
+    // Its own duplication, opened AFTER the SDR one has been stopped, and
+    // that is not a matter of taste: DXGI allows one duplication per output
+    // per process, so opening it beside the other is refused outright with
     // E_INVALIDARG.
     if (target->hdrActive) {
-        capture::DxgiDuplication hdrDup(gpu->nativeHandle, outputIndex, /*hdr=*/true);
+        capture::DxgiDuplication hdrDup(gpu->nativeHandle, outputIndex);
         std::string hdrError;
         if (!hdrDup.start(hdrError)) {
             std::fprintf(stderr, "  HDR capture skipped: %s\n", hdrError.c_str());
         } else if (!convert::ColorConvert::isHdrSource(hdrDup.format())) {
-            // Asked for FP16 and given 8-bit: legal, and exactly the
-            // case the session reconciles instead of trusting.
+            // The mode says HDR and the frames are 8-bit: legal (the display
+            // may have just left the mode), and exactly the case the session
+            // reconciles instead of trusting.
             std::fprintf(stderr, "  HDR capture skipped: the display handed over "
                                  "8-bit despite being in an HDR mode\n");
         } else {

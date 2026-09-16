@@ -43,10 +43,9 @@ std::string hresultToString(HRESULT hr)
 
 } // namespace
 
-DxgiDuplication::DxgiDuplication(uint64_t adapterLuid, unsigned outputIndex, bool hdr)
+DxgiDuplication::DxgiDuplication(uint64_t adapterLuid, unsigned outputIndex)
     : m_AdapterLuid(adapterLuid)
     , m_OutputIndex(outputIndex)
-    , m_Hdr(hdr)
 {}
 
 DxgiDuplication::~DxgiDuplication()
@@ -143,29 +142,19 @@ bool DxgiDuplication::start(std::string& error)
 
     // DuplicateOutput1 lets the formats be named, and the list decides what an
     // HDR desktop becomes. Listing the float format ahead of the 8-bit one
-    // keeps it as it is, FP16 scRGB, for a consumer that will render HDR.
-    // Naming 8-bit alone makes DXGI hand it over already tone-mapped to SDR —
-    // exactly the picture an SDR stream should carry, and the only one the SDR
-    // converter accepts. Which list is used follows what the session consumes,
-    // not what the display happens to be doing: the previous "ask for HDR
-    // first, always" got FP16 on every machine with Windows HDR on, and the
-    // converter then refused it, so the session failed at the click. Machines
-    // and drivers without Output5 fall back to the plain path.
-    // Set when DuplicateOutput1 was given a single format and accepted it: the
-    // frames are then that format whatever the display mode says. See where
-    // m_Format is settled below — this is not a cosmetic detail.
-    DXGI_FORMAT forcedFormat = DXGI_FORMAT_UNKNOWN;
-
+    // keeps the desktop as it is: FP16 scRGB when it is HDR, BGRA8 when it is
+    // not. Naming 8-bit alone would make DXGI hand an HDR desktop over "tone-
+    // mapped" — clipped at 80 nits, in fact, which is what an SDR stream of a
+    // desktop with the SDR brightness slider up looked like until 16/09/2026:
+    // blown out. The converter takes scRGB on both kinds of session now (an
+    // SDR one tone-maps it, see ColorConvert::init), so this list is the only
+    // one there is. Machines and drivers without Output5 fall back to the
+    // plain path.
     ComPtr<IDXGIOutput5> output5;
     if (SUCCEEDED(output.As(&output5))) {
-        const DXGI_FORMAT hdrFormats[] = {DXGI_FORMAT_R16G16B16A16_FLOAT,
-                                          DXGI_FORMAT_B8G8R8A8_UNORM};
-        const DXGI_FORMAT sdrFormats[] = {DXGI_FORMAT_B8G8R8A8_UNORM};
-        const DXGI_FORMAT* formats = m_Hdr ? hdrFormats : sdrFormats;
-        const UINT count = static_cast<UINT>(m_Hdr ? std::size(hdrFormats) : std::size(sdrFormats));
-        hr = output5->DuplicateOutput1(m_Device.Get(), 0, count, formats,
-                                       m_Duplication.ReleaseAndGetAddressOf());
-        if (SUCCEEDED(hr) && count == 1) forcedFormat = formats[0];
+        const DXGI_FORMAT formats[] = {DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_B8G8R8A8_UNORM};
+        hr = output5->DuplicateOutput1(m_Device.Get(), 0, static_cast<UINT>(std::size(formats)),
+                                       formats, m_Duplication.ReleaseAndGetAddressOf());
     } else {
         hr = E_NOINTERFACE;
     }
@@ -196,26 +185,15 @@ bool DxgiDuplication::start(std::string& error)
     m_Height = static_cast<int>(duplDesc.ModeDesc.Height);
 
     // ⚠️ ModeDesc.Format is the DISPLAY MODE's format, not the duplication's
-    // output format, and on an HDR desktop the two differ.
-    //
-    // DuplicateOutput1 converts the desktop into the first format of the list
-    // it can honour — so an SDR session, whose list is BGRA8 alone, really does
-    // receive BGRA8 frames. ModeDesc goes on reporting the mode: FP16. Taking
-    // it at its word had the converter build an FP16 shader-resource view over
-    // a BGRA8 texture, CreateShaderResourceView refuse it, and the session die
-    // at the first frame with "could not view the captured frame".
-    //
-    // That was every SDR stream from a machine with Windows HDR on — the exact
-    // case B1 set out to fix and only half fixed: B1 stopped ASKING for FP16,
-    // this stops MISREADING what came back (found 04/09/2026 while the HDR path
-    // was being written, on a display put into HDR mode for the occasion).
-    //
-    // A single-entry list is the only case where the answer is knowable without
-    // acquiring a frame, and it is also the only case where ModeDesc is wrong:
-    // with the two-entry HDR list DXGI keeps the desktop's own format, which is
-    // precisely what ModeDesc reports, and the plain DuplicateOutput fallback
-    // converts nothing at all.
-    m_Format = forcedFormat != DXGI_FORMAT_UNKNOWN ? forcedFormat : duplDesc.ModeDesc.Format;
+    // output format. The two agree only because the list above never makes
+    // DXGI convert: with FP16 named first it keeps the desktop's own format,
+    // which is what ModeDesc reports, and the plain DuplicateOutput fallback
+    // converts nothing either. Name a single 8-bit format here and this line
+    // becomes a lie — ModeDesc goes on saying FP16 while BGRA8 arrives, the
+    // converter builds an FP16 view over an 8-bit texture, and the session dies
+    // at its first frame with "could not view the captured frame" (found
+    // 04/09/2026, on every SDR stream from a machine with Windows HDR on).
+    m_Format = duplDesc.ModeDesc.Format;
 
     // Where this display sits on the desktop, for aiming absolute mouse input.
     // Kept exactly as DXGI reports it — see DesktopRect on why the DPI

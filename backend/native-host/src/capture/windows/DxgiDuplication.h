@@ -51,14 +51,14 @@ public:
     ///                     copy, so the caller must pass the right one.
     /// @param outputIndex  which output of that adapter, in DXGI's own order —
     ///                     the same order the probe enumerated displays in.
-    /// @param hdr          whether the consumer wants the HDR desktop as it is,
-    ///                     in FP16 scRGB. False asks DXGI for 8-bit only, and
-    ///                     an HDR desktop then arrives already tone-mapped to
-    ///                     SDR — which is what an SDR stream wants, and the
-    ///                     only thing the SDR-only converter accepts. Asking
-    ///                     for FP16 "just in case" is what made every session
-    ///                     on a machine with Windows HDR on fail at the click.
-    DxgiDuplication(uint64_t adapterLuid, unsigned outputIndex, bool hdr);
+    ///
+    /// The desktop arrives as it is: BGRA8 from an SDR desktop, FP16 scRGB
+    /// from an HDR one — format() says which, once started. An SDR session on
+    /// an HDR desktop used to ask DXGI for 8-bit and let it tone-map, and
+    /// what DXGI does is clip at 80 nits, which is below every window on a
+    /// display whose SDR brightness slider has been touched. The converter
+    /// tone-maps FP16 itself now, so there is nothing left to ask DXGI for.
+    DxgiDuplication(uint64_t adapterLuid, unsigned outputIndex);
     ~DxgiDuplication() override;
 
     bool start(std::string& error) override;
@@ -107,7 +107,6 @@ private:
 
     const uint64_t m_AdapterLuid;
     const unsigned m_OutputIndex;
-    const bool m_Hdr;
 
     Microsoft::WRL::ComPtr<ID3D11Device> m_Device;
     Microsoft::WRL::ComPtr<ID3D11DeviceContext> m_Context;

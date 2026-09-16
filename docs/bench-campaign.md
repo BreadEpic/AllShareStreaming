@@ -565,6 +565,11 @@ wherever the machine allows it.
   cannot present it. 4:4:4 in SDR only.
 - **Washed-out HDR.** An SDR client screen (Chrome tone-maps it itself and proves
   nothing), or missing signal information; check for `hvc1.2.*` and `hdr=true`.
+- **Blown-out SDR stream from a Windows HDR desktop** (whites flat, no `HDR` in
+  the overlay). The host tone-maps the desktop itself; look for `SDR stream of
+  an HDR desktop — tone-mapped on the GPU` and `the desktop's SDR white is N
+  nits` in the host log. Missing on a Windows.Graphics.Capture fallback, which
+  is 8-bit and clipped by DXGI.
 - **AV1 accumulating seconds of delay.** Software decoding on the client. Grey,
   "compatibility", not red.
 

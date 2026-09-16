@@ -72,15 +72,9 @@ public:
 
     /// Whether init() will accept frames in @p format.
     ///
-    /// Asked BEFORE the capture is opened, because the answer decides what the
-    /// capture is asked for: an SDR session must not receive FP16 from an HDR
-    /// desktop, it must receive the desktop tone-mapped to 8-bit by DXGI. That
-    /// choice is made by what the CAPTURE is opened with, not here — this only
-    /// says which formats have a shader.
-    ///
-    /// FP16 scRGB is accepted since the HDR path landed (September 2026); it is
-    /// only usable with `hdr` set on init(), which is the pairing the session
-    /// enforces.
+    /// FP16 scRGB is accepted since the HDR path landed (September 2026), and
+    /// on both kinds of session: with `hdr` it becomes P010, without it the
+    /// desktop is tone-mapped down to 8-bit here — see init().
     static bool supportsSource(DXGI_FORMAT format)
     {
         return format == DXGI_FORMAT_B8G8R8A8_UNORM || format == DXGI_FORMAT_R8G8B8A8_UNORM ||
@@ -97,10 +91,20 @@ public:
     /// @p sourceHeight, producing @p chroma at @p outputWidth × @p outputHeight.
     ///
     /// @p hdr selects the HDR path: an FP16 scRGB source becomes **P010**,
-    /// BT.2020 primaries with the PQ transfer, 10-bit limited range. It must
-    /// match the source format — FP16 with `hdr` false, or an 8-bit source with
-    /// `hdr` true, is refused rather than silently misinterpreted, because both
-    /// mistakes produce a picture that is merely wrong instead of an error.
+    /// BT.2020 primaries with the PQ transfer, 10-bit limited range. An 8-bit
+    /// source with `hdr` true is refused rather than silently misinterpreted:
+    /// that mistake produces a picture that is merely wrong instead of an
+    /// error.
+    ///
+    /// An FP16 source with `hdr` false is the SDR stream of an HDR desktop.
+    /// DXGI could hand that over in 8-bit itself, but its idea of SDR is a
+    /// clip at 80 nits, and a desktop whose "SDR content brightness" slider
+    /// is up — that is, any desktop someone has looked at — arrives blown
+    /// out. So the frames are taken as scRGB and **tone-mapped here**: SDR
+    /// white brought to 1.0 (see setSdrWhite), identity below the knee, the
+    /// HDR highlights folded into what is left, then the ordinary BT.709
+    /// output. Same output formats as the 8-bit source; toneMapsToSdr() says
+    /// which of the two this is.
     ///
     /// HDR is 4:2:0 only. The 10-bit 4:4:4 format (Y410) has no browser that
     /// displays it — Chrome 152 accepts `hvc1.4.156` and then renders green
@@ -118,6 +122,21 @@ public:
 
     /// Whether the output is P010 in BT.2020 PQ rather than 8-bit BT.709.
     bool hdr() const { return m_Hdr; }
+
+    /// Whether this is an SDR output made from an FP16 source — the tone map.
+    bool toneMapsToSdr() const { return m_ToneMap; }
+
+    /// Whether the source is FP16 scRGB, on either path — the ones that need
+    /// setSdrWhite() kept current.
+    bool scRgbSource() const { return m_Hdr || m_ToneMap; }
+
+    /// Where the desktop's SDR white sits in scRGB: the display's
+    /// DISPLAYCONFIG_SDR_WHITE_LEVEL over 1000, so 1.0 at the 80-nit default.
+    /// The tone map brings that to 1.0, and both FP16 paths draw the pointer
+    /// at it. Read from the display by the session, which also re-reads it
+    /// while streaming: the slider is live. Values below 1.0 keep the default.
+    void setSdrWhite(float scRgbWhite);
+    float sdrWhite() const { return m_SdrWhite; }
 
     /// Convert one frame. @p source is the texture from capture; the result is
     /// in output(), ready for the encoder to register.
@@ -188,6 +207,9 @@ private:
 
     Chroma m_Chroma = Chroma::C420;
     bool m_Hdr = false;
+    /// FP16 in, 8-bit BT.709 out: the shaders were compiled with the tone map.
+    bool m_ToneMap = false;
+    float m_SdrWhite = 1.0f;
     DXGI_FORMAT m_SourceFormat = DXGI_FORMAT_UNKNOWN;
     int m_SourceWidth = 0;
     int m_SourceHeight = 0;

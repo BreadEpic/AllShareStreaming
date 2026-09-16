@@ -391,6 +391,12 @@ une trace** (« HDR negotiated but this build converts SDR only ») plutôt que
 d'échouer. Vérifié sur écran SDR (comportement identique, `(SDR, BGRA8)` dans le
 log) ; le cas HDR actif reste à confirmer à la main sur un écran en HDR.
 
+**Dépassé le 16/09/2026 (§16.6).** Le « déjà ramené en SDR » de DXGI est un
+écrêtage à 80 nits, pas un tone-mapping : dès que le curseur « luminosité du
+contenu SDR » de Windows est monté, tout le bureau arrive cramé. La duplication
+livre désormais toujours le bureau tel qu'il est (FP16 s'il est HDR) et c'est le
+convertisseur qui ramène le SDR, avec le niveau de blanc lu sur l'écran.
+
 ---
 
 ## 9. Boucle de session
@@ -1391,10 +1397,13 @@ DXGI. Le chemin complet existe maintenant.
 ### 16.1 La chaîne, et l'ordre des étapes
 
 DXGI livre un bureau HDR en **scRGB** : lumière linéaire, primaires BT.709, et
-1.0 = le blanc SDR, soit 80 nits par définition (le curseur « luminosité du
-contenu SDR » de Windows est déjà appliqué par le compositeur). Les valeurs
-au-dessus de 1.0 sont les hautes lumières ; celles **en dessous de 0** sont les
-couleurs hors BT.709, que scRGB exprime en négatif.
+1.0 = 80 nits. Ce n'est **pas** là que se trouve le blanc du bureau : le
+compositeur peint le contenu SDR (fenêtres, fond d'écran, pointeur) au niveau
+du curseur « luminosité du contenu SDR », soit `SdrWhite` = 1.0 au réglage
+d'usine et couramment 2 à 3 sur un écran qu'on a réglé (corrigé le 16/09/2026,
+§16.6 — ce paragraphe disait le contraire). Les valeurs au-dessus sont les
+hautes lumières ; celles **en dessous de 0** sont les couleurs hors BT.709, que
+scRGB exprime en négatif.
 
 Quatre étapes, et l'ordre n'est pas négociable :
 
@@ -1417,11 +1426,13 @@ définis comme nuls, le matériel n'en lit que les 10 hauts et s'en moque, mais 
 surface seulement valide par accident est une surface que personne ne peut
 vérifier — et c'est exactement ce que le test relit.
 
-Le curseur est linéarisé depuis sRGB avant d'être composé (le mélanger tel quel
-donne un pointeur bien trop sombre sur un bureau HDR), et le masque d'inversion
-est borné contre le blanc SDR : `1 - rgb` sur une haute lumière à 10.0 vaudrait
--9, et ce négatif rencontrant le `max(0)` transformerait le curseur texte en trou
-noir.
+Le curseur est linéarisé depuis sRGB et posé **au blanc SDR du bureau**
+(`SdrWhite`, depuis le 16/09 ; à 1.0 avant, donc plus sombre que la fenêtre
+qu'il survolait dès que le curseur Windows était monté) avant d'être composé —
+le mélanger tel quel donne un pointeur bien trop sombre sur un bureau HDR. Le
+masque d'inversion est borné contre ce même blanc : `blanc - rgb` sur une haute
+lumière à 10.0 serait très négatif, et ce négatif rencontrant le `max(0)`
+transformerait le curseur texte en trou noir.
 
 ### 16.2 Ce que l'encodeur doit dire, pas seulement faire
 
@@ -1505,13 +1516,15 @@ stream SDR natif (HEVC 2560×1440@60, client Chrome sur l'écran virtuel voisin)
 La session survit — « duplication lost (mode change or desktop switch) — will
 restart » puis « duplication started: 2560x1440 (SDR, BGRA8) » en 90 ms, deux
 fois de suite (le basculement HDR change le mode deux fois) — et l'image reçue par
-le client, capturée à l'écran, est **identique** à celle du même bureau en SDR :
-DXGI livre le rendu SDR du compositeur de Windows lui-même, ni délavé ni
-sur-exposé (le « bureau HDR délavé en SDR » de Sunshine ne se produit pas ici).
-Conséquence pour le client : un hôte Windows en HDR streamé en SDR n'a besoin
-d'aucun tone-map côté navigateur — la piste « ACES WebGL2 pour hôte HDR → client
-SDR » (F0d(2)) ne vaut que pour une capture qui ne sait pas rendre le SDR d'un
-bureau HDR, ce qui n'existe sur aucune plateforme livrée.
+le client, capturée à l'écran, est **identique** à celle du même bureau en SDR.
+⚠️ **Vrai seulement au réglage d'usine du curseur « luminosité du contenu
+SDR »** — voir §16.6 : le 16/09, sur le même DualRTX avec le curseur monté, le
+même stream SDR arrivait cramé. Ce que DXGI livre en 8 bits n'est pas « le rendu
+SDR du compositeur », c'est le bureau écrêté à 80 nits, ce qui ne se voit pas
+tant que le blanc SDR *est* à 80 nits.
+Conséquence pour le client (toujours vraie, pour une autre raison) : un hôte
+Windows en HDR streamé en SDR n'a besoin d'aucun tone-map côté navigateur — il
+est fait sur l'hôte, §16.6.
 
 **✅ F0d(2) fermée le 07/09/2026 — sans objet, et pour trois raisons qui se
 recoupent.** L'item restait ouvert « à rouvrir avec un banc hôte macOS/Linux
@@ -1519,8 +1532,9 @@ HDR » ; ce banc existe depuis le 06/09 (§20.10), et la relecture des trois
 plateformes le referme :
 
 1. **Aucun hôte natif ne produit le cas.** C'est la négociation qui décide, pas
-   l'état de l'écran. Windows : capture `BGRA8` et DXGI livre le rendu SDR du
-   compositeur (mesuré juste au-dessus). macOS : `SckCapture` demande
+   l'état de l'écran. Windows : le convertisseur ramène lui-même le bureau FP16
+   en SDR (§16.6 ; avant le 16/09, capture `BGRA8` écrêtée par DXGI, juste
+   au-dessus). macOS : `SckCapture` demande
    `kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange` + `kCGColorSpaceSRGB` +
    matrice BT.709 quand la session est SDR — c'est le compositeur qui rend le
    SDR, même mécanisme que Windows. Linux : il n'y a pas de HDR du tout
@@ -1535,6 +1549,70 @@ plateformes le referme :
    SDR + pas de WebGPU » — or la garde du point 2 exige justement WebGPU, donc
    ce triplet ne s'atteint qu'en contournant volontairement la garde sur une
    machine sans WebGPU. Pas de shader à écrire pour ça.
+
+### 16.6 Bureau HDR → stream SDR : le tone-map est à nous (16/09/2026)
+
+Constaté par Bruno sur DualRTX (écran HDR, session SDR parce que l'écran
+*client* est SDR) : sable et écume du fond d'écran partis en blanc pur, tout le
+bureau trop clair. Le flux reçu était bien SDR (`HEVC` seul dans l'overlay), donc
+rien à voir avec le gris WebKit de la veille : l'image était déjà fausse en
+sortie d'hôte.
+
+**La cause.** La session SDR demandait à DXGI du 8 bits seul
+(`DuplicateOutput1` avec `B8G8R8A8` en liste unique), et ce que DXGI fait alors
+n'est pas un tone-mapping : un **écrêtage à 80 nits** (scRGB 1.0). Or le
+compositeur peint le contenu SDR au niveau du curseur « luminosité du contenu
+SDR » (`DISPLAYCONFIG_SDR_WHITE_LEVEL`, 1000 = 80 nits), que tout le monde monte
+sur un écran HDR — sinon les fenêtres sont ternes. À 2.5 (200 nits), un blanc de
+fenêtre vaut 2.5 en scRGB : écrêté à 1.0, comme tout ce qui dépasse 40 % de
+luminosité. D'où la vérification « identique » du 06/09 : le curseur y était au
+réglage d'usine.
+
+**Le correctif**, tout côté hôte — c'est le seul endroit où l'information existe
+encore, le navigateur reçoit du 8 bits déjà coupé :
+
+- `DxgiDuplication` ne prend plus de paramètre `hdr` : la liste est toujours
+  `{FP16, BGRA8}`, DXGI garde le format du bureau (§16.4 reste vrai : avec cette
+  liste `ModeDesc.Format` dit juste). Une session SDR sur bureau HDR reçoit donc
+  du scRGB.
+- `ColorConvert::init(…, hdr=false)` accepte FP16 : les shaders BT.709 sont
+  compilés avec `MW_SCRGB_SOURCE=1` et `Scene()` devient
+  `ToneMapToSdr(SceneHdr(uv))`. Même sortie NV12/AYUV, mêmes points d'entrée ;
+  `toneMapsToSdr()` dit lequel des deux tourne. PQ sur du 8 bits reste refusé.
+- `ToneMapToSdr` : division par `SdrWhite` (le blanc du bureau → 1.0), identité
+  jusqu'à un genou à **0.9**, épaule `tanh` au-dessus, sur la luminance pour
+  garder la teinte, puis encodage sRGB. **C'est la courbe `soft-clip` du client**
+  (`WebGpuRenderer`, `HDR_COMMON_WGSL`), reprise à l'identique : fenêtres, texte,
+  jeu SDR passent tels quels ; les hautes lumières HDR se replient dans les 10 %
+  restants. Pas ACES, exprès : ACES déplace aussi les tons moyens, et sur un
+  bureau les tons moyens *sont* l'image. Pas `ID3D11VideoProcessor` non plus :
+  une passe de plus (le pixel shader tourne déjà sur chaque trame), pas de
+  notion de blanc SDR, et une courbe qui change de pilote en pilote.
+- **Le blanc SDR est lu sur l'écran** (`WindowsSession::readSdrWhite`) : DXGI
+  donne le nom GDI de la sortie, `QueryDisplayConfig` la source de même nom,
+  `DisplayConfigGetDeviceInfo(GET_SDR_WHITE_LEVEL)` sur sa cible. Lu au build du
+  pipeline et **re-lu toutes les secondes** sur les chemins FP16 (le curseur
+  Windows est vivant ; ~0,1 ms), ligne de log au changement : « the desktop's
+  SDR white is 200 nits — the tone map brings it to white ».
+- Le chemin HDR (P010) en profite : le **pointeur** composé y était posé à 1.0,
+  donc plus sombre que la fenêtre survolée dès que le curseur Windows était
+  monté ; il est posé à `SdrWhite` maintenant, masque d'inversion borné pareil.
+
+**Ce qui ne change pas.** WGC reste 8 bits (pas de HDR sur le repli, §17) — il
+subit le même écrêtage, non traité, sur les seules machines qui n'ont pas de
+DDA. macOS n'a pas le problème : ScreenCaptureKit rend le SDR avec le blanc à
+1.0, l'EDR n'est que de la marge au-dessus. Linux n'a pas de HDR. Le pont
+inter-GPU porte du FP16 (8 octets/pixel au lieu de 4) sur une session SDR de
+bureau HDR : deux fois le trafic mémoire système de ce seul cas.
+
+**Tests.** `test_capture` : la branche SDR tourne sur le bureau tel qu'il est et
+vérifie `toneMapsToSdr() == isHdrSource(format)`, plage de luma 16..235 relue sur
+la sortie tone-mappée ; la branche 4:4:4 n'est plus sautée sur bureau HDR ;
+l'encodage H.264 non plus. La branche HDR (P010) est inchangée.
+
+**Reste à Bruno** : l'œil, sur DualRTX avec « Display 2 » (VDD) en HDR et le
+curseur SDR monté — le fond d'écran doit revenir identique au bureau local, et
+une vidéo HDR YouTube doit garder du détail dans ses blancs au lieu d'un aplat.
 
 ## 17. Windows.Graphics.Capture, le repli (04/09/2026)
 

@@ -45,11 +45,15 @@ SamplerState      Nearest      : register(s1);
 // xy: the cursor's top-left in source UV. zw: its size in source UV.
 // Enabled is 0 or 1 rather than a branch on the size, so a zero-size shape
 // cannot divide by zero on its way to being invisible.
+// SdrWhite is where the desktop's SDR white sits in scRGB — 1.0 for the 80-nit
+// default, more when the "SDR content brightness" slider is up. Only the FP16
+// paths read it; an 8-bit source has no such thing.
 cbuffer Overlay : register(b0)
 {
     float4 CursorRect;
     float  CursorEnabled;
-    float3 OverlayPad;
+    float  SdrWhite;
+    float2 OverlayPad;
 };
 
 struct VsOut
@@ -68,34 +72,6 @@ VsOut VsMain(uint id : SV_VertexID)
     return o;
 }
 
-// The desktop with the mouse pointer drawn on it.
-//
-// Windows composites the cursor at scan-out, so the duplicated frame never
-// contains it and we have to put it back. Doing that HERE rather than in a
-// second pass costs one texture fetch on the pixels the cursor covers and
-// nothing at all anywhere else — a separate overlay pass would mean another
-// full-frame render target and another round trip through VRAM.
-//
-// Colour is sampled linearly so a cursor scaled down with the picture keeps its
-// antialiased edges; the invert mask is sampled nearest, because a half-inverted
-// pixel is not a thing and interpolating the flag would fringe the I-beam.
-float3 Scene(float2 uv)
-{
-    float3 rgb = Source.Sample(Linear, uv).rgb;
-    if (CursorEnabled < 0.5) return rgb;
-
-    float2 c = (uv - CursorRect.xy) / CursorRect.zw;
-    if (c.x < 0.0 || c.y < 0.0 || c.x > 1.0 || c.y > 1.0) return rgb;
-
-    // Monochrome cursors carry no colour of their own: they are defined as
-    // inverting the background, which is what keeps a text I-beam visible over
-    // black text and over white paper alike.
-    if (CursorInvert.SampleLevel(Nearest, c, 0) > 0.5) return 1.0 - rgb;
-
-    float4 cursor = CursorPixels.SampleLevel(Linear, c, 0);
-    return lerp(rgb, cursor.rgb, cursor.a);
-}
-
 // BT.709 luma weights.
 static const float3 kLuma = float3(0.2126, 0.7152, 0.0722);
 
@@ -106,53 +82,15 @@ static const float kLumaBias   =  16.0 / 255.0;
 static const float kChromaScale = 224.0 / 255.0;
 static const float kChromaBias = 128.0 / 255.0;
 
-float PsLuma(VsOut i) : SV_TARGET
-{
-    float3 rgb = Scene(i.uv);
-    return dot(rgb, kLuma) * kLumaScale + kLumaBias;
-}
-
-// 4:4:4, written as packed AYUV in one draw.
-//
-// NVENC's AYUV is a 32-bit word with V in the lowest byte, then U, then Y, then
-// A — so in memory the bytes are [V][U][Y][A], and an R8G8B8A8 render-target
-// view lands them as R=V, G=U, B=Y, A=A. Getting that order wrong produces a
-// picture with the colours swapped rather than an error, which is why it is
-// spelled out here.
-float4 PsPacked444(VsOut i) : SV_TARGET
-{
-    float3 rgb = Scene(i.uv);
-    float  y   = dot(rgb, kLuma);
-
-    float cb = (rgb.b - y) / 1.8556;
-    float cr = (rgb.r - y) / 1.5748;
-
-    return float4(cr * kChromaScale + kChromaBias,  // R <- V
-                  cb * kChromaScale + kChromaBias,  // G <- U
-                  y  * kLumaScale   + kLumaBias,    // B <- Y
-                  1.0);
-}
-
-float2 PsChroma(VsOut i) : SV_TARGET
-{
-    // Sampling once at the chroma texel's centre lets the sampler average the
-    // 2x2 luma neighbourhood for us, which is what 4:2:0 wants anyway.
-    float3 rgb = Scene(i.uv);
-    float  y   = dot(rgb, kLuma);
-
-    // The BT.709 denominators: 2*(1-Kb) and 2*(1-Kr).
-    float cb = (rgb.b - y) / 1.8556;
-    float cr = (rgb.r - y) / 1.5748;
-    return float2(cb, cr) * kChromaScale + kChromaBias;
-}
-
 // ── HDR: scRGB FP16 → BT.2020 PQ, 10-bit limited range ──────────────────────
 //
 // What DXGI hands over for an HDR desktop is scRGB: linear light, BT.709
-// primaries, and 1.0 meaning SDR white — 80 nits by definition, with the
-// desktop's "SDR content brightness" slider already baked in by the compositor.
-// Values above 1.0 are the highlights, and values below 0 are the colours
-// outside BT.709 that scRGB expresses as negatives.
+// primaries, and 1.0 meaning 80 nits. That is NOT where the desktop's own
+// white is: the compositor paints SDR content (every window, the wallpaper, the
+// pointer) at the "SDR content brightness" level, which is SdrWhite here —
+// 1.0 at the slider's default, and typically 2 to 3 on a display someone has
+// actually used. Values above that are the HDR highlights, and values below 0
+// are the colours outside BT.709 that scRGB expresses as negatives.
 //
 // Four steps, in this order, and the order is not negotiable: primaries first
 // (a matrix is only linear-light-valid), then the absolute scale, then the PQ
@@ -214,10 +152,12 @@ float3 PqFromLinear(float3 linearRgb)
 // The HDR scene, in linear scRGB with the pointer composited in.
 //
 // The cursor's pixels are 8-bit sRGB, so they have to be linearised and placed
-// at SDR white (scRGB 1.0) — blending them as if they were already linear makes
-// a pointer that is far too dark on an HDR desktop. The invert mask is bounded
-// against SDR white too: "1 - rgb" on a 10.0 highlight would be -9, and a
-// negative that then meets the clamp above turns the I-beam into a black hole.
+// at the desktop's SDR white — blending them as if they were already linear
+// makes a pointer that is far too dark on an HDR desktop, and placing them at
+// 1.0 makes one dimmer than the window it is over once the slider is up. The
+// invert mask is bounded against SDR white too: "white - rgb" on a highlight
+// far above it would be deeply negative, and a negative that then meets the
+// clamp in PqFromLinear turns the I-beam into a black hole.
 float3 SrgbToLinear(float3 c)
 {
     return c <= 0.04045 ? c / 12.92 : pow(max(c + 0.055, 0.0) / 1.055, 2.4);
@@ -231,10 +171,127 @@ float3 SceneHdr(float2 uv)
     float2 c = (uv - CursorRect.xy) / CursorRect.zw;
     if (c.x < 0.0 || c.y < 0.0 || c.x > 1.0 || c.y > 1.0) return rgb;
 
-    if (CursorInvert.SampleLevel(Nearest, c, 0) > 0.5) return 1.0 - saturate(rgb);
+    if (CursorInvert.SampleLevel(Nearest, c, 0) > 0.5)
+        return SdrWhite - clamp(rgb, 0.0, SdrWhite);
 
     float4 cursor = CursorPixels.SampleLevel(Linear, c, 0);
-    return lerp(rgb, SrgbToLinear(cursor.rgb), cursor.a);
+    return lerp(rgb, SrgbToLinear(cursor.rgb) * SdrWhite, cursor.a);
+}
+
+// ── HDR desktop → SDR stream: the tone map ──────────────────────────────────
+//
+// What an SDR session gets from an HDR desktop. DXGI can hand over 8-bit
+// itself, but what it does on the way is a clip at 80 nits — and with the SDR
+// slider up, every window is brighter than that, so the whole desktop arrives
+// blown out (the beach wallpaper on DualRTX, 16/09/2026: sand and foam gone
+// to flat white). So the desktop is taken as scRGB and brought down here.
+//
+// The curve is the client's own soft-clip (WebGpuRenderer, HDR_COMMON_WGSL),
+// so an HDR desktop looks the same whichever side does the work: identity up
+// to a knee at 90 % of SDR white — every window, all text, an SDR game come
+// through exactly as an SDR stream would carry them — and a tanh shoulder
+// above it that folds the HDR highlights into the headroom that is left.
+// Scaled on luminance rather than per channel so a highlight keeps its hue
+// on the way down. Not ACES: ACES moves the midtones too, and on a desktop
+// the midtones are the picture.
+float3 LinearToSrgb(float3 c)
+{
+    return c <= 0.0031308 ? c * 12.92 : 1.055 * pow(max(c, 0.0), 1.0 / 2.4) - 0.055;
+}
+
+static const float kKnee = 0.9;
+
+float3 ToneMapToSdr(float3 scRgb)
+{
+    // SDR white to 1.0 first; the negatives (out-of-gamut) have nowhere to go
+    // in BT.709 and are clipped.
+    float3 rgb = max(scRgb / SdrWhite, 0.0);
+    float  y   = dot(rgb, kLuma);
+    if (y > kKnee) {
+        float yc = kKnee + (1.0 - kKnee) * tanh((y - kKnee) / (1.0 - kKnee));
+        rgb *= yc / y;
+    }
+    return LinearToSrgb(saturate(rgb));
+}
+
+// The desktop with the mouse pointer drawn on it, in 8-bit sRGB — what the
+// BT.709 shaders below encode.
+//
+// Two sources, chosen when the shader is compiled (MW_SCRGB_SOURCE): the 8-bit
+// desktop as it is, or the FP16 one tone-mapped down. Same entry points either
+// way, so the session's draw code never knows.
+//
+// Windows composites the cursor at scan-out, so the duplicated frame never
+// contains it and we have to put it back. Doing that HERE rather than in a
+// second pass costs one texture fetch on the pixels the cursor covers and
+// nothing at all anywhere else — a separate overlay pass would mean another
+// full-frame render target and another round trip through VRAM.
+//
+// Colour is sampled linearly so a cursor scaled down with the picture keeps its
+// antialiased edges; the invert mask is sampled nearest, because a half-inverted
+// pixel is not a thing and interpolating the flag would fringe the I-beam.
+#if MW_SCRGB_SOURCE
+float3 Scene(float2 uv)
+{
+    return ToneMapToSdr(SceneHdr(uv));
+}
+#else
+float3 Scene(float2 uv)
+{
+    float3 rgb = Source.Sample(Linear, uv).rgb;
+    if (CursorEnabled < 0.5) return rgb;
+
+    float2 c = (uv - CursorRect.xy) / CursorRect.zw;
+    if (c.x < 0.0 || c.y < 0.0 || c.x > 1.0 || c.y > 1.0) return rgb;
+
+    // Monochrome cursors carry no colour of their own: they are defined as
+    // inverting the background, which is what keeps a text I-beam visible over
+    // black text and over white paper alike.
+    if (CursorInvert.SampleLevel(Nearest, c, 0) > 0.5) return 1.0 - rgb;
+
+    float4 cursor = CursorPixels.SampleLevel(Linear, c, 0);
+    return lerp(rgb, cursor.rgb, cursor.a);
+}
+#endif
+
+float PsLuma(VsOut i) : SV_TARGET
+{
+    float3 rgb = Scene(i.uv);
+    return dot(rgb, kLuma) * kLumaScale + kLumaBias;
+}
+
+// 4:4:4, written as packed AYUV in one draw.
+//
+// NVENC's AYUV is a 32-bit word with V in the lowest byte, then U, then Y, then
+// A — so in memory the bytes are [V][U][Y][A], and an R8G8B8A8 render-target
+// view lands them as R=V, G=U, B=Y, A=A. Getting that order wrong produces a
+// picture with the colours swapped rather than an error, which is why it is
+// spelled out here.
+float4 PsPacked444(VsOut i) : SV_TARGET
+{
+    float3 rgb = Scene(i.uv);
+    float  y   = dot(rgb, kLuma);
+
+    float cb = (rgb.b - y) / 1.8556;
+    float cr = (rgb.r - y) / 1.5748;
+
+    return float4(cr * kChromaScale + kChromaBias,  // R <- V
+                  cb * kChromaScale + kChromaBias,  // G <- U
+                  y  * kLumaScale   + kLumaBias,    // B <- Y
+                  1.0);
+}
+
+float2 PsChroma(VsOut i) : SV_TARGET
+{
+    // Sampling once at the chroma texel's centre lets the sampler average the
+    // 2x2 luma neighbourhood for us, which is what 4:2:0 wants anyway.
+    float3 rgb = Scene(i.uv);
+    float  y   = dot(rgb, kLuma);
+
+    // The BT.709 denominators: 2*(1-Kb) and 2*(1-Kr).
+    float cb = (rgb.b - y) / 1.8556;
+    float cr = (rgb.r - y) / 1.5748;
+    return float2(cb, cr) * kChromaScale + kChromaBias;
 }
 
 float PsLumaHdr(VsOut i) : SV_TARGET
@@ -258,11 +315,18 @@ float2 PsChromaHdr(VsOut i) : SV_TARGET
 }
 )HLSL";
 
-bool compile(const char* entryPoint, const char* target, ComPtr<ID3DBlob>& blob, std::string& error)
+/// @p scRgbSource picks what the BT.709 entry points read: the 8-bit desktop,
+/// or the FP16 one through the tone map. Spelled "0"/"1" rather than left
+/// undefined, so the shader's #if never depends on what fxc makes of an
+/// unknown name.
+bool compile(const char* entryPoint, const char* target, bool scRgbSource, ComPtr<ID3DBlob>& blob,
+             std::string& error)
 {
+    const D3D_SHADER_MACRO defines[] = {{"MW_SCRGB_SOURCE", scRgbSource ? "1" : "0"},
+                                        {nullptr, nullptr}};
     ComPtr<ID3DBlob> errors;
     const HRESULT hr = ::D3DCompile(
-        kShaderSource, sizeof(kShaderSource) - 1, "ColorConvert.hlsl", nullptr, nullptr, entryPoint,
+        kShaderSource, sizeof(kShaderSource) - 1, "ColorConvert.hlsl", defines, nullptr, entryPoint,
         target, D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, blob.GetAddressOf(), errors.GetAddressOf());
     if (SUCCEEDED(hr)) return true;
 
@@ -294,12 +358,13 @@ bool ColorConvert::init(ID3D11Device* device, DXGI_FORMAT sourceFormat, int sour
     }
 
     // The transfer function is not a preference, it is a property of the bytes
-    // that arrived. Treating scRGB as if it were sRGB, or the reverse, produces
-    // a picture that is merely wrong — washed out one way, crushed the other —
-    // and a wrong picture is far more expensive to diagnose than a refusal.
-    if (hdr != isHdrSource(sourceFormat)) {
-        error = hdr ? "HDR was asked for but the display delivers 8-bit SDR frames"
-                    : "the display delivers FP16 HDR frames but this session is SDR";
+    // that arrived. Running the PQ curve over sRGB bytes produces a picture
+    // that is merely wrong — blown out — and a wrong picture is far more
+    // expensive to diagnose than a refusal. The other way round is a real
+    // case, and has its own path: an SDR stream of an HDR desktop takes the
+    // FP16 frames through the tone map. See ToneMapToSdr.
+    if (hdr && !isHdrSource(sourceFormat)) {
+        error = "HDR was asked for but the display delivers 8-bit SDR frames";
         return false;
     }
 
@@ -314,6 +379,7 @@ bool ColorConvert::init(ID3D11Device* device, DXGI_FORMAT sourceFormat, int sour
     m_Device->GetImmediateContext(m_Context.ReleaseAndGetAddressOf());
     m_Chroma = chroma;
     m_Hdr = hdr;
+    m_ToneMap = !hdr && isHdrSource(sourceFormat);
     m_SourceFormat = sourceFormat;
     m_SourceWidth = sourceWidth;
     m_SourceHeight = sourceHeight;
@@ -332,7 +398,10 @@ bool ColorConvert::init(ID3D11Device* device, DXGI_FORMAT sourceFormat, int sour
     if (!createOutput(error)) return false;
 
     log::info("[native] colour conversion: " + std::to_string(m_SourceWidth) + "x" +
-              std::to_string(m_SourceHeight) + (m_Hdr ? " FP16 scRGB -> " : " BGRA -> ") +
+              std::to_string(m_SourceHeight) +
+              (m_Hdr       ? " FP16 scRGB -> "
+               : m_ToneMap ? " FP16 scRGB, tone-mapped -> "
+                           : " BGRA -> ") +
               std::to_string(m_OutputWidth) + "x" + std::to_string(m_OutputHeight) +
               (m_Hdr                      ? " P010 4:2:0 (BT.2020 PQ, limited)"
                : m_Chroma == Chroma::C444 ? " AYUV 4:4:4 (BT.709 limited)"
@@ -340,10 +409,17 @@ bool ColorConvert::init(ID3D11Device* device, DXGI_FORMAT sourceFormat, int sour
     return true;
 }
 
+void ColorConvert::setSdrWhite(float scRgbWhite)
+{
+    // Below 1.0 does not exist (the slider starts at 80 nits) and 0 would be a
+    // division by zero in the shader: a bad read keeps the default.
+    m_SdrWhite = scRgbWhite >= 1.0f ? scRgbWhite : 1.0f;
+}
+
 bool ColorConvert::createShaders(std::string& error)
 {
     ComPtr<ID3DBlob> vs;
-    if (!compile("VsMain", "vs_5_0", vs, error)) return false;
+    if (!compile("VsMain", "vs_5_0", m_ToneMap, vs, error)) return false;
     if (FAILED(m_Device->CreateVertexShader(vs->GetBufferPointer(), vs->GetBufferSize(), nullptr,
                                             m_VertexShader.ReleaseAndGetAddressOf()))) {
         error = "could not create the vertex shader";
@@ -353,13 +429,13 @@ bool ColorConvert::createShaders(std::string& error)
     // Only the pair this session will actually draw with. The PQ shaders carry
     // two pow() chains and are the slowest of the set to compile; a desktop
     // session has no use for them, and an HDR one has no use for the BT.709
-    // matrix.
+    // matrix. The BT.709 pair reads the source the tone-map flag says.
     const char* lumaEntry = m_Hdr ? "PsLumaHdr" : "PsLuma";
     const char* chromaEntry = m_Hdr ? "PsChromaHdr" : "PsChroma";
 
     ComPtr<ID3DBlob> luma, chroma;
-    if (!compile(lumaEntry, "ps_5_0", luma, error)) return false;
-    if (!compile(chromaEntry, "ps_5_0", chroma, error)) return false;
+    if (!compile(lumaEntry, "ps_5_0", m_ToneMap, luma, error)) return false;
+    if (!compile(chromaEntry, "ps_5_0", m_ToneMap, chroma, error)) return false;
 
     auto& lumaShader = m_Hdr ? m_LumaHdrShader : m_LumaShader;
     auto& chromaShader = m_Hdr ? m_ChromaHdrShader : m_ChromaShader;
@@ -373,7 +449,7 @@ bool ColorConvert::createShaders(std::string& error)
 
     if (m_Chroma == Chroma::C444) {
         ComPtr<ID3DBlob> packed;
-        if (!compile("PsPacked444", "ps_5_0", packed, error)) return false;
+        if (!compile("PsPacked444", "ps_5_0", m_ToneMap, packed, error)) return false;
         if (FAILED(m_Device->CreatePixelShader(packed->GetBufferPointer(), packed->GetBufferSize(),
                                                nullptr, m_PackedShader.ReleaseAndGetAddressOf()))) {
             error = "could not create the 4:4:4 conversion shader";
@@ -404,7 +480,7 @@ bool ColorConvert::createShaders(std::string& error)
     // exactly the access pattern: written by the CPU once per frame, read by
     // the GPU immediately after.
     D3D11_BUFFER_DESC overlay = {};
-    overlay.ByteWidth = sizeof(float) * 8; // float4 + float + float3 padding
+    overlay.ByteWidth = sizeof(float) * 8; // float4 + float + float + float2 padding
     overlay.Usage = D3D11_USAGE_DYNAMIC;
     overlay.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     overlay.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
@@ -581,7 +657,8 @@ bool ColorConvert::convert(ID3D11Texture2D* source, const capture::CursorState& 
         p[2] = width / static_cast<float>(m_SourceWidth);
         p[3] = height / static_cast<float>(m_SourceHeight);
         p[4] = drawCursor ? 1.0f : 0.0f;
-        p[5] = p[6] = p[7] = 0.0f;
+        p[5] = m_SdrWhite;
+        p[6] = p[7] = 0.0f;
         m_Context->Unmap(m_OverlayBuffer.Get(), 0);
     }
 
