@@ -1355,34 +1355,45 @@ export class HostListView {
      * Art never seen still falls back for good — for an app whose host has no
      * cover for it, the pad IS the answer, and retrying would only cost
      * requests through the tunnel to be told the same thing three more times.
+     *
+     * The two stand-ins look different on purpose. While a cover is on its way
+     * back the frame shows the plain default screen (HostArt's default-monitor),
+     * a neutral "something goes here"; the app's own arcade sprite is kept for
+     * an app that has no cover, so it never flashes up for a few seconds on a
+     * card about to show its real one.
      */
     _wireBoxArt(cont, uuid) {
         cont.querySelectorAll('.app-card-image img').forEach((img) => {
             const card = img.closest('.app-card');
+            const frame = img.parentElement;
             const appId = card ? Number(card.dataset.appId) : 0;
             const src = img.getAttribute('src');
             let attempt = 0;
 
-            const placeholder = () => {
+            // One stand-in at a time in the frame: two is a frame with a
+            // second, smaller frame in it.
+            const standIn = (html, waiting) => {
                 const prev = img.previousElementSibling;
-                if (prev && prev.classList.contains('app-icon')) return prev;
-                img.insertAdjacentHTML('beforebegin', appPlaceholderHtml(appId, t));
-                return img.previousElementSibling;
+                if (prev && prev.classList.contains('app-icon')) {
+                    if (prev.classList.contains('app-icon--host') === waiting) return;
+                    prev.remove();
+                }
+                img.insertAdjacentHTML('beforebegin', html);
+                frame.classList.toggle('app-card-image--host', waiting);
             };
 
             const onError = () => {
                 const ladder = HostListView.BOX_ART_RETRY_MS;
                 if (!boxArtWasSeen(uuid, appId) || attempt >= ladder.length) {
-                    // Never seen, or the host has stopped answering: the ship
-                    // stands in for the cover for good, and the <img> goes away.
-                    // Reusing the placeholder when there is one — two ships in
-                    // one frame is a frame with a second, smaller frame in it.
-                    placeholder();
+                    // Never seen, or the host has stopped answering: the arcade
+                    // sprite stands in for the cover for good, and the <img>
+                    // goes away.
+                    standIn(appPlaceholderHtml(appId, t), false);
                     img.remove();
                     return;
                 }
                 img.hidden = true;
-                placeholder();
+                standIn(hostArtHtml(null), true);
                 const delay = ladder[attempt];
                 attempt++;
                 setTimeout(() => {
@@ -1396,6 +1407,7 @@ export class HostListView {
                 img.hidden = false;
                 const prev = img.previousElementSibling;
                 if (prev && prev.classList.contains('app-icon')) prev.remove();
+                frame.classList.remove('app-card-image--host');
                 noteBoxArtSeen(uuid, appId);
             };
 

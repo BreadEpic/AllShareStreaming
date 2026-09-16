@@ -269,6 +269,7 @@ describe('HostListView app grid', () => {
 
             expect(art()).toBeNull();
             expect(pad()).not.toBeNull();
+            expect(pad().dataset.sprite).toBeDefined();
         });
 
         it('draws the stand-in in the theme, not with an emoji each OS paints its own way', () => {
@@ -315,13 +316,23 @@ describe('HostListView app grid', () => {
             expect(art()).toBe(img);
             expect(img.hidden).toBe(true);
             expect(pad()).not.toBeNull();
+            // Meanwhile the frame shows the plain default screen, not the app's
+            // arcade sprite: that one would flash up on a card about to get its cover.
+            expect(pad().dataset.art).toBe('default-monitor');
+            expect(pad().dataset.sprite).toBeUndefined();
+            const frame = grid(container).querySelector('.app-card-image');
+            expect(frame.classList.contains('app-card-image--host')).toBe(true);
 
+            // A second failure keeps the one stand-in.
             vi.advanceTimersByTime(2000);
             expect(img.getAttribute('src')).not.toBe(src);
+            img.dispatchEvent(new Event('error'));
+            expect(grid(container).querySelectorAll('.app-card-image .app-icon')).toHaveLength(1);
 
             img.dispatchEvent(new Event('load'));
             expect(img.hidden).toBe(false);
             expect(pad()).toBeNull();
+            expect(frame.classList.contains('app-card-image--host')).toBe(false);
         });
 
         it('gives up once the ladder is spent — a host that is gone is gone', () => {
@@ -338,6 +349,11 @@ describe('HostListView app grid', () => {
 
             expect(art()).toBeNull();
             expect(grid(container).querySelectorAll('.app-card-image .app-icon')).toHaveLength(1);
+            // For good, the app gets its own arcade sprite back, in its frame.
+            expect(pad().dataset.sprite).toBeDefined();
+            expect(pad().dataset.art).toBeUndefined();
+            const frame = grid(container).querySelector('.app-card-image');
+            expect(frame.classList.contains('app-card-image--host')).toBe(false);
         });
     });
 
