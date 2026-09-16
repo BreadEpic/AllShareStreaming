@@ -570,6 +570,34 @@ export class BackendClient {
         this._hadSession = true;
         return resp;
     }
+    /**
+     * Spend the key a home-screen shortcut opened with (`#k=hs-…`) for a session
+     * of its own.
+     *
+     * The shortcut runs in a storage apart from the browser it was added from, so
+     * it arrives with no cookie and no pairing key. The key stands in for the PIN
+     * that browser already gave, and — like a PIN login — this is where the
+     * shortcut's own MW-BIND-v1 key is registered. The answer carries the
+     * machines that browser knew, for the header's menu.
+     */
+    static async redeemHomeScreenKey(key, machineName) {
+        const identity = await loadOrCreateIdentity();
+        const resp = await this.post('/api/auth/home-screen', {
+            key,
+            machine_name: machineName,
+            public_key: identity?.publicKeyBase64 || undefined,
+        });
+        if (resp?.host_public_key) {
+            await rememberHostIdentity(resp.host_public_key, resp.host_id);
+        }
+        this._hadSession = true;
+        return resp;
+    }
+    /** Hand the host the machines this browser knows, kept beside this session
+     *  for a home-screen shortcut made from it. */
+    static async shareInstancesForHomeScreen(instances) {
+        return this.post('/api/auth/home-screen/instances', { instances });
+    }
     /** Spend the remote admin password to give this (already authenticated,
      *  LAN) session the same admin access the host machine has. */
     static async adminUnlock(password) {

@@ -183,14 +183,16 @@ public:
     static QMap<QString, QString> securityHeaders(const QString& hostHeader);
 
     /// Who this machine is, for a home-screen shortcut made through the tunnel:
-    /// its rendezvous identifier and the name its owner reads. Asked on each
-    /// request, so a rename or a new identifier is picked up without a restart.
+    /// its rendezvous identifier, the name its owner reads and — for a request
+    /// from a signed-in session — the key the shortcut signs in with. Asked on
+    /// each request, so a rename or a new identifier needs no restart.
     struct HomeScreenIdentity
     {
         QString hostId;
         QString machineName;
+        QString handoffKey;
     };
-    void setHomeScreenIdentity(std::function<HomeScreenIdentity()> fn)
+    void setHomeScreenIdentity(std::function<HomeScreenIdentity(const HttpRequest&)> fn)
     {
         m_HomeScreenIdentity = std::move(fn);
     }
@@ -255,7 +257,8 @@ private:
 
     /// Rewrite a shell or manifest @p resp for a home-screen shortcut and answer
     /// @p ifNoneMatch against the rewritten bytes. See HomeScreenShell.h.
-    void personaliseForHomeScreen(HttpResponse& resp, const QString& ifNoneMatch) const;
+    void personaliseForHomeScreen(const HttpRequest& req, HttpResponse& resp,
+                                  const QString& ifNoneMatch) const;
 
     QTcpServer* m_HttpServer;
     QTcpServer* m_HttpsServer;
@@ -271,7 +274,7 @@ private:
 
     RestRouter* m_Router;
     StaticFileHandler* m_StaticFiles;
-    std::function<HomeScreenIdentity()> m_HomeScreenIdentity;
+    std::function<HomeScreenIdentity(const HttpRequest&)> m_HomeScreenIdentity;
     quint16 m_HttpPort;
     quint16 m_HttpsPort;
     quint16 m_ActiveHttpsPort = 0;

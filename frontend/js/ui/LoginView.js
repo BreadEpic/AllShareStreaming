@@ -139,6 +139,11 @@ export class LoginView {
      * e.g. "Windows Chrome", "macOS Safari", "Android Chrome"
      */
     _suggestMachineName() {
+        this._machineName = LoginView.suggestedMachineName();
+    }
+
+    /** The name suggestion alone, for a session created without this form. */
+    static suggestedMachineName() {
         const ua = navigator.userAgent;
         let os = 'Unknown';
         if (ua.includes('Windows')) os = 'Windows';
@@ -155,7 +160,7 @@ export class LoginView {
         else if (ua.includes('Safari') && !ua.includes('Chrome')) browser = 'Safari';
         else if (ua.includes('OPR') || ua.includes('Opera')) browser = 'Opera';
 
-        this._machineName = `${os} ${browser}`;
+        return `${os} ${browser}`;
     }
 
     render() {

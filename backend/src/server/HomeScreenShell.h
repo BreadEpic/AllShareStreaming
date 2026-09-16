@@ -53,13 +53,17 @@ namespace mw::homescreen {
 QString title(const QString& editionName, const QString& machineName);
 
 /// The manifest with @p title as its name, the machine's own address as where it
-/// opens (only when @p hostId is a rendezvous identifier), and each icon whose
-/// bytes are given inlined. Returned unchanged if it is not a JSON object.
+/// opens (only when @p hostId is a rendezvous identifier) — carrying
+/// @p handoffKey in its fragment when there is one — and each icon whose bytes
+/// are given inlined. Returned unchanged if it is not a JSON object.
 QByteArray manifest(const QByteArray& json, const QString& title, const QString& hostId,
-                    const QByteArray& icon192, const QByteArray& icon512);
+                    const QString& handoffKey, const QByteArray& icon192,
+                    const QByteArray& icon512);
 
-/// The shell with @p title as its apple-mobile-web-app-title and @p icon180
-/// inlined as its apple-touch-icon. Anything it does not find is left as it is.
-QByteArray shell(const QByteArray& html, const QString& title, const QByteArray& icon180);
+/// The shell with @p title as its apple-mobile-web-app-title, @p icon180
+/// inlined as its apple-touch-icon and, when given, @p manifestHref as where its
+/// manifest is read. Anything it does not find is left as it is.
+QByteArray shell(const QByteArray& html, const QString& title, const QByteArray& icon180,
+                 const QString& manifestHref = QString());
 
 } // namespace mw::homescreen

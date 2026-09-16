@@ -797,8 +797,63 @@ void AuthManager::setSessionStreaming(const QString& token, bool streaming)
     }
 }
 
+QString AuthManager::homeScreenKey(const QString& token, qint64 nowSecs)
+{
+    if (!validateSession(token) || isEphemeralSession(token)) return {};
+    const qint64 now = nowSecs > 0 ? nowSecs : QDateTime::currentSecsSinceEpoch();
+    const QString id = hashToken(token);
+
+    auto it = m_homeScreenKeys.find(id);
+    if (it != m_homeScreenKeys.end() && now - it->issuedAt < HOME_SCREEN_KEY_TTL_SECS / 2)
+        return it->key;
+
+    const QByteArray random = generateRandomKey();
+    HomeScreenKey fresh;
+    fresh.key = QLatin1String(HOME_SCREEN_KEY_PREFIX) +
+                QString::fromLatin1(random.toBase64(QByteArray::Base64UrlEncoding |
+                                                    QByteArray::OmitTrailingEquals));
+    fresh.issuedAt = now;
+    m_homeScreenKeys.insert(id, fresh);
+    return fresh.key;
+}
+
+void AuthManager::setHomeScreenInstances(const QString& token, const QJsonArray& instances)
+{
+    if (!validateSession(token)) return;
+    m_homeScreenInstances.insert(hashToken(token), instances);
+}
+
+std::optional<AuthManager::HomeScreenHandoff> AuthManager::redeemHomeScreenKey(const QString& key,
+                                                                               qint64 nowSecs)
+{
+    if (!key.startsWith(QLatin1String(HOME_SCREEN_KEY_PREFIX))) return std::nullopt;
+    const qint64 now = nowSecs > 0 ? nowSecs : QDateTime::currentSecsSinceEpoch();
+
+    // Every entry compared, the match or not, so the time taken says nothing
+    // about which prefix of a key was right.
+    QString sessionId;
+    for (auto it = m_homeScreenKeys.cbegin(); it != m_homeScreenKeys.cend(); ++it) {
+        if (constantTimeEquals(it->key, key)) sessionId = it.key();
+    }
+    if (sessionId.isEmpty()) return std::nullopt;
+
+    // Spent whatever happens next: a key that failed a check below is not one
+    // to leave lying around for a second try.
+    const HomeScreenKey found = m_homeScreenKeys.take(sessionId);
+    if (now - found.issuedAt > HOME_SCREEN_KEY_TTL_SECS) return std::nullopt;
+
+    auto session = m_sessions.constFind(sessionId);
+    if (session == m_sessions.cend()) return std::nullopt;
+    const qint64 last = session->lastSeen > 0 ? session->lastSeen : session->createdAt;
+    if (QDateTime::currentSecsSinceEpoch() - last > ttlFor(*session)) return std::nullopt;
+
+    return HomeScreenHandoff{session->machineName, m_homeScreenInstances.value(sessionId)};
+}
+
 void AuthManager::destroySession(const QString& token)
 {
+    m_homeScreenKeys.remove(token);
+    m_homeScreenInstances.remove(token);
     if (m_sessions.contains(token)) {
         SessionInfo info = m_sessions.value(token);
         m_sessions.remove(token);

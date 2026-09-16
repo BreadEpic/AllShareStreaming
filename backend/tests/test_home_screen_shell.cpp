@@ -36,11 +36,13 @@ void run_home_screen_shell_tests()
     {
         const QJsonObject m =
             QJsonDocument::fromJson(hs::manifest(manifestJson, "MoonlightWeb [DualRTX]", id,
-                                                 QByteArray("P192"), QByteArray("P512")))
+                                                 "hs-Ab_9", QByteArray("P192"), QByteArray("P512")))
                 .object();
         CHECK_EQ(m["name"].toString(), QString("MoonlightWeb [DualRTX]"));
         CHECK_EQ(m["short_name"].toString(), QString("MoonlightWeb [DualRTX]"));
-        CHECK_EQ(m["start_url"].toString(), "/" + id);
+        // The key rides in the fragment; the application id stays bare, so a
+        // fresh key is the same application rather than a second one.
+        CHECK_EQ(m["start_url"].toString(), "/" + id + "#k=hs-Ab_9");
         CHECK_EQ(m["id"].toString(), "/" + id);
         // The scope stays the origin: the entry page hands over to "/".
         CHECK_EQ(m["scope"].toString(), QString("/"));
@@ -54,14 +56,19 @@ void run_home_screen_shell_tests()
     SECTION("home screen — no identifier, no invented address; no bytes, no icon change");
     {
         const QJsonObject m =
-            QJsonDocument::fromJson(
-                hs::manifest(manifestJson, "MoonlightWeb", "not-an-id", QByteArray(), QByteArray()))
+            QJsonDocument::fromJson(hs::manifest(manifestJson, "MoonlightWeb", "not-an-id", "hs-x",
+                                                 QByteArray(), QByteArray()))
                 .object();
         CHECK_EQ(m["start_url"].toString(), QString("/"));
         CHECK(!m.contains("id"));
         CHECK_EQ(m["icons"].toArray().at(0).toObject()["src"].toString(),
                  QString("assets/icon-192.png"));
-        CHECK_EQ(hs::manifest("not json", "X", id, {}, {}), QByteArray("not json"));
+        CHECK_EQ(hs::manifest("not json", "X", id, {}, {}, {}), QByteArray("not json"));
+        // No key: the bare address, and the shortcut asks for the PIN.
+        CHECK_EQ(QJsonDocument::fromJson(hs::manifest(manifestJson, "X", id, {}, {}, {}))
+                     .object()["start_url"]
+                     .toString(),
+                 "/" + id);
     }
 
     SECTION("home screen — the shell carries the name and the icon itself");
@@ -72,11 +79,12 @@ void run_home_screen_shell_tests()
             "<link rel=\"manifest\" href=\"/manifest.webmanifest\" />\n"
             "<link rel=\"apple-touch-icon\" sizes=\"180x180\" href=\"/assets/icon-180.png\" />\n"
             "</head>";
-        const QString out = QString::fromUtf8(hs::shell(html, "A&B [\\1 \"x\"]", "P180"));
+        const QString out =
+            QString::fromUtf8(hs::shell(html, "A&B [\\1 \"x\"]", "P180", "/api/app/web-manifest"));
         CHECK(out.contains("content=\"A&amp;B [\\1 &quot;x&quot;]\""));
         CHECK(out.contains("href=\"data:image/png;base64," +
                            QString::fromLatin1(QByteArray("P180").toBase64()) + "\""));
-        CHECK(out.contains("href=\"/manifest.webmanifest\""));
+        CHECK(out.contains("rel=\"manifest\" href=\"/api/app/web-manifest\""));
         CHECK(!out.contains("/assets/icon-180.png"));
     }
 }

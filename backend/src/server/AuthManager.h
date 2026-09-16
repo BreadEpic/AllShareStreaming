@@ -19,6 +19,7 @@
 
 #include <QObject>
 #include <QHash>
+#include <optional>
 #include <QDateTime>
 #include <QByteArray>
 #include <QString>
@@ -265,6 +266,43 @@ public:
      *  point at the row that is the caller's own device. */
     QString sessionIdForToken(const QString& token) const;
 
+    // ── Home-screen handoff ─────────────────────────────────────────────────
+    // A shortcut added to an iPhone's home screen runs in a storage of its own,
+    // apart from Safari's: no cookie, no pairing key, no list of machines. The
+    // one thing Safari hands it is the address it opens, and the manifest this
+    // host serves through the tunnel writes that address. So a signed-in page's
+    // manifest carries a key in the fragment (#k=), and the shortcut spends it
+    // on its first start for a session of its own — no PIN a second time.
+    //
+    // In memory only: a restart spends every outstanding key, and the shortcut
+    // then asks for the PIN, as it did before this existed.
+
+    /// Marks a home-screen key apart from the host key that shares #k=.
+    static constexpr const char* HOME_SCREEN_KEY_PREFIX = "hs-";
+    /// How long a key stays good. Long, because iOS reads the manifest when
+    /// the page loads, not when "Add to Home Screen" is tapped.
+    static constexpr qint64 HOME_SCREEN_KEY_TTL_SECS = 24 * 3600;
+
+    /** The key a shortcut made from the session behind raw cookie @p token
+     *  would open with, or empty for no session or a temporary one (a visitor
+     *  who declined "remember me" is not handing out a second session). The
+     *  same key is returned while it has more than half its life left, so every
+     *  page load does not mint a new one. */
+    QString homeScreenKey(const QString& token, qint64 nowSecs = 0);
+
+    /** The machines the browser behind @p token knows, handed to the shortcut
+     *  made from it. Names and identifiers, no secret. */
+    void setHomeScreenInstances(const QString& token, const QJsonArray& instances);
+
+    struct HomeScreenHandoff
+    {
+        QString machineName; ///< the session the key came from
+        QJsonArray instances;
+    };
+    /** Spend @p key. Single-use; refused once expired, or once the session it
+     *  came from has been revoked or has expired. */
+    std::optional<HomeScreenHandoff> redeemHomeScreenKey(const QString& key, qint64 nowSecs = 0);
+
     /** Returns true if the PIN was auto-regenerated after being consumed
      *  (i.e. a remote client validated it). When true, the admin UI should
      *  display "--------" to force explicit manual generation. */
@@ -370,6 +408,14 @@ private:
     QByteArray m_hmacKey;
     QHash<QString, RateLimitEntry> m_rateLimits; // rate-limit key -> entry
     QHash<QString, SessionInfo> m_sessions;      // token hash (id) -> SessionInfo
+
+    struct HomeScreenKey
+    {
+        QString key;
+        qint64 issuedAt = 0;
+    };
+    QHash<QString, HomeScreenKey> m_homeScreenKeys;   // session id -> key
+    QHash<QString, QJsonArray> m_homeScreenInstances; // session id -> machines
     QTimer* m_purgeTimer = nullptr;
 
     QString generatePinInternal();

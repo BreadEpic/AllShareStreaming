@@ -184,6 +184,77 @@ void registerAuthRoutes(HttpServer& server, AuthManager& authManager, GeoIpServi
         return HttpResponse::error(500, "Internal error");
     });
 
+    // POST /api/auth/home-screen — a home-screen shortcut's first start.
+    //
+    // The shortcut opens with the key its manifest carried (see
+    // AuthManager::homeScreenKey) and spends it here for a session of its own,
+    // registering its own MW-BIND-v1 key like a PIN login does: this browser
+    // context has never seen the host, and the key proves the person holding
+    // it was signed in on this same device a moment ago.
+    //
+    // Tunnel only, because the key is only ever written into a manifest served
+    // through the tunnel. A failure counts against the abuse guard like a wrong
+    // PIN, so the endpoint is no cheaper to guess at than the PIN it stands in for.
+    server.router()->post("/api/auth/home-screen", [&server, &authManager, &geoIpService,
+                                                    &settings](const HttpRequest& req) {
+        const QJsonObject body = QJsonDocument::fromJson(req.body).object();
+        const QString key = body.value(QStringLiteral("key")).toString();
+        const std::optional<AuthManager::HomeScreenHandoff> handoff =
+            req.viaTunnel ? authManager.redeemHomeScreenKey(key) : std::nullopt;
+        if (!handoff) {
+            server.reportAuthFailure(req.clientAddress);
+            Logger::warning(QStringLiteral("[Auth] Home-screen key refused for %1")
+                                .arg(AuthManager::cleanClientAddress(req.clientAddress)));
+            return HttpResponse::error(403, "This shortcut's key is spent or expired");
+        }
+
+        QString machineName = body.value(QStringLiteral("machine_name")).toString().trimmed();
+        if (machineName.isEmpty()) machineName = handoff->machineName;
+        const QString token = authManager.createSession(req.clientAddress, machineName);
+        geoIpService.lookupIp(req.clientAddress,
+                              [&authManager, token](const QString& city, const QString& country) {
+                                  authManager.setSessionGeo(token, city, country);
+                              });
+        Logger::info(QStringLiteral("[Auth] Home-screen shortcut signed in as '%1' (from '%2')")
+                         .arg(machineName, handoff->machineName));
+
+        QJsonObject obj;
+        obj["status"] = "ok";
+        obj["remembered"] = true;
+        obj["instances"] = handoff->instances;
+        bindKeyFromLoginBody(authManager, token, body, obj, settings);
+        HttpResponse resp = HttpResponse::json(obj);
+        resp.headers["Set-Cookie"] = sessionCookie(token, true);
+        return resp;
+    });
+
+    // POST /api/auth/home-screen/instances — the machines this browser knows,
+    // kept beside its session for a shortcut made from it. Capped and reduced to
+    // the three fields the register reads; anything else is dropped unread.
+    server.router()->post("/api/auth/home-screen/instances", [&authManager](
+                                                                 const HttpRequest& req) {
+        const QString token = HttpServer::sessionTokenFromRequest(req);
+        if (!authManager.validateSession(token))
+            return HttpResponse::error(401, "Not authenticated");
+
+        const QJsonArray given =
+            QJsonDocument::fromJson(req.body).object().value(QStringLiteral("instances")).toArray();
+        QJsonArray kept;
+        for (const QJsonValue& v : given) {
+            const QJsonObject e = v.toObject();
+            const QString id = e.value(QStringLiteral("id")).toString();
+            const QString name = e.value(QStringLiteral("name")).toString();
+            const QString url = e.value(QStringLiteral("url")).toString();
+            if (id.isEmpty() || name.isEmpty() || url.isEmpty() || id.size() > 256 ||
+                name.size() > 128 || url.size() > 512)
+                continue;
+            kept.append(QJsonObject{{"id", id}, {"name", name}, {"url", url}});
+            if (kept.size() >= 16) break;
+        }
+        authManager.setHomeScreenInstances(token, kept);
+        return HttpResponse::json(QJsonObject{{"status", "ok"}});
+    });
+
     // POST /api/auth/pairing-key — register this browser's MW-BIND-v1 public key
     // on a session that predates the mechanism, and collect the host's own.
     //

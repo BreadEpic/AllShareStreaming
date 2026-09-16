@@ -21,6 +21,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QRegularExpression>
+#include <QUrl>
 
 namespace mw::homescreen {
 
@@ -58,7 +59,7 @@ QString title(const QString& editionName, const QString& machineName)
 }
 
 QByteArray manifest(const QByteArray& json, const QString& title, const QString& hostId,
-                    const QByteArray& icon192, const QByteArray& icon512)
+                    const QString& handoffKey, const QByteArray& icon192, const QByteArray& icon512)
 {
     QJsonParseError error;
     const QJsonDocument doc = QJsonDocument::fromJson(json, &error);
@@ -73,8 +74,16 @@ QByteArray manifest(const QByteArray& json, const QString& title, const QString&
         // The path form, the one people share: the entry page reads the machine
         // from it and needs nothing from storage. `id` follows, so two machines
         // installed side by side are two applications rather than one replaced.
+        //
+        // The key goes in the fragment, which no browser sends to the server it
+        // fetched from: the entry page forwards #k= to the application, and the
+        // introduction server never sees it. `id` stays bare, so a new key is
+        // the same application and not a second one.
         const QString address = QLatin1Char('/') + hostId;
-        obj[QStringLiteral("start_url")] = address;
+        obj[QStringLiteral("start_url")] =
+            handoffKey.isEmpty() ? address
+                                 : address + QStringLiteral("#k=") +
+                                       QString::fromLatin1(QUrl::toPercentEncoding(handoffKey));
         obj[QStringLiteral("id")] = address;
     }
 
@@ -94,9 +103,16 @@ QByteArray manifest(const QByteArray& json, const QString& title, const QString&
     return QJsonDocument(obj).toJson(QJsonDocument::Indented);
 }
 
-QByteArray shell(const QByteArray& html, const QString& title, const QByteArray& icon180)
+QByteArray shell(const QByteArray& html, const QString& title, const QByteArray& icon180,
+                 const QString& manifestHref)
 {
     QString page = QString::fromUtf8(html);
+
+    if (!manifestHref.isEmpty()) {
+        static const QRegularExpression manifestLink(
+            QString::fromLatin1(R"re(<link\s+rel="manifest"[^>]*\shref="([^"]*)")re"));
+        replaceCaptured(page, manifestLink, htmlAttribute(manifestHref));
+    }
 
     if (!title.isEmpty()) {
         static const QRegularExpression appTitle(QString::fromLatin1(

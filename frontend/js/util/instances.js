@@ -161,6 +161,34 @@ export function listInstances() {
     return read().sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
 }
 
+/**
+ * Add machines another browser context knew, without overriding what this one
+ * already knows.
+ *
+ * A home-screen shortcut starts with an empty register — iOS keeps its storage
+ * apart from Safari's — and receives the browser's list once, on its first
+ * start. Anything this register already holds wins: it is newer by definition.
+ *
+ * @param {unknown} entries
+ * @returns {Instance[]}
+ */
+export function importInstances(entries) {
+    if (!Array.isArray(entries)) return read();
+    const current = read();
+    const known = new Set(current.map((e) => e.id));
+    const now = Date.now();
+    for (const e of entries) {
+        if (!e || typeof e.id !== 'string' || !e.id || known.has(e.id)) continue;
+        if (typeof e.name !== 'string' || !e.name || typeof e.url !== 'string' || !e.url) continue;
+        current.push({ id: e.id, name: e.name, url: e.url, seen: now });
+        known.add(e.id);
+    }
+    current.sort((a, b) => b.seen - a.seen);
+    const kept = current.slice(0, MAX_ENTRIES);
+    write(kept);
+    return kept;
+}
+
 /** Drop one machine from the register. */
 export function forgetInstance(id) {
     write(read().filter((e) => e.id !== id));

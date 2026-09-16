@@ -729,9 +729,10 @@ QMap<QString, QString> HttpServer::securityHeaders(const QString& hostHeader)
     return headers;
 }
 
-void HttpServer::personaliseForHomeScreen(HttpResponse& resp, const QString& ifNoneMatch) const
+void HttpServer::personaliseForHomeScreen(const HttpRequest& req, HttpResponse& resp,
+                                          const QString& ifNoneMatch) const
 {
-    const HomeScreenIdentity who = m_HomeScreenIdentity();
+    const HomeScreenIdentity who = m_HomeScreenIdentity(req);
     const QString title = mw::homescreen::title(mw::edition::displayName(), who.machineName);
     // The served copies, so a DEV identity's shortcut wears its blue icons.
     const auto icon = [this](const char* path) {
@@ -741,10 +742,14 @@ void HttpServer::personaliseForHomeScreen(HttpResponse& resp, const QString& ifN
 
     if (resp.contentType.startsWith(QLatin1String("application/manifest+json")))
         resp.body =
-            mw::homescreen::manifest(resp.body, title, who.hostId, icon("/assets/icon-192.png"),
-                                     icon("/assets/icon-512.png"));
+            mw::homescreen::manifest(resp.body, title, who.hostId, who.handoffKey,
+                                     icon("/assets/icon-192.png"), icon("/assets/icon-512.png"));
     else if (resp.contentType.startsWith(QLatin1String("text/html")))
-        resp.body = mw::homescreen::shell(resp.body, title, icon("/assets/icon-180.png"));
+        // The manifest is read from the API rather than the file: the service
+        // worker answers the file from its cache, the same copy for everyone,
+        // and the key in it belongs to one session.
+        resp.body = mw::homescreen::shell(resp.body, title, icon("/assets/icon-180.png"),
+                                          QStringLiteral("/api/app/web-manifest"));
     else
         return;
 
@@ -1224,19 +1229,42 @@ void HttpServer::serveRequest(HttpRequest req, Arrival arrival, ResponseCallback
         QString version =
             QCoreApplication::applicationVersion() + QLatin1Char('-') + m_StaticFiles->contentTag();
         if (viaTunnel && m_HomeScreenIdentity) {
-            const HomeScreenIdentity who = m_HomeScreenIdentity();
+            // Bumped whenever the rewrite itself changes what it writes, so a
+            // shell cached under the previous rewrite is fetched again.
+            static const QString kShellShape = QStringLiteral("2|");
+            const HomeScreenIdentity who = m_HomeScreenIdentity(req);
             version +=
                 QLatin1Char('-') +
-                QString::fromLatin1(QCryptographicHash::hash(
-                                        (who.hostId + QLatin1Char('|') + who.machineName).toUtf8(),
-                                        QCryptographicHash::Md5)
-                                        .toHex()
-                                        .left(8));
+                QString::fromLatin1(
+                    QCryptographicHash::hash(
+                        (kShellShape + who.hostId + QLatin1Char('|') + who.machineName).toUtf8(),
+                        QCryptographicHash::Md5)
+                        .toHex()
+                        .left(8));
         }
         HttpResponse manifest = HttpResponse::json(
             QJsonObject{{QStringLiteral("version"), version}, {QStringLiteral("files"), files}});
         manifest.headers["Cache-Control"] = "no-store";
         respond(manifest);
+        return;
+    }
+
+    // The manifest a home-screen shortcut is made from, for a page reached
+    // through the tunnel (see the shell rewrite below). Before the session gate
+    // because a page that is not signed in still gets a shortcut — one that asks
+    // for the PIN — and nothing in this answer is sensitive but the key, which
+    // only a signed-in session's own request is given.
+    if (req.path == QLatin1String("/api/app/web-manifest")) {
+        if (!viaTunnel || !m_HomeScreenIdentity || req.method != QLatin1String("GET")) {
+            respond(HttpResponse::error(404, "Not Found"));
+            return;
+        }
+        HttpResponse resp = m_StaticFiles->serveFile(QStringLiteral("/manifest.webmanifest"));
+        if (resp.statusCode == 200) personaliseForHomeScreen(req, resp, QString());
+        resp.headers.remove("ETag");
+        resp.headers.remove("Last-Modified");
+        resp.headers["Cache-Control"] = "no-store";
+        respond(resp);
         return;
     }
 
@@ -1288,7 +1316,7 @@ void HttpServer::serveRequest(HttpRequest req, Arrival arrival, ResponseCallback
         // trying to tell a real leak from the fallback.
         if (resp.statusCode == 404 && !looksLikeFile)
             resp = m_StaticFiles->serveFile("/", fileIfNoneMatch);
-        if (homeScreen && resp.statusCode == 200) personaliseForHomeScreen(resp, ifNoneMatch);
+        if (homeScreen && resp.statusCode == 200) personaliseForHomeScreen(req, resp, ifNoneMatch);
         // HEAD is the same response without the representation.
         if (req.method == QLatin1String("HEAD")) resp.body.clear();
         respond(resp);

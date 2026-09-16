@@ -82,7 +82,12 @@ import {
 import { SecuringOverlay } from './ui/SecuringOverlay.js';
 import { ourStunHost } from './api/IceServers.js';
 import { InstanceMenu } from './ui/InstanceMenu.js';
-import { currentInstanceRef, rememberInstance } from './util/instances.js';
+import {
+    currentInstanceRef,
+    importInstances,
+    listInstances,
+    rememberInstance,
+} from './util/instances.js';
 
 // ── Global error handler ──────────────────────────────────────────────────────
 window.addEventListener('error', (evt) => {
@@ -120,6 +125,10 @@ window.addEventListener('unhandledrejection', (evt) => {
         main.querySelector('.btn-reload').addEventListener('click', () => location.reload());
     }
 });
+
+/** Marks a home-screen shortcut's key apart from the host key sharing `#k=`
+ *  (AuthManager::HOME_SCREEN_KEY_PREFIX on the host). */
+const HOME_SCREEN_KEY_PREFIX = 'hs-';
 
 /** An address rendered as a clickable, copyable link in a banner. */
 const linkHtml = (u) =>
@@ -249,6 +258,7 @@ const MoonlightApp = {
         // ── Auth check: show login if remote and not authenticated ─────────
         const authOk = await this._checkAuth();
         if (!authOk) return; // LoginView handles rendering, stop here
+        this._offerHomeScreenHandoff();
 
         // ── First-run setup wizard (localhost only) ────────────────────────
         // macOS/Linux have no native installer, so the app hosts the setup
@@ -1074,9 +1084,22 @@ const MoonlightApp = {
 
         let answered = false;
         try {
-            await BackendClient.redeemHostKey(key);
-            answered = true;
-            console.log('[MW] Host key redeemed — host-machine session granted');
+            if (key.startsWith(HOME_SCREEN_KEY_PREFIX)) {
+                // Not the host key: the key a home-screen shortcut was made with
+                // (see _offerHomeScreenHandoff). Same fragment, same single use,
+                // an ordinary session at the end of it.
+                const resp = await BackendClient.redeemHomeScreenKey(
+                    key,
+                    `${LoginView.suggestedMachineName()} (home screen)`,
+                );
+                answered = true;
+                importInstances(resp?.instances);
+                console.log('[MW] Home-screen key redeemed — signed in without a PIN');
+            } else {
+                await BackendClient.redeemHostKey(key);
+                answered = true;
+                console.log('[MW] Host key redeemed — host-machine session granted');
+            }
         } catch (err) {
             // A status is the host's answer; anything else is the request not
             // arriving, and the key is still worth carrying.
@@ -1096,6 +1119,27 @@ const MoonlightApp = {
             '',
             window.location.pathname + (query ? '?' + query : '') + hash,
         );
+    },
+
+    /**
+     * Get this signed-in page ready to become a home-screen shortcut.
+     *
+     * A shortcut runs in a storage of its own, so everything it should start
+     * with has to leave with the one thing Safari gives it: the address in the
+     * manifest. The host writes a single-use key into that address for a
+     * signed-in session (/api/app/web-manifest), and keeps this browser's list of
+     * machines beside it, handed over when the key is spent.
+     *
+     * Two steps, both best-effort. The list goes to the host first; then the
+     * manifest link is pointed at a fresh URL, because the browser read it when
+     * the page loaded — before the PIN, on a first visit — and that copy
+     * carries no key.
+     */
+    _offerHomeScreenHandoff() {
+        if (!tunnelHostId()) return;
+        BackendClient.shareInstancesForHomeScreen(listInstances()).catch(() => {});
+        const link = document.querySelector('link[rel="manifest"]');
+        if (link) link.setAttribute('href', `/api/app/web-manifest?t=${Date.now()}`);
     },
 
     /**
@@ -1160,6 +1204,7 @@ const MoonlightApp = {
                 // On successful login, re-initialize the app
                 console.log('[MW] Authentication successful, re-initializing...');
                 this.loginView = null;
+                this._offerHomeScreenHandoff();
                 this._initNavButtons();
                 this._initRouter();
                 this._initAsync();

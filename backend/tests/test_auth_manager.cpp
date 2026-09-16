@@ -5,6 +5,9 @@
 #include "server/AuthManager.h"
 #include "server/AppSettings.h"
 
+#include <QDateTime>
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QTemporaryDir>
 
 void run_auth_manager_tests()
@@ -308,4 +311,56 @@ void run_auth_manager_tests()
     CHECK_EQ(AuthManager::isPrivateIP("8.8.8.8"), QString("Remote"));
     CHECK_EQ(AuthManager::rateLimitKey("8.8.8.8"), QString("8.8.8.8"));   // IPv4 = raw
     CHECK(!AuthManager::rateLimitKey("2001:db8:abcd:1234::1").isEmpty()); // IPv6 = /64-ish
+
+    // ── Home-screen handoff ────────────────────────────────────────────────
+    {
+        const QString owner = auth.createSession("198.51.100.40", "iOS Safari");
+        const QString key = auth.homeScreenKey(owner);
+        CHECK(key.startsWith(AuthManager::HOME_SCREEN_KEY_PREFIX));
+        CHECK(key.size() > 40);
+        // Every page load reads the manifest; the key stays the same meanwhile.
+        CHECK_EQ(auth.homeScreenKey(owner), key);
+
+        const QJsonArray machines{QJsonObject{{"id", "n95"}, {"name", "N95"}, {"url", "u"}}};
+        auth.setHomeScreenInstances(owner, machines);
+
+        // A host key, or anything else, is not a home-screen key.
+        CHECK(!auth.redeemHomeScreenKey("not-a-key").has_value());
+        CHECK(!auth.redeemHomeScreenKey(AuthManager::HOME_SCREEN_KEY_PREFIX + QString("x"))
+                   .has_value());
+
+        const auto handoff = auth.redeemHomeScreenKey(key);
+        CHECK(handoff.has_value());
+        if (handoff) {
+            CHECK_EQ(handoff->machineName, QString("iOS Safari"));
+            CHECK_EQ(handoff->instances, machines);
+        }
+        // Single-use.
+        CHECK(!auth.redeemHomeScreenKey(key).has_value());
+
+        // Spent, a new one is minted for the next shortcut.
+        const QString second = auth.homeScreenKey(owner);
+        CHECK(!second.isEmpty() && second != key);
+
+        // Past its lifetime it is refused — and spent by the refusal.
+        const qint64 now = QDateTime::currentSecsSinceEpoch();
+        const QString late = auth.homeScreenKey(auth.createSession("198.51.100.41", "Old"),
+                                                now - AuthManager::HOME_SCREEN_KEY_TTL_SECS - 5);
+        CHECK(!auth.redeemHomeScreenKey(late, now).has_value());
+
+        // Past half its life the manifest gets a fresh one.
+        const QString aging = auth.createSession("198.51.100.42", "Aging");
+        const QString first =
+            auth.homeScreenKey(aging, now - AuthManager::HOME_SCREEN_KEY_TTL_SECS);
+        CHECK(auth.homeScreenKey(aging, now) != first);
+
+        // Revoking the session it came from revokes the key with it.
+        auth.destroySession(auth.sessionIdForToken(owner));
+        CHECK(!auth.redeemHomeScreenKey(second).has_value());
+
+        // A visitor who declined "remember me" hands out no second session.
+        const QString temporary = auth.createSession("198.51.100.43", "Kiosk", false, true);
+        CHECK(auth.homeScreenKey(temporary).isEmpty());
+        CHECK(auth.homeScreenKey(QString()).isEmpty());
+    }
 }

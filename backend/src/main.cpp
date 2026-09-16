@@ -1650,10 +1650,6 @@ int main(int argc, char* argv[])
     server.setDomain(appSettings.domain());
     server.setCertPem(appSettings.certPem());
     server.setCertKey(appSettings.certKey());
-    server.setHomeScreenIdentity([&appSettings] {
-        return HttpServer::HomeScreenIdentity{appSettings.rendezvousId(),
-                                              appSettings.displayName()};
-    });
 
     // Initialize ComputerManager (Phase 2: host discovery)
     ComputerManager computerManager(&app);
@@ -1703,6 +1699,12 @@ int main(int argc, char* argv[])
     Logger::info("[Auth] Access the admin page at https://localhost/");
     Logger::info("[Auth] Remote access requires a generated PIN");
     server.setAuthManager(&authManager);
+    server.setHomeScreenIdentity([&appSettings, &authManager](const HttpRequest& req) {
+        return HttpServer::HomeScreenIdentity{
+            appSettings.rendezvousId(), appSettings.displayName(),
+            req.viaTunnel ? authManager.homeScreenKey(HttpServer::sessionTokenFromRequest(req))
+                          : QString()};
+    });
 
     QObject::connect(&authManager, &AuthManager::pinChanged, [](const QString& pin) {
         Logger::info(QString("[Auth] PIN changed: %1").arg(pin));
