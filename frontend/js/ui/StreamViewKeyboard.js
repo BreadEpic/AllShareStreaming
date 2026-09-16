@@ -571,9 +571,18 @@ export class StreamViewKeyboard {
             // let the visible view own the document-wide inset.
             if (!this._standby) publishKbdInset(kbHeight + tbHeight);
         } else {
-            this.streamEl.style.bottom = '';
-            this.streamEl.style.top = '';
-            this.streamEl.style.height = '';
+            // iOS Safari can hand over a page whose visible area starts inside
+            // the layout viewport rather than at its top — seen after an update,
+            // when the page arrives through the entry page. Every fixed element
+            // then sits that far up, the header off the screen, and nothing
+            // fires until a rotation resets it. Scroll it back if the window
+            // owns the offset; otherwise follow the visible area, as for the
+            // keyboard, so the header at least stays on screen.
+            if (vv.offsetTop > 1 && (window.scrollX || window.scrollY)) window.scrollTo(0, 0);
+            const shifted = vv.offsetTop > 1;
+            this.streamEl.style.bottom = shifted ? 'auto' : '';
+            this.streamEl.style.top = shifted ? vv.offsetTop + 'px' : '';
+            this.streamEl.style.height = shifted ? vv.height + 'px' : '';
             this._hideKbToolbar();
             if (!this._standby) publishKbdInset(0);
         }

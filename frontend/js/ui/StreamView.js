@@ -2062,6 +2062,11 @@ export class StreamView {
                 if (window.scrollX || window.scrollY) window.scrollTo(0, 0);
             };
             window.addEventListener('scroll', this._onWindowScroll, { passive: true });
+            // Both handlers above only react to a change. A page that arrived
+            // already offset (see _handleViewportResize) never sends one, so
+            // settle it once now.
+            if (window.scrollX || window.scrollY) window.scrollTo(0, 0);
+            if (this._onViewportResize) this._handleViewportResize();
 
             // Keep the soft keyboard open: while it is visible, prevent any tap
             // outside the capture (stream area, dark band under the resized
