@@ -230,8 +230,13 @@ private:
     void onPortLost(int purpose, int slot, quint16 port, const QString& owner);
 
     /// Build the peer connection for a browser, on its hole or without one.
-    /// The half of onSessionOpened() that has to wait for the allocator.
+    /// The half of onSessionOpened() that has to wait for the allocator. A
+    /// port that will not bind is given back and tried again ephemeral; a
+    /// connection that cannot be built at all refuses the session, never the
+    /// process.
     void createPeerConnection(Peer& p);
+    /// The construction itself; throws what libdatachannel throws.
+    void buildPeerConnection(Peer& p);
     /// Stop waiting (if it was) and build the connection with whatever hole is
     /// free right now, or none.
     void startPeer(Peer& p);

@@ -353,6 +353,39 @@ void ControlTunnel::startPeer(Peer& p)
 
 void ControlTunnel::createPeerConnection(Peer& p)
 {
+    // libdatachannel throws when it cannot gather candidates, and the usual
+    // reason is the pinned port: another MoonlightWeb on this machine, or
+    // anything else, already bound it. Left uncaught in a Qt slot, that
+    // exception took the whole host down with every stream it was carrying.
+    // A port that will not bind is given back and the browser gets an
+    // ephemeral one; only when that fails too is this one session refused.
+    const QString id = p.sessionId;
+    try {
+        buildPeerConnection(p);
+        return;
+    } catch (const std::exception& e) {
+        p.pc.reset();
+        p.dc.reset();
+        if (p.port == 0) {
+            Logger::error(QStringLiteral("[Tunnel] Session %1 refused — no peer connection: %2")
+                              .arg(id.left(8), QString::fromUtf8(e.what())));
+            m_Rendezvous->closeSession(id);
+            dropPeer(id, QStringLiteral("the peer connection could not be built"));
+            return;
+        }
+        Logger::warning(QStringLiteral("[Tunnel] Session %1 could not bind port %2 (%3) — "
+                                       "trying an ephemeral port")
+                            .arg(id.left(8))
+                            .arg(p.port)
+                            .arg(QString::fromUtf8(e.what())));
+        releaseTunnelPort(p.port);
+        p.port = 0;
+    }
+    createPeerConnection(p);
+}
+
+void ControlTunnel::buildPeerConnection(Peer& p)
+{
     const QString sessionId = p.sessionId;
 
     // ICE for the control channel.

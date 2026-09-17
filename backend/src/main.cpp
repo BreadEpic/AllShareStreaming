@@ -1285,6 +1285,21 @@ int main(int argc, char* argv[])
     // plugin (which would abort for want of a display) for offscreen.
     selectHeadlessPlatform();
 
+#ifdef Q_OS_WIN
+    // Qt's Windows platform plugin caches WinRT activation factories
+    // (Windows.UI, for the theme colours) and releases them when QApplication
+    // is destroyed. The audio and capture threads each CoInitialize and
+    // CoUninitialize the MTA; the last one out tears the apartment down and
+    // combase unloads Windows.UI.dll, so that release read unmapped code and
+    // every stream worker ended in an access violation. Pinning the MTA to the
+    // process lifetime keeps the DLL where Qt expects it; the cookie is never
+    // decremented on purpose.
+    {
+        CO_MTA_USAGE_COOKIE mtaCookie = nullptr;
+        CoIncrementMTAUsage(&mtaCookie);
+    }
+#endif
+
     QApplication app(argc, argv);
     // The plugin that actually loaded is the last word on whether Qt can draw:
     // it overrides the environment probe for the tray, the browser auto-open,
