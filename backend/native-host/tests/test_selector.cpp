@@ -514,6 +514,61 @@ void run_selector_tests()
         CHECK_EQ(f.height, 766);
     }
 
+    // ── A box to fit: the display's shape INSIDE the requested size ─────────
+    {
+        const FramePolicy box{true, false};
+        // A 16:10 client screen of a 16:9 display: the height is the limit,
+        // and the client shows 1920x1080 1:1 with its own bars around.
+        FrameSize f = frameForDisplay({1920, 1080}, {1920, 1200}, box);
+        CHECK_EQ(f.width, 1920);
+        CHECK_EQ(f.height, 1080);
+
+        // A 4:3 box of a 16:9 display: the width is the limit.
+        f = frameForDisplay({1920, 1080}, {1600, 1200}, box);
+        CHECK_EQ(f.width, 1600);
+        CHECK_EQ(f.height, 900);
+
+        // A box of the display's own shape is taken as it is.
+        f = frameForDisplay({2560, 1440}, {1280, 720}, box);
+        CHECK_EQ(f.width, 1280);
+        CHECK_EQ(f.height, 720);
+
+        // A box of a portrait display.
+        f = frameForDisplay({1080, 1920}, {1920, 1080}, box);
+        CHECK_EQ(f.width, 608);
+        CHECK_EQ(f.height, 1080);
+
+        // Never larger than the display unless allowed: the same 1440p box
+        // of a 1080p display streams 1080p by default …
+        f = frameForDisplay({1920, 1080}, {2560, 1440}, box);
+        CHECK_EQ(f.width, 1920);
+        CHECK_EQ(f.height, 1080);
+        // … and the client's own screen, when it says so: 1440p, upscaled.
+        const FramePolicy screen{true, true};
+        f = frameForDisplay({1920, 1080}, {2560, 1440}, screen);
+        CHECK_EQ(f.width, 2560);
+        CHECK_EQ(f.height, 1440);
+        // The shape is still the display's, inside the screen: a 16:10 phone
+        // of a 16:9 display gets 16:9 at the phone's width.
+        f = frameForDisplay({1920, 1080}, {2560, 1600}, screen);
+        CHECK_EQ(f.width, 2560);
+        CHECK_EQ(f.height, 1440);
+
+        // An odd box is made even.
+        f = frameForDisplay({1920, 1080}, {1365, 767}, box);
+        CHECK_EQ(f.width, 1364);
+        CHECK_EQ(f.height, 766);
+
+        // The policy is read off the session's config: upscaling means
+        // nothing without a box.
+        SessionConfig c;
+        c.allowUpscale = true;
+        CHECK(!policyOf(c).fitBox);
+        CHECK(!policyOf(c).allowUpscale);
+        c.fitRequestedBox = true;
+        CHECK(policyOf(c).allowUpscale);
+    }
+
     SECTION("Selector — default display");
 
     // ── displayId -1 lands on the primary: the single-screen one-click case ──

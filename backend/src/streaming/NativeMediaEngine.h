@@ -97,6 +97,11 @@ public:
         /// Rebuild at the display's new shape when its mode changes under the
         /// session — see SessionConfig::followDisplayShape.
         bool followDisplayShape = false;
+        /// width × height is a box to fit (the display's shape inside it),
+        /// and whether the frame may then be larger than the display — see
+        /// SessionConfig::fitRequestedBox and allowUpscale.
+        bool fitRequestedBox = false;
+        bool allowUpscale = false;
         /// The client's screen, as the browser measured it: refresh in
         /// millihertz (0 = unknown) and whether it paints on vsync. A vsync
         /// client gets a cadence that divides its refresh — see

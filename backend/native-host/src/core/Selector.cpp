@@ -324,18 +324,33 @@ bool select(const Capabilities& caps, const SessionConfig& config, Selection& ou
     // transform took 21 ms a picture at 1440p, the Debian VM's CPU encoder
     // likewise (07/09/2026) — and a GPU spends bitrate on them just the same.
     // The browser scales the picture up itself.
+    //
+    // Two readings of the request besides "this height" (frameForDisplay):
+    // a box to fit — the largest frame of the display's shape inside it — and,
+    // for a client asking for its own screen's size, the one case that may
+    // upscale, since a pixel of the frame is then a pixel of that screen
+    // (SessionConfig::fitRequestedBox, allowUpscale).
     const FrameSize asked{out.width, out.height};
-    const FrameSize shaped = frameForDisplay({out.display->width, out.display->height}, asked);
+    const FramePolicy policy = policyOf(config);
+    const FrameSize shaped =
+        frameForDisplay({out.display->width, out.display->height}, asked, policy);
     if (shaped.width != asked.width || shaped.height != asked.height) {
         log::info("[native] " + std::to_string(asked.width) + "x" + std::to_string(asked.height) +
                   " asked of a " + std::to_string(out.display->width) + "x" +
                   std::to_string(out.display->height) + " display — streaming " +
                   std::to_string(shaped.width) + "x" + std::to_string(shaped.height) +
-                  (shaped.height != asked.height ? ", the display's own size — never upscaled"
-                                                 : ", the display's own shape"));
-        out.width = shaped.width;
-        out.height = shaped.height;
+                  (policy.fitBox                   ? ", the display's shape inside that box"
+                   : shaped.height != asked.height ? ", the display's own size — never upscaled"
+                                                   : ", the display's own shape"));
+    } else if (policy.allowUpscale &&
+               (shaped.width > out.display->width || shaped.height > out.display->height)) {
+        log::info("[native] " + std::to_string(shaped.width) + "x" + std::to_string(shaped.height) +
+                  " asked of a " + std::to_string(out.display->width) + "x" +
+                  std::to_string(out.display->height) +
+                  " display — upscaled, as the client's own screen size");
     }
+    out.width = shaped.width;
+    out.height = shaped.height;
 
     if (config.fps > 0) {
         out.fps = config.fps;
@@ -348,7 +363,7 @@ bool select(const Capabilities& caps, const SessionConfig& config, Selection& ou
     return true;
 }
 
-FrameSize frameForDisplay(FrameSize display, FrameSize frame)
+FrameSize frameForDisplay(FrameSize display, FrameSize frame, FramePolicy policy)
 {
     if (display.width <= 0 || display.height <= 0 || frame.width <= 0 || frame.height <= 0)
         return frame;
@@ -356,10 +371,22 @@ FrameSize frameForDisplay(FrameSize display, FrameSize frame)
     FrameSize out = frame;
     const double displayAspect = static_cast<double>(display.width) / display.height;
     const double frameAspect = static_cast<double>(frame.width) / frame.height;
-    if (std::abs(frameAspect - displayAspect) / displayAspect > 0.005)
-        out.width = static_cast<int>(std::lround(frame.height * displayAspect)) & ~1;
+    if (std::abs(frameAspect - displayAspect) / displayAspect > 0.005) {
+        if (!policy.fitBox) {
+            out.width = static_cast<int>(std::lround(frame.height * displayAspect)) & ~1;
+        } else if (frameAspect > displayAspect) {
+            // The box is wider than the display: its height is the limit.
+            out.width = static_cast<int>(std::lround(frame.height * displayAspect)) & ~1;
+        } else {
+            // The box is taller: its width is the limit.
+            out.height = static_cast<int>(std::lround(frame.width / displayAspect)) & ~1;
+        }
+    }
+    // Encoders take even sizes only; a box is whatever the client's screen is.
+    out.width &= ~1;
+    out.height &= ~1;
 
-    if (out.width > display.width || out.height > display.height) {
+    if (!policy.allowUpscale && (out.width > display.width || out.height > display.height)) {
         out.width = display.width & ~1;
         out.height = display.height & ~1;
     }

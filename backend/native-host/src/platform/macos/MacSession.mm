@@ -574,7 +574,8 @@ private:
             const bool overPanel = frame.width > panel.width || frame.height > panel.height;
             if ((m_Config.followDisplayShape || overPanel) && m_Config.width > 0 &&
                 m_Config.height > 0)
-                frame = frameForDisplay(panel, {m_Config.width, m_Config.height});
+                frame =
+                    frameForDisplay(panel, {m_Config.width, m_Config.height}, policyOf(m_Config));
             if (failures == 0 && (frame.width != m_Info.width || frame.height != m_Info.height))
                 log::info("[native] the display is now " + std::to_string(m_Display.pixelWidth) +
                           "x" + std::to_string(m_Display.pixelHeight) +

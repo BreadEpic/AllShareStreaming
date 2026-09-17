@@ -364,6 +364,44 @@ void AppSettings::setStreamHeight(int height)
     writeAll(obj);
 }
 
+// ── Stream resolution mode ──────────────────────────────────────────────────────
+
+QString AppSettings::streamResolution() const
+{
+    QJsonObject obj = readAll();
+    const QString mode = obj.value("stream_resolution").toString("fixed");
+    static const QStringList valid = {"fixed", "device", "host", "custom"};
+    return valid.contains(mode) ? mode : QStringLiteral("fixed");
+}
+
+void AppSettings::setStreamResolution(const QString& mode)
+{
+    QJsonObject obj = readAll();
+    static const QStringList valid = {"fixed", "device", "host", "custom"};
+    obj["stream_resolution"] = valid.contains(mode) ? mode : QStringLiteral("fixed");
+    writeAll(obj);
+}
+
+int AppSettings::streamCustomWidth() const
+{
+    QJsonObject obj = readAll();
+    return qBound(kCustomSizeMin, obj.value("stream_custom_width").toInt(1920), kCustomSizeMax);
+}
+
+int AppSettings::streamCustomHeight() const
+{
+    QJsonObject obj = readAll();
+    return qBound(kCustomSizeMin, obj.value("stream_custom_height").toInt(1080), kCustomSizeMax);
+}
+
+void AppSettings::setStreamCustomSize(int width, int height)
+{
+    QJsonObject obj = readAll();
+    obj["stream_custom_width"] = qBound(kCustomSizeMin, width, kCustomSizeMax);
+    obj["stream_custom_height"] = qBound(kCustomSizeMin, height, kCustomSizeMax);
+    writeAll(obj);
+}
+
 // ── Stream aspect ratio ────────────────────────────────────────────────────────
 
 QString AppSettings::streamAspect() const

@@ -152,6 +152,22 @@ struct SessionConfig
     /// ratio chosen by hand is a ratio the viewer wants kept.
     bool followDisplayShape = false;
 
+    /// Read `width` × `height` as a box to fit rather than a height to keep:
+    /// the frame is the largest one of the display's shape inside it (a 16:9
+    /// display asked for 1920x1200 streams 1920x1080). What a client sends
+    /// with a size that is its own — its screen ("Same as your device") or a
+    /// pair it typed ("Custom") — so the picture never comes out squeezed
+    /// into a shape that is not the display's, and never wider than it asked.
+    /// False, the default, keeps the height and takes the display's shape.
+    bool fitRequestedBox = false;
+
+    /// Let the frame be larger than the display. The Selector never upscales
+    /// otherwise (the browser scales up for free, the host would pay for
+    /// nothing) — the one reason to is a client asking for its own screen's
+    /// size, since a pixel of the frame is then a pixel of that screen. Read
+    /// only with fitRequestedBox.
+    bool allowUpscale = false;
+
     // ── Bench-only, below this line ─────────────────────────────────────────
     //
     // Neither field is ever set by a session a browser started. They exist so

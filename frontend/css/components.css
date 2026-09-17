@@ -367,6 +367,45 @@
     font-style: italic;
 }
 
+/* Custom resolution — two numbers side by side, styled like the select */
+.settings-size-row {
+    display: flex;
+    gap: 10px;
+    margin-top: 8px;
+}
+.settings-size-row label {
+    flex: 1 1 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: var(--fs-xs);
+    color: var(--text-3);
+}
+.settings-size-input {
+    width: 100%;
+    padding: 10px 14px;
+    font-size: var(--fs-sm);
+    background-color: var(--surface-1);
+    border: 1px solid var(--border-1);
+    border-radius: var(--radius-sm);
+    color: var(--text-1);
+    outline: none;
+    appearance: textfield;
+    -moz-appearance: textfield;
+    transition:
+        border-color 0.15s,
+        box-shadow 0.15s;
+}
+.settings-size-input:focus {
+    border-color: var(--accent-1);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.settings-size-input::-webkit-outer-spin-button,
+.settings-size-input::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+
 /* Range slider */
 .settings-slider {
     display: block;

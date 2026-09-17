@@ -2548,8 +2548,15 @@ int main(int argc, char* argv[])
                              ? body["stream_bitrate"].toInt()
                              : appSettings.streamBitrate();
 
+        // Height 0 is "the display's own size", which only the native host can
+        // answer (SessionConfig::height); asked of any other host it is the
+        // default, since GameStream needs a size on the wire. The browser's
+        // "Same as the remote PC" sends it only to a native host anyway.
         int reqHeight = body.contains("stream_height") && body["stream_height"].toInt() > 0
                             ? body["stream_height"].toInt()
+                        : body["stream_height"].isDouble() && body["stream_height"].toInt() == 0 &&
+                                backendType == QStringLiteral("native")
+                            ? 0
                             : appSettings.streamHeight();
 
         // Aspect ratio → explicit width. Fix the height, derive the width from
@@ -2579,7 +2586,16 @@ int main(int argc, char* argv[])
         }
         // Even width (encoders require it), 0 height stays native (width 0).
         int reqWidth = (reqHeight > 0) ? (static_cast<int>(reqHeight * aspect + 0.5) & ~1) : 0;
-        qInfo() << "[Session] Aspect" << reqAspect << "→" << reqWidth << "x" << reqHeight;
+        // How a native host reads that size: a box to fit (the display's shape
+        // inside it) rather than a height to keep, and — for a client asking
+        // for its own screen's size — the one case it may upscale. The
+        // browser's "Same as your device" and "Custom" resolutions; absent
+        // (an older frontend, a fixed rung) → today's reading. Every other
+        // host gets the explicit width and height above regardless.
+        const bool reqFitBox = body["stream_fit_box"].toBool(false);
+        const bool reqAllowUpscale = reqFitBox && body["stream_allow_upscale"].toBool(false);
+        qInfo() << "[Session] Aspect" << reqAspect << "→" << reqWidth << "x" << reqHeight
+                << (reqFitBox ? (reqAllowUpscale ? "(box, may upscale)" : "(box)") : "");
         // Players joining this host's share inherit it (see g_HostAspect).
         if (reqAspect.contains(':')) g_HostAspect[host->uuid] = reqAspect;
 
@@ -2948,6 +2964,7 @@ int main(int argc, char* argv[])
             // The viewer's aspect is "Auto": a native stream follows the
             // display's shape when it changes. Absent → the size is kept.
             s->setFollowDisplayShape(body["follow_display_shape"].toBool(false));
+            s->setFrameFit(reqFitBox, reqAllowUpscale);
             s->setClientKind(clientKind);
             // See the worker path: the administrator-window gate.
             s->setViewerAdmin(req.isLocal);
@@ -3076,6 +3093,8 @@ int main(int argc, char* argv[])
             cfg["clientRefreshMilliHz"] = body["client_refresh_mhz"].toInt(0);
             cfg["clientVsync"] = body["client_vsync"].toBool(false);
             cfg["followDisplayShape"] = body["follow_display_shape"].toBool(false);
+            cfg["fitRequestedBox"] = reqFitBox;
+            cfg["allowUpscale"] = reqAllowUpscale;
             // Whether this browser administers MoonlightWeb here (loopback, the
             // host-key session, or the LAN admin password). The native host
             // keeps everyone else out of windows that run as administrator.

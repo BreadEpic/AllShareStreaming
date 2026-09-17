@@ -155,6 +155,8 @@ void NativeMediaEngine::startCapture(const StartParams& params)
     config.yuv444 = params.yuv444;
     config.intraRefresh = params.intraRefresh;
     config.followDisplayShape = params.followDisplayShape;
+    config.fitRequestedBox = params.fitRequestedBox;
+    config.allowUpscale = params.allowUpscale;
     config.allowElevatedInput = params.viewerAdmin;
     config.muteHostAudio = params.muteHostAudio;
     // The consent this machine was already given, replayed. Empty on the very

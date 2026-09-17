@@ -949,7 +949,7 @@ private:
             const FrameSize base = m_Config.width > 0 && m_Config.height > 0
                                        ? FrameSize{m_Config.width, m_Config.height}
                                        : full;
-            full = frameForDisplay(display, base);
+            full = frameForDisplay(display, base, policyOf(m_Config));
             if (full.width != m_FullWidth || full.height != m_FullHeight) {
                 log::info("[native] the display is now " + std::to_string(m_Capture->width()) +
                           "x" + std::to_string(m_Capture->height()) + " — the stream follows it: " +

@@ -168,6 +168,17 @@ public:
     /// mw::native::SessionConfig::followDisplayShape. Other engines ignore it.
     void setFollowDisplayShape(bool follow) { m_FollowDisplayShape = follow; }
 
+    /// The requested size is a box to fit (the display's shape inside it),
+    /// and whether a native stream may then be larger than the display — the
+    /// browser's "Same as your device" / "Custom" resolutions. See
+    /// mw::native::SessionConfig::fitRequestedBox and allowUpscale. Other
+    /// engines ignore both: they get the explicit width and height.
+    void setFrameFit(bool fitBox, bool allowUpscale)
+    {
+        m_FitRequestedBox = fitBox;
+        m_AllowUpscale = fitBox && allowUpscale;
+    }
+
     /// The provider this session launches through. Required: set it before
     /// start(). It is what decides which host/seat is dialled and, for a
     /// multi-seat backend, which identity is presented.
@@ -433,6 +444,10 @@ private:
 
     /// See setFollowDisplayShape.
     bool m_FollowDisplayShape = false;
+
+    /// See setFrameFit.
+    bool m_FitRequestedBox = false;
+    bool m_AllowUpscale = false;
 
     /// The engine producing this session's media: MoonlightShim for a
     /// GameStream host, NativeMediaEngine for this machine's own screen.

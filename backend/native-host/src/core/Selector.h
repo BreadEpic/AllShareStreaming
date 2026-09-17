@@ -94,19 +94,45 @@ struct FrameSize
     int height = 0;
 };
 
+/// How the size the client asked for is read — the two SessionConfig flags
+/// that qualify it, gathered so every caller of frameForDisplay() passes the
+/// same pair (see policyOf()).
+struct FramePolicy
+{
+    /// The requested size is a box to fit, not a height to keep — see
+    /// SessionConfig::fitRequestedBox.
+    bool fitBox = false;
+    /// The frame may be larger than the display — see
+    /// SessionConfig::allowUpscale. Read only with fitBox.
+    bool allowUpscale = false;
+};
+
 /// The frame a display of @p display should be streamed at, given the frame
-/// the client asked for: the display's shape at the frame's height, width kept
-/// even. The frame is returned untouched when its shape is already within 0.5%
-/// of the display's, so a client's even-width rounding is never fought over,
-/// and when either size is unknown.
+/// the client asked for. By default: the display's shape at the frame's
+/// height, width kept even. The frame is returned untouched when its shape is
+/// already within 0.5% of the display's, so a client's even-width rounding is
+/// never fought over, and when either size is unknown.
+///
+/// With FramePolicy::fitBox the frame is instead the largest one of the
+/// display's shape that fits inside the requested size — a 16:9 display asked
+/// for a 1920x1200 box streams 1920x1080, so the client shows it 1:1 with its
+/// own bars around, never a squeezed picture.
 ///
 /// Never larger than the display: a 1440p request of a 1080p display streams
-/// 1080p, whatever the encoder (see select()). Given the size the client asked
-/// for rather than the one the session has now, a display that shrank and grew
-/// back returns to that size.
+/// 1080p, whatever the encoder (see select()). The one exception is
+/// FramePolicy::allowUpscale, which a client asking for its own screen's
+/// size sets on purpose. Given the size the client asked for rather than the
+/// one the session has now, a display that shrank and grew back returns to
+/// that size.
 ///
 /// Pure, shared by select() at the start of a session and by every platform
 /// session when the display changes mode under it.
-FrameSize frameForDisplay(FrameSize display, FrameSize frame);
+FrameSize frameForDisplay(FrameSize display, FrameSize frame, FramePolicy policy = {});
+
+/// The FramePolicy a session's config asks for.
+inline FramePolicy policyOf(const SessionConfig& config)
+{
+    return FramePolicy{config.fitRequestedBox, config.fitRequestedBox && config.allowUpscale};
+}
 
 } // namespace mw::native

@@ -139,6 +139,26 @@ public:
     int streamHeight() const;
     void setStreamHeight(int height);
 
+    // ── Stream resolution mode ────────────────────────────────────────────────
+    //
+    // How the streamed size is chosen. Stored as JSON string "stream_resolution":
+    // "fixed" (default: the rung in stream_height), "device" (the client's own
+    // screen, pixel for pixel), "host" (the host display's own size — a native
+    // host; every other host streams 1080p under that choice) or "custom" (the
+    // pair below). The browser resolves the choice into an explicit width and
+    // height at launch; these are only the defaults it seeds from.
+
+    QString streamResolution() const;
+    void setStreamResolution(const QString& mode);
+
+    // The "custom" pair, each bounded to [360, 4096]. Stored as JSON ints
+    // "stream_custom_width" / "stream_custom_height", default 1920x1080.
+    static constexpr int kCustomSizeMin = 360;
+    static constexpr int kCustomSizeMax = 4096;
+    int streamCustomWidth() const;
+    int streamCustomHeight() const;
+    void setStreamCustomSize(int width, int height);
+
     // ── Stream aspect ratio ────────────────────────────────────────────────────
     //
     // Aspect ratio used to derive width from a fixed height. Stored as JSON

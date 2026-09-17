@@ -887,7 +887,7 @@ private:
             // display that shrank below it would otherwise keep the frame small
             // once it grew back (1920x1080 -> 1280x960 -> 1706x960 on the
             // portal's CPU pair, 15/09/2026).
-            full = frameForDisplay(display, shapeBase());
+            full = frameForDisplay(display, shapeBase(), policyOf(m_Config));
             if (full.width != m_FullWidth || full.height != m_FullHeight) {
                 log::info("[native] the display is now " + std::to_string(m_Capture->width()) +
                           "x" + std::to_string(m_Capture->height()) + " — the stream follows it: " +

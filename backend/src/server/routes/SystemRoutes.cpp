@@ -1061,6 +1061,9 @@ void registerSystemRoutes(HttpServer& server, AppSettings& appSettings, AuthMana
         obj["auto_ip_detection"] = appSettings.autoIpDetection();
         obj["stream_bitrate"] = appSettings.streamBitrate();
         obj["stream_height"] = appSettings.streamHeight();
+        obj["stream_resolution"] = appSettings.streamResolution();
+        obj["stream_custom_width"] = appSettings.streamCustomWidth();
+        obj["stream_custom_height"] = appSettings.streamCustomHeight();
         obj["stream_aspect"] = appSettings.streamAspect();
         obj["stream_fps"] = appSettings.streamFps();
         obj["hdr_enabled"] = appSettings.hdrEnabled();
@@ -1144,6 +1147,23 @@ void registerSystemRoutes(HttpServer& server, AppSettings& appSettings, AuthMana
             int height = body["stream_height"].toInt(1080);
             appSettings.setStreamHeight(height);
             obj["stream_height"] = appSettings.streamHeight();
+            obj["status"] = "saved";
+            hadChange = true;
+        }
+
+        if (body.contains("stream_resolution")) {
+            appSettings.setStreamResolution(body["stream_resolution"].toString());
+            obj["stream_resolution"] = appSettings.streamResolution();
+            obj["status"] = "saved";
+            hadChange = true;
+        }
+
+        if (body.contains("stream_custom_width") || body.contains("stream_custom_height")) {
+            appSettings.setStreamCustomSize(
+                body["stream_custom_width"].toInt(appSettings.streamCustomWidth()),
+                body["stream_custom_height"].toInt(appSettings.streamCustomHeight()));
+            obj["stream_custom_width"] = appSettings.streamCustomWidth();
+            obj["stream_custom_height"] = appSettings.streamCustomHeight();
             obj["status"] = "saved";
             hadChange = true;
         }

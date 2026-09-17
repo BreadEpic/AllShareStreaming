@@ -43,6 +43,15 @@ import {
 } from '../util/BrowserDetect.js';
 import { aspectToNumber, computeAutoBitrate } from '../util/AutoBitrate.js';
 import { ASPECT_VALUES, SCREEN_ASPECTS } from '../util/AspectRatio.js';
+import {
+    CUSTOM_SIZE_MAX,
+    CUSTOM_SIZE_MIN,
+    FIXED_HEIGHTS,
+    bitrateReference,
+    clampCustomSize,
+    devicePixelSize,
+    readResolutionChoice,
+} from '../util/StreamResolution.js';
 
 /** True when the browser supports touch events (mobile/tablet, or touchscreen laptop). */
 const IS_TOUCH_DEVICE =
@@ -103,6 +112,12 @@ export class SettingsView {
         this._videoEnhancement = 'off';
         this._videoEnhancementAlgo = 'auto';
         this._debugBuild = false;
+        // How the streamed size is chosen: 'fixed' (the rung in _streamHeight),
+        // 'device', 'host' or 'custom' (the pair below) — see
+        // util/StreamResolution.js.
+        this._streamResolution = 'fixed';
+        this._customWidth = 1920;
+        this._customHeight = 1080;
         // Which virtual controller the host presents: 'auto' follows the pad we
         // detect, 'x360'/'ds4' force one. Shown only in debug builds — in
         // production the right behaviour is to guess correctly, and a visible
@@ -303,6 +318,16 @@ export class SettingsView {
         const kbps = data.stream_bitrate || 20000;
         this._streamBitrateMbps = Math.round(kbps / 1000);
         this._streamHeight = data.stream_height || 1080;
+        const choice = readResolutionChoice(data);
+        this._streamResolution = choice.mode;
+        this._customWidth = choice.customWidth;
+        this._customHeight = choice.customHeight;
+        // The ratio is Auto for everyone since 0.3.1: a forced ratio was
+        // harder to understand than the resolution choices above, which fix
+        // the shape themselves. The mechanism stays for tests — the dropdown
+        // exists in debug builds only, and only there is the stored choice
+        // kept (render() and _saveToStorage() reset it everywhere else, and
+        // app.js ignores a stored ratio that no debug build vouched for).
         this._streamAspect = ASPECT_VALUES.includes(data.stream_aspect)
             ? data.stream_aspect
             : 'auto';
@@ -343,19 +368,52 @@ export class SettingsView {
         return computeAutoBitrate(height, fps, aspect, chroma444, hdr);
     }
 
+    /**
+     * The resolution choice as the controls show it: the one <select> carries
+     * the fixed rungs (numeric values) and the three modes, the custom pair
+     * has its own inputs. Falls back to the stored state without controls.
+     */
+    _readResolutionChoice() {
+        const raw = this.container.querySelector('#settings-stream-height')?.value;
+        let mode = this._streamResolution;
+        let height = this._streamHeight;
+        if (raw !== undefined) {
+            const n = parseInt(raw, 10);
+            if (!isNaN(n)) {
+                mode = 'fixed';
+                height = n;
+            } else {
+                mode = raw;
+            }
+        }
+        const wRaw = this.container.querySelector('#settings-custom-width')?.value;
+        const hRaw = this.container.querySelector('#settings-custom-height')?.value;
+        return {
+            mode,
+            height,
+            customWidth: clampCustomSize(wRaw ?? this._customWidth, this._customWidth),
+            customHeight: clampCustomSize(hRaw ?? this._customHeight, this._customHeight),
+        };
+    }
+
     /** Recompute the bitrate from current selects and sync the slider UI. */
     _applyAutoBitrate() {
-        const height = parseInt(this.container.querySelector('#settings-stream-height')?.value, 10);
         const fps = parseInt(this.container.querySelector('#settings-stream-fps')?.value, 10);
         const chroma444 = this.container.querySelector('#settings-chroma-444')?.checked === true;
-        // "auto" resolves to the host's own format at launch, which is unknown
-        // here — aspectToNumber() reads it as the 16:9 baseline, which is what
-        // the estimate wants.
+        // The size the choice stands for — this screen's, the custom pair, or
+        // the rung at the ratio below. "auto" resolves to the host's own
+        // format at launch, which is unknown here — aspectToNumber() reads it
+        // as the 16:9 baseline, which is what the estimate wants.
+        const choice = this._readResolutionChoice();
+        const ref = bitrateReference(choice);
         const aspect =
-            this.container.querySelector('#settings-stream-aspect')?.value || this._streamAspect;
+            choice.mode === 'fixed'
+                ? this.container.querySelector('#settings-stream-aspect')?.value ||
+                  this._streamAspect
+                : ref.aspect;
         const hdr = this.container.querySelector('#settings-hdr')?.checked ?? this._hdrEnabled;
         const mbps = this._computeAutoBitrate(
-            isNaN(height) ? this._streamHeight : height,
+            ref.height,
             isNaN(fps) ? this._streamFps : fps,
             aspect,
             chroma444,
@@ -378,7 +436,16 @@ export class SettingsView {
             show_performance_stats: this._showPerformanceStats,
             stream_bitrate: this._streamBitrateMbps * 1000,
             stream_height: this._streamHeight,
-            stream_aspect: this._streamAspect,
+            stream_resolution: this._streamResolution,
+            stream_custom_width: this._customWidth,
+            stream_custom_height: this._customHeight,
+            // Auto, always, outside a debug build — see _applySettings. A
+            // ratio a debug build forces is marked as such, which is what
+            // app.js looks for before honouring a stored ratio at launch.
+            stream_aspect: this._debugBuild ? this._streamAspect : 'auto',
+            ...(this._debugBuild && this._streamAspect !== 'auto'
+                ? { stream_aspect_forced: true }
+                : {}),
             stream_fps: this._streamFps,
             hdr_enabled: this._hdrEnabled,
             chroma_444_enabled: this._chroma444,
@@ -552,8 +619,8 @@ export class SettingsView {
             const bitrateMbps =
                 parseInt(this.container.querySelector('#settings-stream-bitrate')?.value, 10) ||
                 this._streamBitrateMbps;
-            const heightRaw = this.container.querySelector('#settings-stream-height')?.value;
-            const height = heightRaw !== undefined ? parseInt(heightRaw, 10) : this._streamHeight;
+            const choice = this._readResolutionChoice();
+            const height = choice.mode === 'fixed' ? choice.height : this._streamHeight;
             const aspect =
                 this.container.querySelector('#settings-stream-aspect')?.value ||
                 this._streamAspect;
@@ -596,6 +663,9 @@ export class SettingsView {
             this._showPerformanceStats = showPerf;
             this._streamBitrateMbps = bitrateMbps;
             this._streamHeight = isNaN(height) ? this._streamHeight : height;
+            this._streamResolution = choice.mode;
+            this._customWidth = choice.customWidth;
+            this._customHeight = choice.customHeight;
             this._streamAspect = aspect;
             this._streamFps = fps;
             this._hdrEnabled = hdr;
@@ -622,6 +692,9 @@ export class SettingsView {
         this._gamingMode = false;
         this._showPerformanceStats = false;
         this._streamHeight = 1080;
+        this._streamResolution = 'fixed';
+        this._customWidth = 1920;
+        this._customHeight = 1080;
         this._streamAspect = 'auto';
         this._streamFps = 60;
         this._hdrEnabled = false;
@@ -675,6 +748,7 @@ export class SettingsView {
                 video_enhancement: this._videoEnhancement,
                 tearing_enabled: this._tearing,
                 stream_height: this._streamHeight,
+                stream_resolution: this._streamResolution,
                 stream_fps: this._streamFps,
                 stream_bitrate_mbps: this._streamBitrateMbps,
             };
@@ -683,7 +757,11 @@ export class SettingsView {
             this._chroma444 = false;
             this._videoEnhancement = 'off';
             this._tearing = false;
+            // A fixed 720p rung, whatever the choice was: "Same as your
+            // device" on a phone is a 1080p-or-more stream, the opposite of
+            // sparing its battery.
             this._streamHeight = 720;
+            this._streamResolution = 'fixed';
             this._streamFps = 60;
             // Power-save default bitrate: the 720p60 SDR auto value cut by 30%
             // (floored) with a 2 Mbps floor, to spare mobile battery / data.
@@ -707,6 +785,15 @@ export class SettingsView {
                             ? SUPPORTS_CANVAS_TEARING
                             : b.tearing_enabled === true && SUPPORTS_CANVAS_TEARING;
                 if (this._streamHeight === 720) this._streamHeight = b.stream_height;
+                // The choice goes back with it — unless the user picked a
+                // rung of their own meanwhile (the select then reads fixed,
+                // and not 720 any more).
+                if (
+                    this._streamResolution === 'fixed' &&
+                    this._streamHeight === b.stream_height &&
+                    typeof b.stream_resolution === 'string'
+                )
+                    this._streamResolution = b.stream_resolution;
                 if (this._streamFps === 60) this._streamFps = b.stream_fps;
                 if (this._streamBitrateMbps === psBitrate)
                     this._streamBitrateMbps = b.stream_bitrate_mbps;
@@ -831,22 +918,63 @@ export class SettingsView {
             </div>`;
         }
 
-        // Resolution options (short labels: "1080p")
-        const heights = [
-            { value: 720, label: '720p' },
-            { value: 1080, label: '1080p' },
-            { value: 1440, label: '1440p' },
-            { value: 2160, label: '2160p' },
-        ];
+        // Resolution options: the fixed rungs (short labels: "1080p"), then the
+        // three choices that fix the size another way — this screen, the
+        // host's display, a typed pair (util/StreamResolution.js).
+        const resolutionMode = this._streamResolution;
+        const device = devicePixelSize();
+        const heights = FIXED_HEIGHTS.map((h) => ({
+            value: String(h),
+            label: h + 'p',
+            selected: resolutionMode === 'fixed' && h === this._streamHeight,
+        }));
+        const modes = [
+            { value: 'device', label: t('settings.resolutionDevice') },
+            { value: 'host', label: t('settings.resolutionHost') },
+            { value: 'custom', label: t('settings.resolutionCustom') },
+        ].map((m) => ({ ...m, selected: resolutionMode === m.value }));
         const heightOptions = heights
+            .concat(modes)
             .map(
                 (h) =>
-                    `<option value="${h.value}" ${h.value === this._streamHeight ? 'selected' : ''}>${this.esc(h.label)}</option>`,
+                    `<option value="${h.value}" ${h.selected ? 'selected' : ''}>${this.esc(h.label)}</option>`,
             )
             .join('');
+        // One line under the select says what the choice stands for.
+        const resolutionDesc =
+            resolutionMode === 'device'
+                ? t('settings.resolutionDeviceDesc', {
+                      size: device ? device.width + '×' + device.height : '?',
+                  })
+                : resolutionMode === 'host'
+                  ? t('settings.resolutionHostDesc')
+                  : resolutionMode === 'custom'
+                    ? t('settings.resolutionCustomDesc', {
+                          min: CUSTOM_SIZE_MIN,
+                          max: CUSTOM_SIZE_MAX,
+                      })
+                    : t('settings.resolutionDesc');
+        const customSizeHtml =
+            resolutionMode === 'custom'
+                ? `<div class="settings-size-row">
+                            <label>${t('settings.resolutionWidth')}
+                                <input type="number" id="settings-custom-width" class="settings-size-input"
+                                    min="${CUSTOM_SIZE_MIN}" max="${CUSTOM_SIZE_MAX}" step="2" inputmode="numeric"
+                                    value="${this._customWidth}" />
+                            </label>
+                            <label>${t('settings.resolutionHeight')}
+                                <input type="number" id="settings-custom-height" class="settings-size-input"
+                                    min="${CUSTOM_SIZE_MIN}" max="${CUSTOM_SIZE_MAX}" step="2" inputmode="numeric"
+                                    value="${this._customHeight}" />
+                            </label>
+                        </div>`
+                : '';
 
-        // Aspect options: "Auto" (measured from the host, see AspectProbe) then
-        // the real screen formats, most common first.
+        // Aspect: Auto for everyone — the resolution choices above fix the
+        // shape, and a forced ratio was the harder thing to understand. The
+        // dropdown ("Auto", then the real screen formats, most common first)
+        // exists in debug builds only, where the mechanism is kept for tests.
+        if (!this._debugBuild) this._streamAspect = 'auto';
         const aspectOptions = [{ value: 'auto', label: t('settings.aspectAuto') }]
             .concat(SCREEN_ASPECTS.map((a) => ({ value: a.value, label: a.value })))
             .map(
@@ -854,6 +982,18 @@ export class SettingsView {
                     `<option value="${a.value}" ${a.value === this._streamAspect ? 'selected' : ''}>${this.esc(a.label)}</option>`,
             )
             .join('');
+        const aspectHtml = this._debugBuild
+            ? `
+                    <div class="settings-field">
+                        <label class="settings-label" for="settings-stream-aspect">
+                            ${t('settings.streamAspect')}
+                        </label>
+                        <span class="setting-desc">${t('settings.streamAspectDesc')}</span>
+                        <select id="settings-stream-aspect" class="settings-select">
+                            ${aspectOptions}
+                        </select>
+                    </div>`
+            : '';
 
         // FPS options
         const fpsValues = [15, 30, 60, 75, 90, 120, 144, 165, 240];
@@ -957,21 +1097,13 @@ export class SettingsView {
                         <label class="settings-label" for="settings-stream-height">
                             ${t('settings.resolution')}
                         </label>
-                        <span class="setting-desc">${t('settings.resolutionDesc')}</span>
+                        <span class="setting-desc">${this.esc(resolutionDesc)}</span>
                         <select id="settings-stream-height" class="settings-select">
                             ${heightOptions}
                         </select>
+                        ${customSizeHtml}
                     </div>
-
-                    <div class="settings-field">
-                        <label class="settings-label" for="settings-stream-aspect">
-                            ${t('settings.streamAspect')}
-                        </label>
-                        <span class="setting-desc">${t('settings.streamAspectDesc')}</span>
-                        <select id="settings-stream-aspect" class="settings-select">
-                            ${aspectOptions}
-                        </select>
-                    </div>
+                    ${aspectHtml}
 
                     <div class="settings-field">
                         <label class="settings-label" for="settings-stream-fps">
@@ -1293,9 +1425,36 @@ export class SettingsView {
         const heightSelect = this.container.querySelector('#settings-stream-height');
         if (heightSelect)
             heightSelect.addEventListener('change', () => {
+                // Any choice fixes the shape on its own: the ratio goes to
+                // Auto with it (the debug-only dropdown follows on re-render).
+                this._streamAspect = 'auto';
+                this._applyAutoBitrate();
+                const choice = this._readResolutionChoice();
+                const custom = choice.mode === 'custom';
+                const showing = !!this.container.querySelector('#settings-custom-width');
+                this._autoSave();
+                // The custom pair appears and disappears with its choice, and
+                // the line under the select changes: re-render for both.
+                if (custom !== showing || choice.mode !== this._streamResolution) {
+                    this._streamResolution = choice.mode;
+                    this._streamHeight =
+                        choice.mode === 'fixed' ? choice.height : this._streamHeight;
+                    this.render();
+                    this.bindEvents();
+                }
+            });
+        // The custom pair: pinned into its bounds and made even on commit
+        // (change, not input — a user typing "1920" passes through 1, 19…).
+        for (const id of ['#settings-custom-width', '#settings-custom-height']) {
+            const input = this.container.querySelector(id);
+            if (!input) continue;
+            input.addEventListener('change', () => {
+                const fallback = id.endsWith('width') ? this._customWidth : this._customHeight;
+                input.value = String(clampCustomSize(input.value, fallback) & ~1);
                 this._applyAutoBitrate();
                 this._autoSave();
             });
+        }
 
         // Aspect: an ultrawide frame is more pixels at the same height, so the
         // recommended bitrate follows it too.

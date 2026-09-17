@@ -67,6 +67,7 @@ import {
 import { startRefreshRateMonitor, currentRefreshMilliHz } from './util/RefreshRate.js';
 import { computeAutoBitrate } from './util/AutoBitrate.js';
 import { DEFAULT_ASPECT, loadHostAspect, saveHostAspect } from './util/AspectRatio.js';
+import { readResolutionChoice, resolveStreamSize } from './util/StreamResolution.js';
 import { startAspectProbe } from './stream/AspectProbe.js';
 import * as iosAudioUnlock from './audio/iosAudioUnlock.js';
 import { init as i18nInit, applyDOM, t } from './i18n/i18n.js';
@@ -1878,12 +1879,54 @@ const MoonlightApp = {
         // always Auto, whatever Settings say, and whatever the display's shape:
         // the white list of screen ratios is the probe's, which a host that
         // tells its size does not need.
-        const chosenAspect = streamingSettings.stream_aspect;
-        this._aspectAuto = nativeHost || !chosenAspect || chosenAspect === 'auto';
-        if (this._aspectAuto) {
-            streamingSettings.stream_aspect = loadHostAspect(host.uuid) || DEFAULT_ASPECT;
+        //
+        // Before any of that, the resolution choice becomes the size this
+        // launch asks for (util/StreamResolution.js): a fixed rung leaves the
+        // width to the ratio logic above; "Same as your device" and "Custom"
+        // fix both — the size IS the shape, so the probe and the memory stay
+        // out of it — and tell a native host to fit its display's shape inside
+        // that box (upscaling for this screen's size, never otherwise); "Same
+        // as the remote PC" is height 0 to a native host, 1080p to any other.
+        const choice = readResolutionChoice(streamingSettings);
+        const size = resolveStreamSize(
+            {
+                mode: choice.mode,
+                height: streamingSettings.stream_height,
+                customWidth: choice.customWidth,
+                customHeight: choice.customHeight,
+            },
+            { nativeHost },
+        );
+        streamingSettings.stream_height = size.height;
+        streamingSettings.stream_fit_box = size.fitBox;
+        streamingSettings.stream_allow_upscale = size.allowUpscale;
+        // A stored ratio counts only when a debug build forced it and said so
+        // (SettingsView marks it): the dropdown left the product in 0.3.1, and
+        // a "4:3" a user forced before then is Auto from here on.
+        const chosenAspect =
+            streamingSettings.stream_aspect_forced === true
+                ? streamingSettings.stream_aspect
+                : 'auto';
+        if (size.aspect) {
+            streamingSettings.stream_aspect = size.aspect;
+            // The native host still states the shape it settled on, and that
+            // is worth remembering for the next fixed-rung launch.
+            this._aspectAuto = nativeHost;
+        } else {
+            this._aspectAuto = nativeHost || !chosenAspect || chosenAspect === 'auto';
+            streamingSettings.stream_aspect = this._aspectAuto
+                ? loadHostAspect(host.uuid) || DEFAULT_ASPECT
+                : chosenAspect;
         }
         streamingSettings.follow_display_shape = nativeHost;
+        console.log(
+            '[MW] Resolution ' +
+                choice.mode +
+                ' → ' +
+                (size.height || 'native') +
+                (size.aspect ? ' @ ' + size.aspect : '') +
+                (size.fitBox ? (size.allowUpscale ? ' (box, may upscale)' : ' (box)') : ''),
+        );
 
         try {
             const result = await BackendClient.launchApp(host.uuid, app.id, streamingSettings);
