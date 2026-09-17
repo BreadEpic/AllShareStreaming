@@ -598,6 +598,64 @@ export class BackendClient {
     static async shareInstancesForHomeScreen(instances) {
         return this.post('/api/auth/home-screen/instances', { instances });
     }
+
+    /**
+     * One POST on a connection to ANOTHER machine (tunnelBridge.openSideTunnel),
+     * answered like post(): the JSON body, or an error carrying the status.
+     * Not through fetch(): the service worker would send it to this page's
+     * own machine.
+     */
+    static async _postAt(fetchAt, path, body) {
+        const resp = await fetchAt(path, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        let data = null;
+        try {
+            data = await resp.json();
+        } catch {
+            /* no body, or not JSON */
+        }
+        if (!resp.ok) {
+            const err = new Error(data?.error || `HTTP ${resp.status}`);
+            err.statusCode = resp.status;
+            throw err;
+        }
+        return data;
+    }
+
+    /**
+     * The key a home-screen shortcut would open the machine at the far end of
+     * @p fetchAt with, given the machines this browser knows for its menu.
+     * Refused when this browser has no remembered session there.
+     */
+    static async askHomeScreenKeyAt(fetchAt, instances) {
+        await this._postAt(fetchAt, '/api/auth/home-screen/instances', { instances });
+        const resp = await this._postAt(fetchAt, '/api/auth/home-screen/key', {});
+        const key = resp?.key;
+        if (typeof key !== 'string' || !key) throw new Error('no key in the answer');
+        return key;
+    }
+
+    /**
+     * redeemHomeScreenKey() for a machine other than this page's own, over a
+     * connection to it: the pairing identity registered is the one this
+     * browser will present to THAT machine, and its host identity is kept
+     * under that machine's name.
+     */
+    static async redeemHomeScreenKeyAt(fetchAt, hostId, key, machineName) {
+        const identity = await loadOrCreateIdentity({ forHost: hostId });
+        const resp = await this._postAt(fetchAt, '/api/auth/home-screen', {
+            key,
+            machine_name: machineName,
+            public_key: identity?.publicKeyBase64 || undefined,
+        });
+        if (resp?.host_public_key) {
+            await rememberHostIdentity(resp.host_public_key, resp.host_id, { forHost: hostId });
+        }
+        return resp;
+    }
     /** Spend the remote admin password to give this (already authenticated,
      *  LAN) session the same admin access the host machine has. */
     static async adminUnlock(password) {

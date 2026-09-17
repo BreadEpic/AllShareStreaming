@@ -51,8 +51,8 @@ const STORE = 'keys';
  * second machine would present a different host key, be refused as a
  * substitution, and simply stop working. Hence the id in the record name there.
  */
-function recordId() {
-    const hostId = tunnelHostId();
+function recordId(forHost) {
+    const hostId = forHost || tunnelHostId();
     return hostId ? `mw-bind-v1:${hostId}` : 'mw-bind-v1';
 }
 
@@ -166,8 +166,13 @@ function dbPut(db, key, value) {
  * WebCrypto (an insecure origin), or no IndexedDB (private mode in some
  * browsers). Callers must treat null as "cannot bind", never as "binding
  * succeeded trivially".
+ *
+ * @param {{ forHost?: string }} [options]  another machine's record rather
+ *   than the current host's: what a page uses when it speaks to a second
+ *   machine over a connection of its own, and must present the key that
+ *   machine will later be shown.
  */
-export async function loadOrCreateIdentity() {
+export async function loadOrCreateIdentity({ forHost } = {}) {
     if (!globalThis.crypto?.subtle || !globalThis.indexedDB) {
         console.warn('[MW-BIND] WebCrypto or IndexedDB unavailable — cannot bind this browser');
         return null;
@@ -175,7 +180,7 @@ export async function loadOrCreateIdentity() {
 
     try {
         const db = await openDb();
-        let record = await dbGet(db, recordId());
+        let record = await dbGet(db, recordId(forHost));
 
         if (!record?.privateKey || !record?.publicKeySpki) {
             const pair = await crypto.subtle.generateKey(ALGORITHM, false, ['sign', 'verify']);
@@ -183,7 +188,7 @@ export async function loadOrCreateIdentity() {
             // `false` above is the whole point: the public half exports, the
             // private half never does.
             record = { privateKey: pair.privateKey, publicKeySpki: spki, hostPublicKey: null };
-            await dbPut(db, recordId(), record);
+            await dbPut(db, recordId(forHost), record);
             console.log('[MW-BIND] Generated a new pairing key for this browser');
         }
 
@@ -213,13 +218,15 @@ export async function loadOrCreateIdentity() {
  * that is either a host that regenerated its key (the user re-pairs with a PIN,
  * which clears this record) or exactly the substitution this protocol exists to
  * catch. Returns false when the identity was refused.
+ *
+ * @param {{ forHost?: string }} [options]  see loadOrCreateIdentity.
  */
-export async function rememberHostIdentity(hostPublicKeyBase64, hostId) {
+export async function rememberHostIdentity(hostPublicKeyBase64, hostId, { forHost } = {}) {
     if (!hostPublicKeyBase64 || !globalThis.indexedDB) return false;
 
     try {
         const db = await openDb();
-        const record = await dbGet(db, recordId());
+        const record = await dbGet(db, recordId(forHost));
         if (!record) return false;
 
         if (record.hostPublicKey && record.hostPublicKey !== hostPublicKeyBase64) {
@@ -232,7 +239,7 @@ export async function rememberHostIdentity(hostPublicKeyBase64, hostId) {
 
         record.hostPublicKey = hostPublicKeyBase64;
         record.hostId = hostId || record.hostId || null;
-        await dbPut(db, recordId(), record);
+        await dbPut(db, recordId(forHost), record);
         return true;
     } catch (e) {
         console.warn('[MW-BIND] Could not store the host identity:', e.message);

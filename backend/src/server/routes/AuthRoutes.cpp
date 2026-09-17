@@ -228,6 +228,26 @@ void registerAuthRoutes(HttpServer& server, AuthManager& authManager, GeoIpServi
         return resp;
     });
 
+    // POST /api/auth/home-screen/key — the key a shortcut made ELSEWHERE would
+    // open this machine with.
+    //
+    // The manifest carries the key of the machine the page is on. For each of
+    // the other machines it knows, the page asks this over a connection of its
+    // own and writes the answer beside that key, so the shortcut signs in on
+    // every machine that was on the line when it was made — and asks the PIN
+    // only of the ones that were not. Same key as the manifest would give this
+    // session, same terms: signed in, remembered, through the tunnel.
+    server.router()->post("/api/auth/home-screen/key", [&authManager](const HttpRequest& req) {
+        if (!req.viaTunnel) return HttpResponse::error(404, "Not Found");
+        const QString token = HttpServer::sessionTokenFromRequest(req);
+        if (!authManager.validateSession(token))
+            return HttpResponse::error(401, "Not authenticated");
+        const QString key = authManager.homeScreenKey(token);
+        if (key.isEmpty())
+            return HttpResponse::error(403, "A session that is not remembered hands out no key");
+        return HttpResponse::json(QJsonObject{{"key", key}});
+    });
+
     // POST /api/auth/home-screen/instances — the machines this browser knows,
     // kept beside its session for a shortcut made from it. Capped and reduced to
     // the three fields the register reads; anything else is dropped unread.

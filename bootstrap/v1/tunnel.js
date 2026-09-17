@@ -565,6 +565,26 @@ export class Tunnel {
         if (this._dc.readyState === 'open') this._dc.onopen();
     }
 
+    /**
+     * Hang up on purpose — a page that only had a question for this machine
+     * and has its answer. Requests still in flight are failed, and onclosed is
+     * NOT called: it reports a line that went away, and this one was put down.
+     */
+    close() {
+        this.onclosed = null;
+        this._teardown('closed');
+        for (const part of [this._dc, this._pc, this._ws]) {
+            try {
+                part?.close();
+            } catch {
+                /* already gone */
+            }
+        }
+        this._dc = null;
+        this._pc = null;
+        this._ws = null;
+    }
+
     _teardown(why) {
         for (const [, socket] of this._sockets) socket._closed(why);
         this._sockets.clear();
