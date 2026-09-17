@@ -471,6 +471,18 @@ public:
     static void setKeyboardDiagnostics(bool on);
     static bool keyboardDiagnostics();
 
+    /// Report how the pointer is placed: the display and desktop rectangles
+    /// the platform settled on and where they came from, and for the first
+    /// few moves of a session, the client's position and what was sent to the
+    /// OS for it. Answers a "the mouse does not move" report from the log
+    /// alone, on a host the maintainer cannot reach.
+    ///
+    /// Process-wide and off by default, for the same reasons as the keyboard
+    /// switch above. Meant for pre-release builds; the lines it gates are
+    /// temporary and go once the report they serve is closed.
+    static void setPointerDiagnostics(bool on);
+    static bool pointerDiagnostics();
+
     /// Version of this module, independent of MoonlightWeb's — it may one day
     /// ship on its own.
     static const char* version();

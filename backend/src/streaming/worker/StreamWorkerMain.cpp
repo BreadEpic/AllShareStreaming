@@ -20,6 +20,7 @@
 #include "../Session.h"
 #include "../InputMessageCodec.h"
 #include "../../server/AppSettings.h"
+#include "../../common/Edition.h"
 #include "mw/native/NativeHost.h"
 #include "CoopSessionResolver.h"
 #include "../../backend/streambackend/StreamBackendRegistry.h"
@@ -183,6 +184,12 @@ int runStreamWorker(QCoreApplication& app)
         InputMsg::setDebug(true);
         mw::native::NativeHost::setKeyboardDiagnostics(true);
         qInfo() << "[KBD] keyboard diagnostics on in the worker";
+    }
+    // Same trap for the pointer diagnostics (issue #18, temporary): the native
+    // session that places the mouse is built in this process.
+    if (mw::edition::extraDiagnostics()) {
+        mw::native::NativeHost::setPointerDiagnostics(true);
+        qInfo() << "[PTR] pointer diagnostics on in the worker (pre-release build)";
     }
 
     // ── First stdin line = session config ────────────────────────────────────

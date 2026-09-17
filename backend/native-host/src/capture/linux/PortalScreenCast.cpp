@@ -58,10 +58,13 @@ struct Answer
     uint32_t nodeId = 0;
     int width = 0;
     int height = 0;
+    bool hasPosition = false;
+    int x = 0;
+    int y = 0;
 };
 
 /// Read the streams array of a Start response: a(ua{sv}), of which we take the
-/// first entry's node id and, when it is there, its size.
+/// first entry's node id and, when they are there, its size and position.
 void readStreams(sd_bus_message* m, Answer& out)
 {
     if (sd_bus_message_enter_container(m, 'v', "a(ua{sv})") <= 0) return;
@@ -70,7 +73,10 @@ void readStreams(sd_bus_message* m, Answer& out)
             sd_bus_message_read(m, "u", &out.nodeId);
             // The stream's own properties. "size" is (ii) inside a variant and
             // is advisory: PipeWire's negotiated format is the truth, this only
-            // saves a round trip when the portal bothers to say.
+            // saves a round trip when the portal bothers to say. "position" is
+            // (ii) too, and is the one thing only the portal can say: where
+            // the monitor sits in the compositor's space, for the absolute
+            // pointer (issue #18).
             if (sd_bus_message_enter_container(m, 'a', "{sv}") > 0) {
                 while (sd_bus_message_enter_container(m, 'e', "sv") > 0) {
                     const char* key = nullptr;
@@ -81,6 +87,15 @@ void readStreams(sd_bus_message* m, Answer& out)
                         if (sd_bus_message_read(m, "(ii)", &w, &h) > 0) {
                             out.width = w;
                             out.height = h;
+                        }
+                        sd_bus_message_exit_container(m);
+                    } else if (key && std::strcmp(key, "position") == 0 &&
+                               sd_bus_message_enter_container(m, 'v', "(ii)") > 0) {
+                        int32_t x = 0, y = 0;
+                        if (sd_bus_message_read(m, "(ii)", &x, &y) > 0) {
+                            out.x = x;
+                            out.y = y;
+                            out.hasPosition = true;
                         }
                         sd_bus_message_exit_container(m);
                     } else {
@@ -363,10 +378,16 @@ bool PortalScreenCast::start(const std::string& restoreToken, int timeoutMs, Por
     out.restoreToken = started.restoreToken.empty() ? selected.restoreToken : started.restoreToken;
     out.width = started.width;
     out.height = started.height;
+    out.hasPosition = started.hasPosition;
+    out.x = started.x;
+    out.y = started.y;
     log::info("[native] portal: node " + std::to_string(out.nodeId) +
               (out.width > 0
                    ? " (" + std::to_string(out.width) + "x" + std::to_string(out.height) + ")"
                    : std::string()) +
+              (out.hasPosition ? " at " + std::to_string(out.x) + "," + std::to_string(out.y) +
+                                     " in the compositor's space"
+                               : std::string()) +
               (out.restoreToken.empty() ? " — no restore token, the dialog will come back"
                                         : " — restore token kept, later sessions are silent"));
     return true;

@@ -4577,6 +4577,14 @@ int main(int argc, char* argv[])
         qInfo() << "[KBD] keyboard diagnostics on — one line per printable key press";
     }
 
+    // Pointer diagnostics, pre-release builds only (issue #18): how the native
+    // host places the mouse, in the log, so a reporter pastes lines instead of
+    // running commands. Temporary — see Edition::extraDiagnostics().
+    if (mw::edition::extraDiagnostics()) {
+        mw::native::NativeHost::setPointerDiagnostics(true);
+        qInfo() << "[PTR] pointer diagnostics on (pre-release build)";
+    }
+
     // The hairpin verdict decides between the domain and loopback, and it can
     // flip long after startup (router reconfigured, periodic re-test): rebuild
     // the shortcut rather than leaving it on an address that stopped working —

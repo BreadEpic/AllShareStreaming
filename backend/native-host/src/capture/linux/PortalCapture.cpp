@@ -520,11 +520,21 @@ std::string PortalCapture::renderNodePath() const
 
 DesktopRect PortalCapture::desktopRect() const
 {
-    // The portal names no position on the desktop — it hands over a stream, not
-    // a monitor — so the rectangle is the picture itself, at the origin. That
-    // is the truth for input mapping too: there is one surface and nothing to
-    // its left or above it.
+    // The portal hands over a stream, not a monitor — but for a monitor stream
+    // it says where that monitor sits in the compositor's space and how big it
+    // is there, in LOGICAL pixels. That is the rectangle an absolute pointer
+    // needs, in the very space the compositor spreads it across (issue #18: on
+    // a second monitor, the picture at the origin aimed the pointer at the
+    // first). Without a position the picture stays at the origin: right on one
+    // screen, and the caller's Wayland layout may still place it.
     DesktopRect rect;
+    if (d->granted.hasPosition && d->granted.width > 0 && d->granted.height > 0) {
+        rect.left = d->granted.x;
+        rect.top = d->granted.y;
+        rect.right = d->granted.x + d->granted.width;
+        rect.bottom = d->granted.y + d->granted.height;
+        return rect;
+    }
     rect.left = 0;
     rect.top = 0;
     rect.right = width();

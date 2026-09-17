@@ -4111,3 +4111,98 @@ vide alors que la fenêtre est bien là (position et taille lues par l'API
 d'accessibilité). Et le premier écran d'Installer est une **feuille modale** de
 macOS (« this package will run a program… », bouton **Allow**, pas « Agree ») :
 tant qu'elle n'est pas acquittée, aucun clic « Continue » n'avance.
+
+
+## 26. Le pointeur absolu sous Wayland : la disposition vient du compositeur, pas de KMS (17/09/2026)
+
+Issue #18 : un hôte Gentoo/Hyprland, les boutons marchent, le toucher (deltas)
+marche, mais **la souris ne bouge pas**. Le client non verrouillé envoie une
+position absolue ; le toucher, un delta relatif. Ce sont deux devices uinput
+distincts (« MoonlightWeb Keyboard » pour les deltas, « MoonlightWeb Pointer »
+pour ABS_X/ABS_Y), et seul le second échoue chez lui.
+
+### 26.1 La chaîne absolue est saine jusqu'au compositeur
+
+Relu de bout en bout : udev classe un device ABS_X/Y + BTN_LEFT en
+`ID_INPUT_MOUSE` (le chemin prévu pour la souris VMware), libinput lui donne la
+capacité pointer et émet `POINTER_MOTION_ABSOLUTE` sans exiger `INPUT_PROP_DIRECT`
+ni `BTN_TOUCH`, aquamarine en fait un `warp`, et `CPointerManager::warpAbsolute`
+étale la fraction 0..1 sur **la boîte englobante de tous les moniteurs, en pixels
+logiques**. Mutter, KWin et sway font la même chose.
+
+### 26.2 Le défaut : les CRTC ne disent rien sous Wayland
+
+§23.3 construisait le « bureau » en unissant les sorties KMS actives, avec
+`crtc->x / crtc->y` comme position. C'est vrai sous X11, où chaque moniteur
+scanne une fenêtre du framebuffer racine. Un compositeur Wayland donne à chaque
+sortie **son propre buffer** : tous les CRTC scannent depuis (0, 0), et la
+disposition n'existe que dans le compositeur. À deux écrans, bureau =
+(0,0,maxW,maxH), display = (0,0,w,h) : la fraction envoyée couvre au mieux la
+moitié gauche de la vraie disposition, et le curseur se déplace **sur l'autre
+écran**, hors du flux. Les clics tombent où le curseur est réellement, les deltas
+partent de là : exactement le rapport. Le §23.3 disait lui-même « never run on a
+real two-display Linux host ».
+
+Même défaut sur la route portail : `PortalCapture::desktopRect()` rendait la
+photo à l'origine, sans position.
+
+### 26.3 Le correctif : demander la disposition logique
+
+`input/linux/WaylandLayout` (dlopen de `libwayland-client.so.0`, comme
+`X11Pointer` ouvre libX11 — aucun paquet `-dev`, un seul binaire pour X11,
+Wayland et headless). Les deux interfaces de **xdg-output** sont décrites à la
+main (deux tables `wl_interface`, l'ABI stable de libwayland) plutôt que de
+tirer wayland-scanner dans le build. Le socket : `WAYLAND_DISPLAY` quand l'hôte
+tourne dans la session, sinon balayage de `/run/user/*/wayland-*` (un hôte lancé
+en service n'a pas d'environnement ; les chemins absolus sont acceptés par
+libwayland ≥ 1.20). Rien n'est demandé au compositeur au-delà de sa liste de
+sorties, que tout client peut lire ; la connexion vit le temps de `read()`.
+
+`LinuxSession::readInputRects()` :
+
+- **Route KMS** : la sortie dont le nom canonique égale le connecteur capturé
+  donne le display (rectangle logique), l'union de toutes les sorties donne le
+  bureau. Nom canonique : minuscules, et `HDMI-A-1` → `hdmi-1`, parce que
+  **Mutter nomme `HDMI-1`** ce que le noyau, wlroots et KWin nomment `HDMI-A-1`
+  (constaté sur l'UM790Pro, GNOME 42).
+- **Route portail** : la réponse `Start` porte `position (ii)` et `size (ii)`,
+  **déjà en coordonnées logiques du compositeur** (spécification du portail,
+  fournies par Mutter, KWin et xdg-desktop-portal-hyprland). `PortalScreenCast`
+  les lit désormais, `PortalCapture::desktopRect()` les rend, et le bureau est
+  l'union des sorties Wayland — sans nom à apparier, un rectangle suffit. Sans
+  position, la sortie unique de la même taille est prise pour le moniteur.
+- **Sinon** (X11, headless, compositeur sans xdg-output, connecteur absent de la
+  liste) : KMS garde le dernier mot, avec une ligne qui dit pourquoi.
+
+Les fonctions de choix (`pickWaylandRects`, `waylandDesktopUnion`,
+`findWaylandOutputAt`, `canonicalConnectorName`) sont de l'arithmétique pure dans
+l'en-tête, testées sur les trois plateformes (`test_wayland_layout.cpp`) ; le
+socket lui-même est exercé par le même test là où il y en a un.
+
+### 26.4 Les logs `[PTR]`, pré-release seulement, temporaires
+
+Le rapporteur ne peut pas être joint sur sa machine ; il lui est demandé des
+**lignes de log**, pas des commandes. `Edition::extraDiagnostics()` (build DEV,
+instance `--dev`, ou build staging `-stg`/`.stg`) arme
+`NativeHost::setPointerDiagnostics()` — dans `main()` **et** dans le worker de
+flux, même piège que le drapeau clavier. Sous ce drapeau, `UinputInput` et
+`readInputRects()` écrivent, taggées `[PTR]` : les devices créés et si X11 est
+joignable, les sorties KMS et Wayland vues, les rectangles display/bureau
+retenus et leur source, les 5 premiers mouvements absolus (position client →
+point bureau → valeur ABS), les 3 premiers deltas et boutons, et une seule fois
+une écriture uinput refusée. Une install PROD n'écrit rien de tout ça. **À
+retirer à la fermeture de #18** : tout est derrière `pointerDiagnostics()`.
+
+Vérifié : 3775/3775 checks Windows (dont la section Wayland, arithmétique
+seule) ; UM790Pro GNOME 42 Wayland, build complet propre, tests verts, la session
+loggue « pointer mapped on the Wayland layout » par les deux chemins de socket
+(`WAYLAND_DISPLAY` et balayage `/run/user`), `HDMI-A-1` apparié à `HDMI-1`. ⚠️
+Toujours pas d'hôte Linux à deux écrans sous la main : le cas du rapport reste à
+confirmer par lui, avec ses lignes `[PTR]`.
+
+**Concrètement, pour l'utilisateur** : sur un hôte Wayland à plusieurs écrans,
+la souris du navigateur arrive sur l'écran qu'il regarde, à l'endroit visé, y
+compris avec une échelle fractionnaire et quel que soit l'écran choisi — par le
+scanout comme par le portail. Sur un seul écran rien ne change. Et s'il reste un
+cas tordu, la version pré-release le raconte dans son journal sans qu'il ait à
+ouvrir un terminal.

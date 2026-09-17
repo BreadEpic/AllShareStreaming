@@ -85,6 +85,15 @@ struct PortalStream
     int width = 0;
     int height = 0;
 
+    /// Where the streamed monitor sits in the compositor's coordinate space —
+    /// LOGICAL pixels, the same space a Wayland compositor spreads an absolute
+    /// pointer across — when the portal says (Mutter, KWin and Hyprland's all
+    /// do, for a monitor stream). hasPosition false when it did not, which
+    /// leaves the picture at the origin: right on one screen, wrong past it.
+    bool hasPosition = false;
+    int x = 0;
+    int y = 0;
+
     bool valid() const { return nodeId != 0 && pipewireFd >= 0; }
 };
 

@@ -25,6 +25,7 @@ void run_evdev_keymap_tests();
 void run_pointer_clamp_tests();
 void run_xkb_text_map_tests();
 void run_absolute_map_tests();
+void run_wayland_layout_tests();
 void run_linux_pipeline_tests();
 void run_cpu_cursor_tests();
 void run_portal_tests();
@@ -94,6 +95,7 @@ int main()
     run_pointer_clamp_tests();
     run_xkb_text_map_tests();
     run_absolute_map_tests();
+    run_wayland_layout_tests();
     run_mac_keymap_tests();
     run_linux_pipeline_tests();
     run_cpu_cursor_tests();

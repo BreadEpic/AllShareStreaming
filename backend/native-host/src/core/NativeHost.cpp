@@ -198,6 +198,16 @@ bool NativeHost::keyboardDiagnostics()
     return input::keyboardDiagnostics();
 }
 
+void NativeHost::setPointerDiagnostics(bool on)
+{
+    input::pointerDiagnosticsFlag().store(on, std::memory_order_relaxed);
+}
+
+bool NativeHost::pointerDiagnostics()
+{
+    return input::pointerDiagnostics();
+}
+
 const char* NativeHost::version()
 {
     return MW_NATIVE_VERSION;

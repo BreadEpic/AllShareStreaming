@@ -39,6 +39,19 @@ inline bool keyboardDiagnostics()
     return keyboardDiagnosticsFlag().load(std::memory_order_relaxed);
 }
 
+/// The switch behind NativeHost::setPointerDiagnostics(), same shape and same
+/// reasons. Read where a platform places the pointer; the lines it gates are
+/// tagged [PTR] and are temporary (issue #18).
+inline std::atomic<bool>& pointerDiagnosticsFlag()
+{
+    static std::atomic<bool> flag{false};
+    return flag;
+}
+inline bool pointerDiagnostics()
+{
+    return pointerDiagnosticsFlag().load(std::memory_order_relaxed);
+}
+
 /// Injects browser input into the local OS.
 ///
 /// ── No thread, no queue ─────────────────────────────────────────────────────

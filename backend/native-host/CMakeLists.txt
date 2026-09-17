@@ -150,13 +150,14 @@ else()
         # itself. On a build without the graphics backend they are compiled and
         # never constructed (the stub session refuses first).
         #
-        # X11Pointer and XkbTextMap are unconditional for the same reason: libX11
-        # and libxkbcommon are opened with dlopen at runtime, never linked, so no
-        # -dev package is needed to build them and a host with neither still runs
-        # — it simply finds nothing.
+        # X11Pointer, WaylandLayout and XkbTextMap are unconditional for the same
+        # reason: libX11, libwayland-client and libxkbcommon are opened with
+        # dlopen at runtime, never linked, so no -dev package is needed to build
+        # them and a host with none of them still runs — it simply finds nothing.
         target_sources(mw-native-host PRIVATE
             src/input/linux/UinputGamepad.cpp
             src/input/linux/UinputInput.cpp
+            src/input/linux/WaylandLayout.cpp
             src/input/linux/X11Pointer.cpp
             src/input/linux/XkbTextMap.cpp)
         # dlopen lives in libc since glibc 2.34 and our floor is 2.35, so this
@@ -359,6 +360,7 @@ if(MW_BUILD_TESTS)
         tests/test_pointer_clamp.cpp
         tests/test_xkb_text_map.cpp
         tests/test_absolute_map.cpp
+        tests/test_wayland_layout.cpp
         tests/test_linux_pipeline.cpp
         tests/test_linux_session.cpp
         tests/test_mac_keymap.cpp
