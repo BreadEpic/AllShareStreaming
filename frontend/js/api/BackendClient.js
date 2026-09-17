@@ -796,13 +796,42 @@ export class BackendClient {
         return this.post('/api/setup/sunshine-check', { username, password }, { timeoutMs: 20000 });
     }
 
-    // ── Statistics consent (GDPR) ────────────────────────────────────────────────
+    // ── Statistics reporting ─────────────────────────────────────────────────────
+
+    /**
+     * {enabled, writable, available}.
+     *
+     * `available` is false on a build with no reporting credentials — it sends
+     * nothing whatever the switch says, so it gets a statement rather than a
+     * control. `writable` is true only for the host machine's own browser: the
+     * answer speaks for the machine, and a guest does not give it.
+     *
+     * Not a consent. Nothing here identifies anyone, so what this backs is the
+     * disclosure and the means to refuse. See setMetricsConsent below for the
+     * machinery kept for the day something does need asking.
+     */
+    static async getMetricsReporting() {
+        return this.get('/api/metrics/reporting');
+    }
+    /**
+     * Turn both censuses on or off. Takes effect immediately — no restart, and
+     * nothing else about the app changes either way. Host-local only: 403 for
+     * anyone else.
+     * @param {boolean} enabled
+     */
+    static async setMetricsReporting(enabled) {
+        return this.post('/api/metrics/reporting', { enabled });
+    }
+
+    // ── Statistics consent (GDPR) — dormant ──────────────────────────────────────
+    //
+    // Nothing calls these two. They are the consent path, kept working end to
+    // end for the day a field needs a real answer before it may travel.
 
     /**
      * {decision: ''|'granted'|'denied', version, reporting, available}.
-     * `available` is false on a build with no reporting credentials — there is
-     * nothing to ask about there. Host-local only: 403 for anyone else, since
-     * it is a decision about what this machine sends.
+     * Host-local only: 403 for anyone else, since it is a decision about what
+     * this machine sends. Read by nothing today — the switch decides.
      */
     static async getMetricsConsent() {
         return this.get('/api/metrics/consent');

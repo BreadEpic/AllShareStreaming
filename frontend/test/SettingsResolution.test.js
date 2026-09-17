@@ -14,8 +14,8 @@ vi.mock('../js/api/BackendClient.js', () => ({
         getAuthStatus: vi.fn(async () => ({ has_session: false })),
         getStreamingSettings: vi.fn(async () => ({})),
         saveStreamingSettings: vi.fn(async () => ({})),
-        getMetricsConsent: vi.fn(),
-        setMetricsConsent: vi.fn(async () => ({ decision: 'granted' })),
+        getMetricsReporting: vi.fn(),
+        setMetricsReporting: vi.fn(async () => ({ enabled: true })),
     },
 }));
 vi.mock('../js/ui/Toast.js', () => ({

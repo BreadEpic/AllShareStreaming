@@ -51,12 +51,16 @@ class QNetworkAccessManager;
  *
  * When it stays quiet
  * -------------------
- * Reporting is off unless ALL of these hold: the person running this machine
- * was asked at first launch and said yes (AppSettings::metricsConsentDecision),
- * the instance has not opted out since (settings key "session_metrics_enabled",
- * or MW_NO_TELEMETRY in the environment), and the build carries MW_DOMAIN +
- * MW_PDNS_TOKEN — so a self-built binary never phones our infrastructure at
- * all. Unasked counts as no: silence is not consent.
+ * Reporting stops the moment the machine opts out (settings key
+ * "session_metrics_enabled", the switch on the Settings page, or
+ * MW_NO_TELEMETRY in the environment), and it never starts at all unless the
+ * build carries MW_DOMAIN + MW_PDNS_TOKEN — so a self-built binary never phones
+ * our infrastructure whatever its settings say.
+ *
+ * No consent is asked for it, because there is none to ask for: nothing above
+ * identifies a person, so what is owed is the disclosure on the Settings page
+ * and that switch. AppSettings.h holds the whole argument, and the consent
+ * machinery, dormant, for the day a field changes it.
  *
  * It is never load-bearing: every report is fire-and-forget, a failure is
  * dropped without a retry, and nothing about a stream depends on the answer.
@@ -82,7 +86,7 @@ public:
         QString kind;      ///< owner | player
     };
 
-    /// enabled: consent given AND not opted out
+    /// enabled: this machine has not opted out
     /// (AppSettings::sessionMetricsAllowed()). Even when true, nothing is sent
     /// unless the build carries the credentials.
     explicit SessionMetrics(QString version, bool enabled, QObject* parent = nullptr);
@@ -91,7 +95,7 @@ public:
     /// every report is a no-op when this is false — it is for logging.
     bool active() const { return !m_url.isEmpty(); }
 
-    /// Apply a consent answer without a restart: the moment someone says no in
+    /// Apply the switch without a restart: the moment someone turns it off in
     /// the UI, the next session must already be uncounted. Re-derives the
     /// endpoint, so an opt-out still wins on a build that carries credentials.
     void setEnabled(bool enabled);

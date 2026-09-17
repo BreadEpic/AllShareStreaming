@@ -2,12 +2,16 @@
  * MoonlightWeb — TNR suite. Copyright (C) 2026 Bruno Martin.
  * GPLv3 — see repository LICENSE.
  *
- * The statistics answer, given or withdrawn from the Settings page. It lives
- * there rather than in Admin because it concerns everyone who streams through
- * this machine — so the disclosure has to reach a plain user, while the switch
- * itself stays the machine's own. Both halves are privacy properties: each one
- * failing is silent at runtime, leaving a checkbox that shows a state the
- * backend does not hold, or a user who was never told what is counted.
+ * What this machine reports, and the switch that stops it, on the Settings
+ * page. It lives there rather than in Admin because it concerns everyone who
+ * streams through this machine — so the disclosure has to reach a plain user,
+ * while the switch itself stays the machine's own.
+ *
+ * Not a consent: the census carries no field that identifies anyone, so no
+ * question is put on arrival and what is owed is exactly these two halves.
+ * Both are privacy properties, and each one failing is silent at runtime,
+ * leaving a checkbox that shows a state the backend does not hold, or a user
+ * who was never told what is counted.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
@@ -15,8 +19,8 @@ vi.mock('../js/api/BackendClient.js', () => ({
     BackendClient: {
         getAuthStatus: vi.fn(async () => ({ has_session: false })),
         getStreamingSettings: vi.fn(async () => ({})),
-        getMetricsConsent: vi.fn(),
-        setMetricsConsent: vi.fn(async () => ({ decision: 'granted' })),
+        getMetricsReporting: vi.fn(),
+        setMetricsReporting: vi.fn(async () => ({ enabled: true })),
     },
 }));
 vi.mock('../js/ui/Toast.js', () => ({
@@ -36,7 +40,7 @@ describe('SettingsView privacy section', () => {
     let view;
 
     const load = async (state) => {
-        BackendClient.getMetricsConsent.mockResolvedValue(state);
+        BackendClient.getMetricsReporting.mockResolvedValue(state);
         await view._loadStatsConsent();
         return view._renderPrivacySection();
     };
@@ -53,15 +57,15 @@ describe('SettingsView privacy section', () => {
     });
 
     it('shows the switch, ticked, to the machine that may answer', async () => {
-        const html = await load({ decision: 'granted', available: true, writable: true });
+        const html = await load({ enabled: true, available: true, writable: true });
         expect(html).toContain('settings-stats-consent');
         expect(html).toContain('checked');
         expect(html).not.toContain('disabled');
         expect(html).not.toContain('text:stats.ownerOnly');
     });
 
-    it('treats a refusal as not ticked', async () => {
-        const html = await load({ decision: 'denied', available: true, writable: true });
+    it('shows the switch unticked once this machine has opted out', async () => {
+        const html = await load({ enabled: false, available: true, writable: true });
         expect(html).toContain('settings-stats-consent');
         expect(html).not.toContain('checked');
     });
@@ -74,7 +78,7 @@ describe('SettingsView privacy section', () => {
     // untick reads as a setting forced on the reader, which is the one thing
     // this section must not do.
     it('tells a remote user what the machine does, with no switch at all', async () => {
-        const html = await load({ decision: 'granted', available: true, writable: false });
+        const html = await load({ enabled: true, available: true, writable: false });
         expect(html).not.toContain('settings-stats-consent');
         expect(html).not.toContain('checkbox');
         expect(html).toContain('text:stats.remoteOn');
@@ -83,62 +87,54 @@ describe('SettingsView privacy section', () => {
         expect(html).toContain('text:stats.statsNever3');
     });
 
-    // Undecided counts as off, and must read as off: the machine really is
-    // sending nothing, so a remote reader is told exactly that.
-    it('tells a remote user nothing is sent when the machine said no, or was never asked', async () => {
-        for (const decision of ['denied', '']) {
-            const html = await load({ decision, available: true, writable: false });
-            expect(html).toContain('text:stats.remoteOff');
-            expect(html).not.toContain('text:stats.remoteOn');
-        }
+    it('tells a remote user nothing is sent when that machine has opted out', async () => {
+        const html = await load({ enabled: false, available: true, writable: false });
+        expect(html).toContain('text:stats.remoteOff');
+        expect(html).not.toContain('text:stats.remoteOn');
     });
 
     it('says so plainly on a build that reports nothing, instead of a switch that lies', async () => {
-        const html = await load({ decision: '', available: false, writable: true });
+        const html = await load({ enabled: false, available: false, writable: true });
         expect(html).toContain('text:stats.unavailable');
         expect(html).not.toContain('settings-stats-consent');
     });
 
-    it('always carries the full disclosure, whatever the answer', async () => {
-        const html = await load({ decision: 'denied', available: true, writable: true });
+    it('always carries the full disclosure, whichever way the switch is set', async () => {
+        const html = await load({ enabled: false, available: true, writable: true });
         for (const key of ['sentIntro', 'statsSent1', 'neverIntro', 'statsNever3', 'necessary']) {
             expect(html).toContain('text:stats.' + key);
         }
     });
 
     it('hides the section when the backend will not say — never blocks the page', async () => {
-        BackendClient.getMetricsConsent.mockRejectedValue(new Error('offline'));
+        BackendClient.getMetricsReporting.mockRejectedValue(new Error('offline'));
         await view._loadStatsConsent();
         expect(view._statsLoaded).toBe(false);
         expect(view._renderPrivacySection()).toBe('');
     });
 
-    it('withdraws consent, recording the wording shown around the switch', async () => {
+    // The means of refusal the disclosure promises: unticking has to reach the
+    // backend, and it has to be the only thing the page needs to do.
+    it('turns the census off from the switch', async () => {
         const box = { checked: false, disabled: false };
         await view._setStatsConsent(box);
-        const [granted, message, source] = BackendClient.setMetricsConsent.mock.calls[0];
-        expect(granted).toBe(false);
-        expect(source).toBe('settings');
-        // The record must name both the promise and what is never sent.
-        for (const key of ['sectionTitle', 'toggle', 'toggleDesc', 'statsNever3', 'necessary']) {
-            expect(message).toContain('text:stats.' + key);
-        }
+        expect(BackendClient.setMetricsReporting).toHaveBeenCalledWith(false);
         expect(view._statsGranted).toBe(false);
         expect(box.disabled).toBe(false);
     });
 
-    it('gives consent the same way', async () => {
+    it('turns it back on the same way', async () => {
         const box = { checked: true, disabled: false };
         await view._setStatsConsent(box);
-        expect(BackendClient.setMetricsConsent.mock.calls[0][0]).toBe(true);
+        expect(BackendClient.setMetricsReporting).toHaveBeenCalledWith(true);
         expect(view._statsGranted).toBe(true);
     });
 
     it('puts the switch back when the choice could not be saved', async () => {
-        BackendClient.setMetricsConsent.mockRejectedValue(new Error('offline'));
+        BackendClient.setMetricsReporting.mockRejectedValue(new Error('offline'));
         const box = { checked: false, disabled: false };
         await view._setStatsConsent(box);
-        // The backend still holds "granted", so the box must not claim otherwise.
+        // The backend is still reporting, so the box must not claim otherwise.
         expect(box.checked).toBe(true);
         expect(box.disabled).toBe(false);
     });

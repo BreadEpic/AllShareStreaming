@@ -217,6 +217,8 @@ const GET_ROUTES = [
     ['getAdminSettings', () => BackendClient.getAdminSettings(), '/api/admin/settings'],
     ['getStreamingSettings', () => BackendClient.getStreamingSettings(), '/api/settings/streaming'],
     ['getSetupStatus', () => BackendClient.getSetupStatus(), '/api/setup/status'],
+    ['getMetricsReporting', () => BackendClient.getMetricsReporting(), '/api/metrics/reporting'],
+    // Dormant, and tested so it stays working for the day it is needed again.
     ['getMetricsConsent', () => BackendClient.getMetricsConsent(), '/api/metrics/consent'],
     ['getInternetStatus', () => BackendClient.getInternetStatus(), '/api/internet/status'],
     // The token rides in the query string here — it is the guest's only
@@ -347,6 +349,12 @@ const POST_ROUTES = [
         () => BackendClient.checkSunshineCredentials('ada', 'pw'),
         '/api/setup/sunshine-check',
         { username: 'ada', password: 'pw' },
+    ],
+    [
+        'setMetricsReporting',
+        () => BackendClient.setMetricsReporting(false),
+        '/api/metrics/reporting',
+        { enabled: false },
     ],
     [
         'setMetricsConsent',

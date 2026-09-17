@@ -171,29 +171,24 @@ void run_app_settings_tests()
     CHECK_EQ(s.internetConsent().value("mechanism").toString(), QString("rendezvous"));
     CHECK_EQ(s.internetConsent().value("source").toString(), QString("admin"));
 
-    // ── Statistics consent ────────────────────────────────────────────────
-    // Silence is not consent: until the question has been answered, both
-    // censuses must stay shut whatever the file-only switches say.
+    // ── Statistics reporting ──────────────────────────────────────────────
+    // On unless someone says otherwise. Neither census carries a field that
+    // identifies anyone, so the switch is the whole rule: no question is put,
+    // and an unanswered machine is a reporting machine.
     CHECK_EQ(s.metricsConsentDecision(), QString());
-    CHECK(!s.sessionMetricsAllowed());
-    CHECK(!s.updateRelayAllowed());
-
-    s.setMetricsConsent(false, "the wording that was displayed", "banner");
-    CHECK_EQ(s.metricsConsentDecision(), QString("denied"));
-    CHECK(!s.sessionMetricsAllowed());
-    CHECK(!s.updateRelayAllowed());
-
-    s.setMetricsConsent(true, "the wording that was displayed", "banner");
-    CHECK_EQ(s.metricsConsentDecision(), QString("granted"));
     CHECK(s.sessionMetricsAllowed());
     CHECK(s.updateRelayAllowed());
-    // The record has to say what was agreed to, and when.
-    CHECK_EQ(s.metricsConsent().value("message").toString(),
-             QString("the wording that was displayed"));
-    CHECK_EQ(s.metricsConsent().value("source").toString(), QString("banner"));
-    CHECK(!s.metricsConsent().value("at").toString().isEmpty());
 
-    // A file-only opt-out still wins over a granted consent.
+    // One answer, both censuses: the disclosure describes them as one thing.
+    s.setMetricsReporting(false);
+    CHECK(!s.sessionMetricsAllowed());
+    CHECK(!s.updateRelayAllowed());
+    s.setMetricsReporting(true);
+    CHECK(s.sessionMetricsAllowed());
+    CHECK(s.updateRelayAllowed());
+
+    // The switch and a hand-edited settings.json are the same control, and
+    // each key still silences its own census alone.
     {
         QJsonObject obj = s.readAll();
         obj["session_metrics_enabled"] = false;
@@ -205,8 +200,27 @@ void run_app_settings_tests()
         s.writeAll(obj);
     }
 
-    // An answer given to an older, narrower wording does not carry over to a
-    // question that describes more: it reads as unasked, and reports nothing.
+    // ── Statistics consent, dormant ───────────────────────────────────────
+    // The machinery still records what it is given — wording, entry point,
+    // timestamp, version — and still refuses to let an answer given to a
+    // narrower question cover a wider one. What it no longer does is decide
+    // anything: a refusal recorded by an older version does not silence a
+    // machine, and a grant does not speak for it either.
+    s.setMetricsConsent(false, "the wording that was displayed", "banner");
+    CHECK_EQ(s.metricsConsentDecision(), QString("denied"));
+    CHECK(s.sessionMetricsAllowed());
+    CHECK(s.updateRelayAllowed());
+
+    s.setMetricsConsent(true, "the wording that was displayed", "banner");
+    CHECK_EQ(s.metricsConsentDecision(), QString("granted"));
+    // The record has to say what was agreed to, and when.
+    CHECK_EQ(s.metricsConsent().value("message").toString(),
+             QString("the wording that was displayed"));
+    CHECK_EQ(s.metricsConsent().value("source").toString(), QString("banner"));
+    CHECK(!s.metricsConsent().value("at").toString().isEmpty());
+
+    // An answer given to an older, narrower wording still reads as unasked, so
+    // the day this goes back in the path it asks again instead of inheriting.
     {
         QJsonObject obj = s.readAll();
         QJsonObject consent = obj["metrics_consent"].toObject();
@@ -214,8 +228,9 @@ void run_app_settings_tests()
         obj["metrics_consent"] = consent;
         s.writeAll(obj);
         CHECK_EQ(s.metricsConsentDecision(), QString());
-        CHECK(!s.sessionMetricsAllowed());
-        CHECK(!s.updateRelayAllowed());
+        // …and still reports, because the switch is what decides.
+        CHECK(s.sessionMetricsAllowed());
+        CHECK(s.updateRelayAllowed());
     }
 
     // Documented file-only defaults are idempotently seeded.

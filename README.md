@@ -457,7 +457,7 @@ How far the correction reaches depends on what the host can do. **The MoonlightW
 
 Every few hours the server asks whether a newer MoonlightWeb exists. In official builds that question goes to `https://updates.{MW_DOMAIN}`, which mirrors the GitHub release and records **version, OS and architecture** — nothing else: no identifier, no account, no per-machine history. It is what tells us how many people still run an old version, so a release can drop support for one without stranding anyone.
 
-Nothing is reported until you have been asked and have said yes — see below. Set `"update_relay_enabled": false` in `settings.json` and the check goes straight to GitHub instead, reporting nothing. `MW_NO_TELEMETRY=1` in the environment goes further and stops the check happening at all — it used to merely send it to GitHub, which reports nothing but is still a request to a third party every six hours, and that is not what someone setting that variable is asking for. Updates work identically either way; with `MW_NO_TELEMETRY` you find out about them yourself. Builds you compiled yourself never contact the relay at all.
+None of it identifies anyone — see below. Set `"update_relay_enabled": false` in `settings.json` and the check goes straight to GitHub instead, reporting nothing. `MW_NO_TELEMETRY=1` in the environment goes further and stops the check happening at all — it used to merely send it to GitHub, which reports nothing but is still a request to a third party every six hours, and that is not what someone setting that variable is asking for. Updates work identically either way; with `MW_NO_TELEMETRY` you find out about them yourself. Builds you compiled yourself never contact the relay at all.
 
 #### Session counts
 
@@ -465,13 +465,17 @@ When a stream starts and again when it ends, official builds report the **shape*
 
 Never sent: the host's name or identifier, your account, the pairing identity, **which application you launched**, or any address — the receiving end keeps no raw address, only a hash that changes every day. There is no free-text field at all: every value is a number or one of a fixed list of words. It answers questions like "is 720p still in use?" or "did AV1 take off?", and nothing finer.
 
-#### You are asked first
+#### No question is put to you, and you can switch it off
 
-Both of the above stay **completely silent until you answer**. At first launch a bar at the bottom of the page asks whether this machine may send anonymous statistics; it lists exactly what is and is not sent, and until a button is pressed nothing leaves your machine. Refusing costs you nothing — streaming, updates and every feature behave identically.
+Neither census carries a field that identifies anyone. Every value is a number or one of a fixed list of words chosen in the source, there is no free-text field anywhere, the report leaves the server rather than your browser, no address is stored, and **nothing whatever is written to a viewer's device**. So MoonlightWeb does not ask your permission on arrival: a consent banner for figures that identify nobody only teaches people to click past the ones that matter.
 
-It is not a cookie banner: the sign-in cookie the app needs to work is unaffected by either answer, and so is the separate Internet Access agreement. Only the machine's own browser is asked; a remote viewer never sees it, and the backend refuses the answer from anyone else. Change your mind at any time from **Settings → Privacy**, which takes effect immediately. That section is visible to every signed-in user, and invited players get the same disclosure from the **Cookies** button on their join page — in both cases the switch itself stays the machine's own.
+What you get instead is the disclosure and the means to refuse, both on the same page. **Settings → Privacy** lists exactly what is sent and what never is, and carries the switch that stops it — immediately, with no restart. Turning it off costs you nothing: streaming, updates and every feature behave identically.
 
-Under the hood the answer is stored in `settings.json` as `metrics_consent`, together with the exact wording you were shown and when you answered. The two switches remain as permanent overrides: `"session_metrics_enabled": false` or `"update_relay_enabled": false` in `settings.json`, or `MW_NO_TELEMETRY=1` in the environment, stop the reporting whatever the answer was.
+That section is visible to every signed-in user, because it is their streams being counted too, and invited players get the same disclosure from the **Cookies** button on their join page. The switch itself stays the machine's own: it speaks for the computer that does the reporting, so a remote viewer reads the state as a sentence and the backend refuses the change from anyone but a host-local session.
+
+It is not a cookie notice either: the sign-in cookie the app needs to work is unrelated, and so is the separate Internet Access agreement, which asks its own question about a different thing.
+
+Under the hood the switch writes `"session_metrics_enabled"` and `"update_relay_enabled"` in `settings.json`, which you can also edit by hand; `MW_NO_TELEMETRY=1` in the environment overrides both. A `metrics_consent` record left over from a version that did ask is ignored in both directions.
 
 #### Where a session came from
 

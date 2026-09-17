@@ -32,7 +32,7 @@ import { Toast } from './Toast.js';
 import { t, getLanguage, setLanguage, AVAILABLE_LANGUAGES } from '../i18n/i18n.js';
 import { escapeHtml } from '../util/escapeHtml.js';
 import { shortcutsGridHtml, shortcutsTitle } from '../util/shortcutsHelp.js';
-import { noticeDetailsHtml, plainText } from './PrivacyNotice.js';
+import { noticeDetailsHtml } from './PrivacyNotice.js';
 import {
     SUPPORTS_CANVAS_TEARING,
     IS_MOBILE_OR_TABLET,
@@ -174,42 +174,38 @@ export class SettingsView {
      * only from the machine itself: the answer speaks for the machine, and a
      * guest on the LAN does not get to answer for its owner.
      *
-     * Best-effort: no answer means no section, which matches a backend that is
-     * reporting nothing anyway.
+     * Best-effort: no answer means no section. Better to say nothing than to
+     * claim a state the backend has not confirmed.
      */
     async _loadStatsConsent() {
         try {
-            const state = await BackendClient.getMetricsConsent();
+            const state = await BackendClient.getMetricsReporting();
             this._statsLoaded = !!state;
             this._statsAvailable = !!(state && state.available);
-            this._statsGranted = !!(state && state.decision === 'granted');
+            this._statsGranted = !!(state && state.enabled);
             this._statsWritable = !!(state && state.writable);
         } catch (err) {
-            console.warn('[Settings] statistics consent unavailable:', err);
+            console.warn('[Settings] statistics state unavailable:', err);
             this._statsLoaded = false;
         }
     }
 
     /**
-     * The checkbox IS the consent record: what it says is stored together with
-     * the text shown around it, in the language it was read in, so the record
-     * always names what was agreed to. Reverted on failure rather than left
-     * showing a state the backend does not hold.
+     * Turn the census off, or back on. This is the means of refusal the
+     * disclosure beside it promises, so the one thing it must never do is end
+     * up showing a state the backend does not hold: on failure the box goes
+     * back where it was rather than claiming a refusal that was not recorded.
      */
     async _setStatsConsent(checkbox) {
-        const granted = checkbox.checked;
+        const enabled = checkbox.checked;
         checkbox.disabled = true;
         try {
-            await BackendClient.setMetricsConsent(
-                granted,
-                plainText(['sectionTitle', 'toggle', 'toggleDesc']),
-                'settings',
-            );
-            this._statsGranted = granted;
-            Toast.success(granted ? t('stats.turnedOn') : t('stats.turnedOff'));
+            await BackendClient.setMetricsReporting(enabled);
+            this._statsGranted = enabled;
+            Toast.success(enabled ? t('stats.turnedOn') : t('stats.turnedOff'));
         } catch (err) {
             console.warn('[Settings] could not save the statistics choice:', err);
-            checkbox.checked = !granted;
+            checkbox.checked = !enabled;
             Toast.error(t('stats.choiceSaveFailed'));
         } finally {
             checkbox.disabled = false;

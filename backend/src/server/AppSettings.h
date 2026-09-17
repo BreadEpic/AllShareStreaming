@@ -303,12 +303,22 @@ public:
 
     bool sessionMetricsEnabled() const;
 
-    // ── Statistics consent (GDPR) ──────────────────────────────────────────────
+    // ── Statistics consent (GDPR) — dormant, deliberately kept ────────────────
     //
-    // Neither census above reports ANYTHING until the person running this
-    // machine has been asked and has said yes. The two booleans above are
-    // permanent kill switches for someone editing the file; this is the answer
-    // to the question the app puts on screen at first launch.
+    // Nothing gates on this. It is the machinery for a field that would one day
+    // need an answer before it may travel, kept whole rather than rebuilt in a
+    // hurry: the stored wording, the timestamp, the entry point, and the
+    // version rule that refuses to let an answer given to a narrower question
+    // cover a wider one.
+    //
+    // Why nothing gates on it today: neither census carries a field that
+    // identifies anyone. Every value is a number or a token chosen in the
+    // source, with no free-form field anywhere; the payload leaves this process
+    // and never a browser; no address is stored; and nothing whatever is
+    // written to a viewer's device. What is owed for that is the disclosure and
+    // a way to say no, both of which live on the Settings page — not a consent.
+    // Adding a field that changes this means putting this back in the path, and
+    // bumping kMetricsConsentVersion so an old answer does not cover it.
     //
     // Stored as JSON object "metrics_consent", mirroring "internet_consent":
     // the exact wording that was displayed, when it was answered, through which
@@ -316,10 +326,12 @@ public:
     // wording — so a later wording that describes MORE than this one can ask
     // again instead of inheriting an answer given to a different question.
     //
-    // Absent = never asked = nothing is reported. Refusing changes nothing else
-    // about the application: it is not a cookie wall, it does not touch the
-    // session cookie the app needs to work, and it is unrelated to the separate
-    // Internet Access consent.
+    // A record left over from the version that did ask is read by nobody, in
+    // either direction: a machine that once refused is not silenced by it, and
+    // a machine that once agreed is not counted because of it. Only the switch
+    // below decides. Whichever way it was answered, it was answered to a
+    // question about reporting, and reporting is now on unless someone says
+    // otherwise.
 
     /// Version of the wording currently shown. Bump only when the new text
     /// covers something the old one did not — an answer to the old question
@@ -334,11 +346,17 @@ public:
     /// "" (never asked / stale wording), "granted" or "denied".
     QString metricsConsentDecision() const;
 
-    /// The two questions every reporting path actually asks: consent given AND
-    /// the file-only switch left alone. Keeping the rule here means a new
-    /// caller cannot forget half of it.
+    /// The one question every reporting path asks: has this machine opted out?
+    /// Keeping the rule here means a new caller cannot get it wrong, and means
+    /// putting a consent back in the path later is an edit to two functions.
     bool updateRelayAllowed() const;
     bool sessionMetricsAllowed() const;
+
+    /// Turn both censuses on or off from the UI, together — the disclosure the
+    /// user reads covers them as one thing. Writes the same two file-only keys
+    /// documented above, so a hand-edited settings.json and the switch on the
+    /// page are the same control and cannot disagree.
+    void setMetricsReporting(bool enabled);
 
     // Seed documented file-only default keys into settings.json if absent, so they
     // are discoverable/editable in the file. Idempotent.

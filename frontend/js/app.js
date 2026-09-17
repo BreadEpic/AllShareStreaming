@@ -54,7 +54,6 @@ import { SetupView } from './ui/SetupView.js';
 import { PlayerJoinView } from './ui/PlayerJoinView.js';
 import { BackendClient } from './api/BackendClient.js';
 import { Toast } from './ui/Toast.js';
-import { ConsentBar } from './ui/ConsentBar.js';
 import { DiscordLink } from './ui/DiscordLink.js';
 import { GamepadDriverNotice } from './ui/GamepadDriverNotice.js';
 import { VersionGuard } from './util/VersionGuard.js';
@@ -1034,12 +1033,12 @@ const MoonlightApp = {
             console.warn('[MW] Server health check failed:', err);
         }
 
-        // Ask, once, whether this machine may report anonymous statistics —
-        // after the page is up, never in front of it. It answers for itself
-        // whether the question applies at all (host's own browser, unanswered,
-        // build able to report); until it is answered the backend reports
-        // nothing, and either answer leaves the application identical.
-        ConsentBar.maybeShow({ isHostLocal: () => this._isHostLocal() });
+        // No statistics question is put here, on purpose. The census carries no
+        // field that identifies anyone, so what is owed is the disclosure and a
+        // way to refuse, and both live on the Settings page. A consent banner
+        // for data that identifies no one teaches people to click past the ones
+        // that matter. The consent machinery is still in place, unasked, for
+        // the day a field needs it — see AppSettings.h.
     },
 
     /**

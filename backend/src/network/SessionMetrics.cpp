@@ -50,8 +50,8 @@ QString archToken()
 }
 
 // The census endpoint for this build, or empty to stay silent. Empty means the
-// user was never asked or said no, or the build has no MW_PDNS_TOKEN/MW_DOMAIN
-// — the case for anyone who compiled MoonlightWeb themselves.
+// machine has opted out, or the build has no MW_PDNS_TOKEN/MW_DOMAIN — the case
+// for anyone who compiled MoonlightWeb themselves.
 //
 // Its own host rather than a path under updates.{domain}: the two answer
 // different questions, and this one must be switchable off — by us at the DNS
@@ -78,7 +78,7 @@ SessionMetrics::SessionMetrics(QString version, bool enabled, QObject* parent)
 {
     if (active())
         Logger::info(QStringLiteral("[Metrics] session counts are reported in aggregate "
-                                    "(consent given; withdraw it in the settings page)"));
+                                    "(turn it off in the settings page)"));
 }
 
 void SessionMetrics::setEnabled(bool enabled)

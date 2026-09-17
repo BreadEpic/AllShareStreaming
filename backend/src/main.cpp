@@ -2167,17 +2167,55 @@ int main(int argc, char* argv[])
         return HttpResponse::json(selfUpdater.statusJson());
     });
 
-    // ── Statistics consent (GDPR) ──────────────────────────────────────────
-    // Neither census reports anything until this has been answered, and an
-    // answer takes effect on the spot rather than at the next restart.
+    // ── Statistics reporting ───────────────────────────────────────────────
+    // What this machine reports, and the switch that stops it. Not a consent:
+    // neither census carries a field that identifies anyone, so what is owed is
+    // the disclosure and a way to say no. See AppSettings.h.
     //
-    // Host-local only, both ways: it is a decision about what this MACHINE
-    // sends, so a remote viewer is neither asked nor allowed to answer for its
-    // owner. The frontend asks the same question of itself before showing the
-    // banner (app.js _isHostLocal), so a guest never even sees it.
-    // Readable by anyone signed in: what this machine reports about their own
-    // streams is their business too, and the Settings page shows it to every
-    // user. Only the answer is privileged — see the POST below.
+    // Readable by anyone signed in — what this machine reports about their own
+    // streams is their business too, and the Settings page states it to every
+    // user. Writable host-local only: it speaks for the MACHINE, and a guest on
+    // the LAN does not get to answer for its owner. A browser that may not
+    // write is shown a sentence rather than a switch (SettingsView.js).
+    server.router()->get("/api/metrics/reporting", [&appSettings](const HttpRequest& req) {
+        QJsonObject obj;
+        obj["enabled"] = appSettings.sessionMetricsAllowed() || appSettings.updateRelayAllowed();
+        obj["writable"] = req.isLocal;
+        // Whether the switch would change anything at all. A build with no
+        // relay credentials — anything self-compiled — reports nothing whatever
+        // it is set to, and gets the statement instead of a control that lies.
+        obj["available"] = UpdateChecker::relayAvailable();
+        return HttpResponse::json(obj);
+    });
+
+    server.router()->post("/api/metrics/reporting", [&appSettings, &updateChecker,
+                                                     &sessionMetrics](const HttpRequest& req) {
+        if (!req.isLocal) return HttpResponse::error(403, "Host-local decision");
+
+        const QJsonObject body = QJsonDocument::fromJson(req.body).object();
+        if (!body.contains("enabled")) return HttpResponse::error(400, "Missing \"enabled\"");
+        const bool enabled = body["enabled"].toBool();
+
+        appSettings.setMetricsReporting(enabled);
+        // Apply now: someone who just said no must not have their next stream
+        // counted, and must not have to restart to be sure of it.
+        updateChecker.setRelayEnabled(appSettings.updateRelayAllowed());
+        sessionMetrics.setEnabled(appSettings.sessionMetricsAllowed());
+        qInfo() << "[metrics] statistics reporting" << (enabled ? "on" : "off");
+
+        QJsonObject obj;
+        obj["enabled"] = appSettings.sessionMetricsAllowed() || appSettings.updateRelayAllowed();
+        return HttpResponse::json(obj);
+    });
+
+    // ── Statistics consent (GDPR) — dormant ────────────────────────────────
+    // No census gates on this and no page asks it; it is kept working end to
+    // end for the day a field needs a real answer before it may travel. Should
+    // that day come, the question goes back on screen, the wording version is
+    // bumped, and the new field — not these — checks the decision.
+    //
+    // Host-local only, both ways: it would be a decision about what this
+    // MACHINE sends, which a remote viewer does not get to make for its owner.
     server.router()->get("/api/metrics/consent", [&appSettings,
                                                   &updateChecker](const HttpRequest& req) {
         QJsonObject obj;

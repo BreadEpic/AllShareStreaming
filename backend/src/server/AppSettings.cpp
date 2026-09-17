@@ -230,10 +230,16 @@ bool AppSettings::sessionMetricsEnabled() const
     return obj.value("session_metrics_enabled").toBool(true);
 }
 
-// ── Statistics consent ───────────────────────────────────────────────────────
-// Nothing is reported until this says yes. Recorded the way the Internet Access
-// consent is — wording, timestamp, entry point — because "we asked and they
-// agreed" is only worth anything if what they agreed to was written down.
+// ── Statistics consent — dormant ─────────────────────────────────────────────
+// Kept whole, wired to nothing. No census gates on it any more (see
+// sessionMetricsAllowed below for why), so this is the machinery waiting for
+// the day a field genuinely needs an answer before it may travel: the record
+// that stores the wording, when it was answered and through which entry point,
+// and the version rule that refuses to let an answer given to a narrower
+// question cover a wider one. Recorded the way the Internet Access consent is,
+// because "we asked and they agreed" is only worth anything if what they
+// agreed to was written down. Do not delete it to tidy up: rebuilding it
+// correctly costs more than leaving it here costs.
 
 QJsonObject AppSettings::metricsConsent() const
 {
@@ -280,14 +286,35 @@ void AppSettings::setSessionLocationEnabled(bool enabled)
     writeAll(obj);
 }
 
+// ── What actually governs the two censuses ───────────────────────────────────
+// The switch, and nothing else. Neither census carries a field that identifies
+// anyone: every value is a number or a token chosen in the source, the payload
+// is emitted by this process and never by a browser, no address is stored, and
+// nothing is written to any viewer's device — so there is no consent to
+// collect, and what is owed instead is the disclosure (shown in Settings) and
+// this way of saying no. Asking for permission for data that identifies no one
+// would also cost the honest answer: the question would have to be put to the
+// machine's owner, which a remote viewer is not.
+
 bool AppSettings::updateRelayAllowed() const
 {
-    return metricsConsentDecision() == QLatin1String("granted") && updateRelayEnabled();
+    return updateRelayEnabled();
 }
 
 bool AppSettings::sessionMetricsAllowed() const
 {
-    return metricsConsentDecision() == QLatin1String("granted") && sessionMetricsEnabled();
+    return sessionMetricsEnabled();
+}
+
+void AppSettings::setMetricsReporting(bool enabled)
+{
+    // One answer, both censuses. The disclosure the user reads describes them
+    // together — session shape on one side, version and OS on the other — so a
+    // switch that silenced only half of it would not match its own label.
+    QJsonObject obj = readAll();
+    obj["session_metrics_enabled"] = enabled;
+    obj["update_relay_enabled"] = enabled;
+    writeAll(obj);
 }
 
 void AppSettings::seedDocumentedDefaults()
