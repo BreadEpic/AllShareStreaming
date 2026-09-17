@@ -777,6 +777,74 @@ ses statistiques, sans plantage) — non élucidé, et sans conséquence pour la
 lecture ci-dessus : le temps d'encodage d'une image ne dépend pas de la cadence
 à laquelle on les demande.
 
+## 8j. Le banc de shaders de réduction : `mw-scaler-bench` (17/09/2026)
+
+Quand le stream est plus petit que l'écran (1440p → 1080p), le host réduit
+l'image dans la passe de conversion avec **un seul fetch bilinéaire, sans
+mipmap, en espace gamma** (`ColorConvert.cpp:463`, `GlConvert.cpp:329`) — voir
+§28 du design. Pour choisir mieux, un banc à part : `mw-scaler-bench`, dans
+`backend/native-host/tools/scaler-bench/`, cible CMake optionnelle
+(`-DMW_BUILD_TOOLS=ON`, Windows seulement, jamais installée).
+
+Ce qu'il mesure, sur **chaque GPU de la machine** et pour chaque cas
+(4K → 1440p/1080p/720p, 1440p → 1080p/720p), en SDR et en HDR :
+
+- **le temps de la passe seule**, par timestamps GPU (`D3D11_QUERY_TIMESTAMP`
+  sous un `DISJOINT` par lot de 50, lot jeté si l'horloge a bougé), 300 runs
+  par candidat en tourniquet, moyenne tronquée 10 %/10 %, médiane, p95, min.
+  Exception : `VideoProcessorBlt` part sur une file que les timestamps 3D ne
+  voient pas (0 µs sur NVIDIA et Intel) — pour lui, chrono mur de l'appel à
+  l'événement de complétion, étiqueté « wall clock », **pas comparable** ;
+- **la qualité**, contre une référence CPU (Lanczos-3 en lumière linéaire,
+  noyau dilaté au ratio, double précision) : PSNR/SSIM sur le signal encodé
+  (sRGB, ou codes PQ en HDR) ; et le **test de défilement** : la source
+  bouge d'un pixel, la différence temporelle du candidat est projetée sur
+  celle de la référence → *gain de mouvement* (1 = idéal, moins = flou) et
+  *flicker* (énergie que le mouvement n'explique pas = aliasing, ce que
+  l'encodeur paie sans rien montrer ; 0 = idéal) ;
+- des **crops** (bords les plus chargés, texture, centre) avec loupe
+  synchronisée dans le rapport.
+
+Candidats : bilinéaire (= le host), bilinéaire + mipmaps, Catmull-Rom et
+Mitchell en 9 fetches (rayon fixe) et dilatés (vrais passe-bas), Lanczos-2/3
+fixes et dilatés — chacun en perceptuel et en linéaire (SRV `_SRGB`), fp32 et
+`min16float` ; FSR 1.0 EASU (± RCAS), NIS, SGSR1 tels que livrés par leur SDK
+(`tools/scaler-bench/third_party/`, MIT/BSD) ; et `ID3D11VideoProcessor` en
+trois réglages. Trois vérités du banc à connaître avant de lire :
+
+- **NIS refuse** : `NVScalerUpdateConfig` n'accepte que 0,5..1 (upscale) et
+  sa tuile en mémoire partagée est dimensionnée pour ça — rapporté
+  « unsupported », jamais exécuté hors contrat. FSR1 et SGSR1, eux, tournent
+  en réduction, et le rapport montre ce que ça donne (mal : ce sont des
+  upscalers sans passe-bas).
+- **FSR1 en fp16 sur NVIDIA** sort une image fausse (PSNR 20 dB contre 27 en
+  fp32 ; AMD et Intel donnent la même image dans les deux) : le chemin
+  `min16float` de fxc ne tient pas les astuces de paquetage half du header.
+  Le rapport le signale de lui-même dès qu'un fp16 diverge de son jumeau
+  fp32 de plus d'un dB.
+- Le fp16 n'est jamais plus rapide sur ces trois GPU de bureau — les
+  « fp16 honoured » du tableau des GPU disent que le pilote l'accepte, pas
+  qu'il en tire quelque chose.
+
+Source 1440p : `C:\Test\00_Background.png` (une mire de texte). Source 4K :
+`C:\Test\01_4K.png`, capture 4K de 0 A.D. (CC BY-SA 3.0, Wikimedia Commons,
+provenance dans `01_4K.txt` à côté), UI de jeu avec petit texte. Le HDR est
+synthétisé depuis le PNG : blanc SDR à 1.0, hautes lumières poussées à 10.0
+sur les 2 % les plus clairs, quatre pastilles à 4/8/12 et une grille 1 px.
+
+```
+cmake -S backend -B build -DMW_BUILD_TOOLS=ON …
+build\backend\native-host\tools\scaler-bench\mw-scaler-bench.exe
+    [--cases 1440p-1080p] [--adapters 0,2] [--variants bilinear,catmullrom9]
+    [--iterations 300] [--no-hdr] [--out C:\Test\scaler-bench\<date>]
+```
+
+Sortie : `results.json`, `crops/`, et `report.html` autonome (filtres GPU /
+cas / gamme / espace / précision, barres temps sur axe log, barres qualité au
+choix de la métrique, nuage qualité × temps, galerie, tableau + CSV). Les
+shaders sont lus à côté de l'exe (`scaler-bench/shaders/`) : un filtre se
+retouche et se relance sans rebuild.
+
 ## 9. Pour l'A/B
 
 Le banc encode vers un puits ; l'A/B se fait sur un vrai flux. Une session

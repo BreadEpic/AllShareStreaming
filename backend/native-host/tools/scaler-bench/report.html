@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Scaler bench</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --ink: #1c1f24; --muted: #667085; --line: #e3e6ea;
+    --accent: #3d6bff; --ok: #1a9c5a; --warn: #d9821a; --bad: #d0343a;
+    --c0: #3d6bff; --c1: #e8593c; --c2: #1a9c5a; --c3: #9b51e0; --c4: #d9a21a; --c5: #17a2b8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #14161a; --panel: #1d2026; --ink: #e9ebef; --muted: #98a2b3; --line: #2e333b;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #14161a; --panel: #1d2026; --ink: #e9ebef; --muted: #98a2b3; --line: #2e333b;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 1400px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 16px; margin: 28px 0 8px; }
+  .sub { color: var(--muted); font-size: 13px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-top: 12px; }
+  .controls { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; }
+  .controls label { display: inline-flex; gap: 6px; align-items: center; font-size: 13px; color: var(--muted); }
+  select, button { font: inherit; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { padding: 5px 8px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
+  th { color: var(--muted); font-weight: 600; cursor: pointer; user-select: none; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .tag { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 11px; background: var(--line); color: var(--muted); }
+  .tag.unsupported { background: #fde9c9; color: #8a5200; }
+  .tag.failed { background: #fbdcdc; color: #8a1a1a; }
+  svg text { fill: var(--ink); font: 12px system-ui, sans-serif; }
+  svg .axis { stroke: var(--line); }
+  svg .grid { stroke: var(--line); stroke-dasharray: 2 3; }
+  svg .lbl { fill: var(--muted); font-size: 11px; }
+  svg .bar { cursor: pointer; }
+  svg .bar:hover { opacity: 0.8; }
+  svg .dot { cursor: pointer; stroke: var(--panel); stroke-width: 1.5; }
+  svg .dot:hover { stroke: var(--ink); }
+  #tip { position: fixed; pointer-events: none; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 12px; box-shadow: 0 6px 24px rgba(0,0,0,.18); display: none; z-index: 10; max-width: 420px; }
+  #tip b { display: block; margin-bottom: 3px; }
+  #tip .crops { display: flex; gap: 4px; margin-top: 6px; }
+  #tip .crops img { width: 120px; height: 75px; image-rendering: pixelated; border: 1px solid var(--line); }
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--muted); margin: 6px 0; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+  .gallery { overflow-x: auto; }
+  .gallery table td { padding: 3px; vertical-align: top; }
+  .crop { width: 160px; height: 100px; background-size: 100% 100%; background-repeat: no-repeat; image-rendering: pixelated; border: 1px solid var(--line); border-radius: 3px; cursor: crosshair; }
+  .crop.src { background-size: contain; background-color: #000; }
+  .cap { font-size: 11px; color: var(--muted); max-width: 160px; white-space: normal; line-height: 1.25; }
+  .msgs li { margin: 2px 0; }
+  .muted { color: var(--muted); }
+  code { font: 12px ui-monospace, Consolas, monospace; background: var(--line); padding: 1px 4px; border-radius: 3px; }
+  .note { font-size: 12px; color: var(--muted); margin-top: 6px; }
+  @media (max-width: 700px) { main { padding: 12px 16px; } .crop { width: 120px; height: 75px; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Scaler bench</h1>
+  <div class="sub" id="head"></div>
+
+  <div class="panel">
+    <h2 style="margin-top:0">Machine</h2>
+    <table id="gpus"></table>
+    <ul class="msgs" id="messages"></ul>
+  </div>
+
+  <div class="panel">
+    <div class="controls">
+      <label>Case <select id="selCase"></select></label>
+      <label>Range <select id="selRange"></select></label>
+      <label>Space <select id="selSpace"><option value="">all</option><option>perceptual</option><option>linear</option><option>driver</option></select></label>
+      <label>Precision <select id="selPrec"><option value="">all</option><option>fp32</option><option>fp16</option><option>driver</option></select></label>
+      <label>Quality metric <select id="selMetric">
+        <option value="flicker">scroll flicker (aliasing energy, 0 = none)</option>
+        <option value="motionGain">scroll motion gain (1 = ideal, lower = blur)</option>
+        <option value="temporalPsnr">scroll fidelity (dB)</option>
+        <option value="ssimY">SSIM (luma)</option>
+        <option value="psnrY">PSNR luma (dB)</option>
+        <option value="psnrRgb">PSNR RGB (dB)</option>
+        <option value="hf">HF energy ratio</option>
+      </select></label>
+      <label>Time <select id="selTime"><option value="trimmed">trimmed mean</option><option value="median">median</option><option value="p95">p95</option><option value="min">min</option></select></label>
+      <span id="gpuChecks"></span>
+    </div>
+    <div class="note" id="srcNote"></div>
+  </div>
+
+  <div class="panel">
+    <h2 style="margin-top:0">Time of the pass (µs) — lower is better</h2>
+    <div class="legend" id="legendTime"></div>
+    <div id="chartTime"></div>
+    <div class="note">GPU timestamps around the pass alone, per run; the batch is thrown away when the clock was disjoint. Hover a bar for the median, p95, min and count.</div>
+  </div>
+
+  <div class="panel">
+    <h2 style="margin-top:0">Quality — <span id="metricName"></span></h2>
+    <div id="chartQuality"></div>
+    <div class="note" id="metricNote"></div>
+  </div>
+
+  <div class="panel">
+    <h2 style="margin-top:0">Quality vs time</h2>
+    <div class="legend" id="legendScatter"></div>
+    <div id="chartScatter"></div>
+    <div class="note">One point per candidate per GPU; time on a log axis. Up and to the left is the corner to be in — for the flicker metric it is down and to the left, and for the motion gain the line at 1. The video processor's time is wall clock (call to completion), not a GPU timestamp, so its position on the time axis is not comparable. Hover a point for its crops.</div>
+  </div>
+
+  <div class="panel">
+    <h2 style="margin-top:0">Crops</h2>
+    <div class="note">Rows: the three windows picked on the reference (busiest edges, busiest texture, centre). Move the mouse over any crop to magnify the same spot on every crop of the row; the source column shows the same window before scaling. Crops come from the crop GPU only; HDR crops are the PQ codes shown as-is (dark is expected).</div>
+    <div class="gallery" id="gallery"></div>
+  </div>
+
+  <div class="panel">
+    <h2 style="margin-top:0">All results <button id="csv">export CSV</button></h2>
+    <div style="overflow-x:auto"><table id="table"></table></div>
+  </div>
+</main>
+<div id="tip"></div>
+
+<script>
+const DATA = /*__RESULTS_JSON__*/null;
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const fmt = (v, d = 1) => (v == null || !isFinite(v)) ? '—' : Number(v).toFixed(d);
+const COLORS = ['var(--c0)', 'var(--c1)', 'var(--c2)', 'var(--c3)', 'var(--c4)', 'var(--c5)'];
+const METRIC_NOTES = {
+  flicker: 'The source moves by one pixel. The candidate\'s frame-to-frame change is split into the part explained by the reference\'s motion and the rest; this is the rest, as a share of the reference\'s motion energy. It is the shimmer text shows when it scrolls and the residual the encoder pays for that carries no picture. 0 is none; lower is better.',
+  motionGain: 'How much of the ideal filter\'s motion the candidate reproduces: 1 is the ideal; below it, the output moves less than the picture did — detail lost to blur.',
+  temporalPsnr: 'PSNR between the candidate\'s frame-to-frame difference and the reference\'s, for a one-pixel scroll of the source. Higher is a truer motion; it punishes both flicker and blur.',
+  ssimY: 'Structural similarity of the luma against the CPU reference (Lanczos-3 in linear light), on the encoded signal.',
+  psnrY: 'PSNR of the luma against the CPU reference, on the encoded signal. Favours candidates that filter in linear light, by construction.',
+  psnrRgb: 'PSNR over the three channels against the CPU reference.',
+  hf: 'Share of the AC energy above 0.8 × output Nyquist. Higher is sharper — or more aliased; read it next to the phase figure. The reference\'s own value is shown as a line.'
+};
+
+if (!DATA) { document.body.innerHTML = '<main><p>No results in this page.</p></main>'; throw new Error('no data'); }
+
+const variantById = Object.fromEntries(DATA.variants.map(v => [v.id, v]));
+const caseById = Object.fromEntries(DATA.cases.map(c => [c.id, c]));
+let state = { gpus: new Set(DATA.gpus.map(g => g.index)) };
+
+// ── Header ──
+$('head').innerHTML = `${esc(DATA.date)} · <code>${esc(DATA.commandLine)}</code> · ${DATA.iterations} runs per candidate, batches of ${DATA.batch}, trimmed mean cuts ${Math.round(DATA.trim*100)} % each end`;
+$('gpus').innerHTML = '<tr><th>#</th><th>GPU</th><th>Driver</th><th>Feature level</th><th>fp16</th><th>Display</th><th class="num">VRAM</th></tr>' +
+  DATA.gpus.map(g => `<tr><td>${g.index}</td><td>${esc(g.name)}</td><td>${esc(g.driver)}</td><td>${esc(g.featureLevel)}</td><td>${g.fp16 ? 'honoured' : '<span class="tag unsupported">ignored → fp32</span>'}</td><td>${g.displayGpu ? 'yes' : ''}</td><td class="num">${g.vramMb} MB</td></tr>`).join('');
+$('messages').innerHTML = [...DATA.skippedGpus, ...DATA.messages].map(m => `<li class="muted">${esc(m)}</li>`).join('');
+
+// ── Controls ──
+for (const c of DATA.cases) {
+  const has = DATA.results.some(r => r.case === c.id);
+  const o = document.createElement('option'); o.value = c.id; o.textContent = c.label + (has ? '' : ' (no picture)'); o.disabled = !has;
+  $('selCase').appendChild(o);
+}
+const firstCase = DATA.cases.find(c => DATA.results.some(r => r.case === c.id));
+if (firstCase) $('selCase').value = firstCase.id;
+for (const r of ['sdr', 'hdr']) { if (DATA.results.some(x => x.range === r)) { const o = document.createElement('option'); o.value = r; o.textContent = r.toUpperCase(); $('selRange').appendChild(o); } }
+$('gpuChecks').innerHTML = DATA.gpus.map((g, i) => `<label><input type="checkbox" data-gpu="${g.index}" checked> <i class="sw" style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${COLORS[i % COLORS.length]}"></i>${esc(g.name)}</label>`).join('');
+$('gpuChecks').addEventListener('change', (e) => { const i = +e.target.dataset.gpu; if (e.target.checked) state.gpus.add(i); else state.gpus.delete(i); render(); });
+for (const id of ['selCase', 'selRange', 'selSpace', 'selPrec', 'selMetric', 'selTime']) $(id).addEventListener('change', render);
+
+// ── Tooltip ──
+const tip = $('tip');
+function showTip(e, html) { tip.innerHTML = html; tip.style.display = 'block'; moveTip(e); }
+function moveTip(e) { const w = tip.offsetWidth, h = tip.offsetHeight; let x = e.clientX + 14, y = e.clientY + 14; if (x + w > innerWidth - 8) x = e.clientX - w - 14; if (y + h > innerHeight - 8) y = e.clientY - h - 14; tip.style.left = x + 'px'; tip.style.top = y + 'px'; }
+function hideTip() { tip.style.display = 'none'; }
+document.addEventListener('mousemove', (e) => { if (tip.style.display === 'block') moveTip(e); });
+
+function resultTip(r, gpu) {
+  const v = variantById[r.variant];
+  const t = r.time || {}, q = r.quality || {};
+  return `<b>${esc(v.label)} <span class="muted">· ${esc(v.space)} · ${esc(v.precision)}</span></b>` +
+    `<div class="muted">${esc(gpu.name)}${r.notes ? ' · ' + esc(r.notes) : ''}</div>` +
+    (r.time ? `<div>trimmed <b style="display:inline">${fmt(t.trimmed)} µs</b> · median ${fmt(t.median)} · p95 ${fmt(t.p95)} · min ${fmt(t.min)} · n ${t.n}${t.discarded ? ' · ' + t.discarded + ' batch(es) discarded' : ''}${t.method === 'wall-clock' ? ' · <span style="color:var(--warn)">wall clock, call to completion (not comparable to the timestamp figures)</span>' : ''}</div>` : '') +
+    (r.quality ? `<div>flicker ${fmt(q.flicker, 4)} · gain ${fmt(q.motionGain, 3)} · scroll ${fmt(q.temporalPsnr, 1)} dB · SSIM ${fmt(q.ssimY, 4)} · PSNR Y ${fmt(q.psnrY, 2)} · RGB ${fmt(q.psnrRgb, 2)} · HF ${fmt(q.hf, 4)}</div>` : '') +
+    (r.crops && r.crops.length ? `<div class="crops">${r.crops.map(c => `<img src="${esc(c)}">`).join('')}</div>` : '') +
+    `<div class="muted" style="margin-top:4px">${esc(v.note)}</div>`;
+}
+
+// ── Selection ──
+function selected() {
+  const caseId = $('selCase').value, range = $('selRange').value, space = $('selSpace').value, prec = $('selPrec').value;
+  const rows = DATA.results.filter(r => r.case === caseId && r.range === range && state.gpus.has(r.gpu))
+    .filter(r => { const v = variantById[r.variant]; return (!space || v.space === space) && (!prec || v.precision === prec); });
+  return { caseId, range, rows };
+}
+
+// ── Charts ──
+function barChart(container, items, opts) {
+  // items: [{label, sub, series:[{gpu, value, tip}]}], values ≥ 0 (or null)
+  const gpus = DATA.gpus.filter(g => state.gpus.has(g.index));
+  const rowH = Math.max(16, 8 + 12 * Math.max(1, gpus.length)), left = 250, right = 60, top = 8, width = Math.max(700, container.clientWidth || 900);
+  const height = top + items.length * rowH + 30;
+  const values = items.flatMap(i => i.series.map(s => s.value)).filter(v => v != null && isFinite(v));
+  const max = opts.max ?? (values.length ? Math.max(...values) : 1) * 1.05, min = opts.min ?? 0;
+  const log = opts.log && min > 0;
+  const x = (v) => left + (log ? (Math.log10(v) - Math.log10(min)) / (Math.log10(max) - Math.log10(min)) : (v - min) / (max - min)) * (width - left - right);
+  let svg = `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`;
+  const ticks = log ? [] : Array.from({length: 6}, (_, i) => min + (max - min) * i / 5);
+  for (const t of ticks) svg += `<line class="grid" x1="${x(t)}" x2="${x(t)}" y1="${top}" y2="${height - 24}"/><text class="lbl" x="${x(t)}" y="${height - 8}" text-anchor="middle">${fmt(t, opts.dec ?? 0)}</text>`;
+  items.forEach((it, i) => {
+    const y0 = top + i * rowH;
+    svg += `<text x="${left - 8}" y="${y0 + rowH / 2 + 4}" text-anchor="end">${esc(it.label)}</text>`;
+    if (it.sub) svg += `<text class="lbl" x="${left - 8}" y="${y0 + rowH / 2 + 15}" text-anchor="end" style="font-size:9px">${esc(it.sub)}</text>`;
+    const bh = (rowH - 6) / Math.max(1, gpus.length);
+    it.series.forEach((s) => {
+      const gi = gpus.findIndex(g => g.index === s.gpu);
+      if (gi < 0) return;
+      const y = y0 + 3 + gi * bh;
+      if (s.value == null || !isFinite(s.value)) { svg += `<text class="lbl" x="${left + 4}" y="${y + bh - 1}" style="font-size:10px">${esc(s.status || '—')}</text>`; return; }
+      const w = Math.max(1, x(Math.max(s.value, log ? min : 0)) - left);
+      svg += `<rect class="bar" data-i="${i}" data-g="${s.gpu}" x="${left}" y="${y}" width="${w}" height="${Math.max(2, bh - 1)}" fill="${COLORS[gi % COLORS.length]}" rx="2"/>`;
+      svg += `<text class="lbl" x="${left + w + 4}" y="${y + bh - 1}" style="font-size:10px">${fmt(s.value, opts.dec ?? 0)}</text>`;
+    });
+  });
+  if (opts.refLine != null && isFinite(opts.refLine)) svg += `<line x1="${x(opts.refLine)}" x2="${x(opts.refLine)}" y1="${top}" y2="${height - 24}" stroke="var(--bad)" stroke-dasharray="4 3"/><text class="lbl" x="${x(opts.refLine) + 3}" y="${top + 10}" fill="var(--bad)">reference</text>`;
+  svg += '</svg>';
+  container.innerHTML = svg;
+  container.querySelectorAll('.bar').forEach(el => {
+    const it = items[+el.dataset.i], s = it.series.find(s => s.gpu === +el.dataset.g);
+    el.addEventListener('mouseenter', (e) => showTip(e, s.tip)); el.addEventListener('mouseleave', hideTip);
+  });
+}
+
+function legend(container) {
+  container.innerHTML = DATA.gpus.filter(g => state.gpus.has(g.index)).map((g, i) => `<span><i style="background:${COLORS[DATA.gpus.filter(x => state.gpus.has(x.index)).indexOf(g) % COLORS.length]}"></i>${esc(g.name)}</span>`).join('');
+}
+
+function variantOrder(rows) {
+  // Variants present, ordered by the DATA.variants order.
+  const present = new Set(rows.map(r => r.variant));
+  return DATA.variants.filter(v => present.has(v.id));
+}
+
+function render() {
+  const { caseId, range, rows } = selected();
+  const timeKey = $('selTime').value, metric = $('selMetric').value;
+  const gpus = DATA.gpus.filter(g => state.gpus.has(g.index));
+  const src = DATA.sources.find(s => s.case === caseId && s.range === range);
+  const c = caseById[caseId];
+  $('srcNote').textContent = c ? `${c.src[0]}×${c.src[1]} → ${c.dst[0]}×${c.dst[1]} (ratio ${(c.src[0] / c.dst[0]).toFixed(3)}; the scroll test moves the source by 1 px) · ${c.source}` + (src ? ` · ${src.description}` : '') : '';
+  $('metricName').textContent = $('selMetric').selectedOptions[0].textContent;
+  $('metricNote').textContent = METRIC_NOTES[metric];
+  legend($('legendTime')); legend($('legendScatter'));
+
+  const variants = variantOrder(rows);
+  const byKey = {}; for (const r of rows) byKey[r.variant + '|' + r.gpu] = r;
+  const gpuById = Object.fromEntries(DATA.gpus.map(g => [g.index, g]));
+  const sub = (v) => [v.space, v.precision].filter(s => s !== 'driver').join(' · ');
+
+  // Time: sorted by the best time across the selected GPUs.
+  const timeItems = variants.map(v => ({
+    v, label: v.label, sub: sub(v) + (v.kind === 'videoprocessor' ? ' · wall clock' : ''),
+    series: gpus.map(g => { const r = byKey[v.id + '|' + g.index]; return { gpu: g.index, value: r && r.time ? r.time[timeKey] : null, status: r ? r.status : 'n/a', tip: r ? resultTip(r, g) : '' }; })
+  }));
+  timeItems.sort((a, b) => { const va = Math.min(...a.series.map(s => s.value ?? Infinity)), vb = Math.min(...b.series.map(s => s.value ?? Infinity)); return va - vb; });
+  // Log axis: the iGPU's 6 ms next to the RTX's 16 µs would flatten the rest.
+  const tv = timeItems.flatMap(i => i.series.map(s => s.value)).filter(v => v != null && v > 0);
+  barChart($('chartTime'), timeItems, { dec: 0, log: true, min: Math.max(1, Math.min(...tv) / 1.5), max: Math.max(...tv) * 1.3 });
+
+  // Quality.
+  const qItems = variants.map(v => ({
+    v, label: v.label, sub: sub(v),
+    series: gpus.map(g => { const r = byKey[v.id + '|' + g.index]; return { gpu: g.index, value: r && r.quality ? r.quality[metric] : null, status: r ? r.status : 'n/a', tip: r ? resultTip(r, g) : '' }; })
+  }));
+  // Best first: lowest flicker, gain closest to 1, highest for the rest.
+  const score = (s) => s.value == null ? -Infinity : (metric === 'flicker' ? -s.value : (metric === 'motionGain' ? -Math.abs(s.value - 1) : s.value));
+  qItems.sort((a, b) => Math.max(...b.series.map(score)) - Math.max(...a.series.map(score)));
+  const qOpts = { dec: metric === 'ssimY' || metric === 'hf' || metric === 'motionGain' ? 3 : (metric === 'flicker' ? 4 : 1) };
+  if (metric === 'ssimY') { const vals = qItems.flatMap(i => i.series.map(s => s.value)).filter(v => v != null); qOpts.min = Math.max(0, Math.floor((Math.min(...vals) - 0.02) * 50) / 50); qOpts.max = 1; }
+  if (metric === 'hf' && src) qOpts.refLine = src.referenceHf;
+  if (metric === 'motionGain') qOpts.refLine = 1;
+  barChart($('chartQuality'), qItems, qOpts);
+
+  // Scatter.
+  scatter(rows, gpus, gpuById, timeKey, metric);
+
+  // Gallery.
+  gallery(rows, src, variants);
+
+  // Table.
+  table(rows, gpuById);
+}
+
+function scatter(rows, gpus, gpuById, timeKey, metric) {
+  const pts = rows.filter(r => r.time && r.quality && isFinite(r.quality[metric]) && r.time[timeKey] > 0);
+  const width = Math.max(700, $('chartScatter').clientWidth || 900), height = 420, left = 60, right = 20, top = 16, bottom = 40;
+  if (!pts.length) { $('chartScatter').innerHTML = '<div class="muted">nothing to plot</div>'; return; }
+  const xs = pts.map(p => p.time[timeKey]), ys = pts.map(p => p.quality[metric]);
+  const xmin = Math.min(...xs) / 1.3, xmax = Math.max(...xs) * 1.3;
+  let ymin = Math.min(...ys), ymax = Math.max(...ys); const pad = (ymax - ymin) * 0.08 || 1; ymin -= pad; ymax += pad;
+  const x = (v) => left + (Math.log10(v) - Math.log10(xmin)) / (Math.log10(xmax) - Math.log10(xmin)) * (width - left - right);
+  const y = (v) => top + (1 - (v - ymin) / (ymax - ymin)) * (height - top - bottom);
+  let svg = `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`;
+  for (let e = Math.floor(Math.log10(xmin)); e <= Math.ceil(Math.log10(xmax)); e++) for (const m of [1, 2, 5]) { const v = m * Math.pow(10, e); if (v < xmin || v > xmax) continue; svg += `<line class="grid" x1="${x(v)}" x2="${x(v)}" y1="${top}" y2="${height - bottom}"/><text class="lbl" x="${x(v)}" y="${height - bottom + 14}" text-anchor="middle">${v >= 1000 ? (v / 1000) + ' ms' : v + ' µs'}</text>`; }
+  for (let i = 0; i <= 5; i++) { const v = ymin + (ymax - ymin) * i / 5; svg += `<line class="grid" x1="${left}" x2="${width - right}" y1="${y(v)}" y2="${y(v)}"/><text class="lbl" x="${left - 6}" y="${y(v) + 4}" text-anchor="end">${fmt(v, metric === 'ssimY' || metric === 'hf' || metric === 'motionGain' ? 3 : (metric === 'flicker' ? 4 : 1))}</text>`; }
+  if (metric === 'motionGain' && ymin < 1 && ymax > 1) svg += `<line x1="${left}" x2="${width - right}" y1="${y(1)}" y2="${y(1)}" stroke="var(--bad)" stroke-dasharray="4 3"/><text class="lbl" x="${width - right - 4}" y="${y(1) - 4}" text-anchor="end" fill="var(--bad)">ideal = 1</text>`;
+  svg += `<text class="lbl" x="${width / 2}" y="${height - 4}" text-anchor="middle">time of the pass (log)</text>`;
+  pts.forEach((p, i) => { const gi = gpus.findIndex(g => g.index === p.gpu); svg += `<circle class="dot" data-i="${i}" cx="${x(p.time[timeKey])}" cy="${y(p.quality[metric])}" r="6" fill="${COLORS[gi % COLORS.length]}"/>`; });
+  // Labels for the best few in each direction, kept short.
+  const labelled = [...pts].sort((a, b) => b.quality[metric] - a.quality[metric]).slice(0, 6).concat([...pts].sort((a, b) => a.time[timeKey] - b.time[timeKey]).slice(0, 4));
+  for (const p of new Set(labelled)) svg += `<text class="lbl" x="${x(p.time[timeKey]) + 8}" y="${y(p.quality[metric]) - 6}" style="font-size:10px">${esc(variantById[p.variant].label)}</text>`;
+  svg += '</svg>';
+  $('chartScatter').innerHTML = svg;
+  $('chartScatter').querySelectorAll('.dot').forEach(el => { const p = pts[+el.dataset.i]; el.addEventListener('mouseenter', (e) => showTip(e, resultTip(p, gpuById[p.gpu]))); el.addEventListener('mouseleave', hideTip); });
+}
+
+function gallery(rows, src, variants) {
+  const g = $('gallery');
+  if (!src || !src.regions.length) { g.innerHTML = '<div class="muted">no crops for this selection</div>'; return; }
+  const withCrops = variants.filter(v => rows.some(r => r.variant === v.id && r.crops && r.crops.length));
+  const rowFor = (v) => rows.find(r => r.variant === v.id && r.crops && r.crops.length);
+  let html = '<table><tr><th></th><th>source</th><th>reference</th>' + withCrops.map(v => `<th><div class="cap"><b>${esc(v.label)}</b><br>${esc([v.space, v.precision].filter(s => s !== 'driver').join(' · '))}</div></th>`).join('') + '</tr>';
+  src.regions.forEach((reg, i) => {
+    html += `<tr data-row="${i}"><td class="cap">${esc(reg.tag)}<br>${reg.x},${reg.y}</td>`;
+    html += `<td><div class="crop src" style="background-image:url('${esc(src.sourceCrops[i] || '')}')"></div></td>`;
+    html += `<td><div class="crop" style="background-image:url('${esc(src.referenceCrops[i] || '')}')"></div></td>`;
+    for (const v of withCrops) { const r = rowFor(v); const p = r.crops[i]; html += `<td><div class="crop" style="background-image:url('${esc(p || '')}')"></div>${r.quality ? `<div class="cap">flicker ${fmt(r.quality.flicker, 4)} · gain ${fmt(r.quality.motionGain, 2)} · SSIM ${fmt(r.quality.ssimY, 3)}</div>` : ''}</td>`; }
+    html += '</tr>';
+  });
+  html += '</table>';
+  g.innerHTML = html;
+  // Synchronised magnifier: the pointer's position in one crop drives the
+  // background of every crop of the row.
+  g.querySelectorAll('tr[data-row]').forEach(tr => {
+    const crops = [...tr.querySelectorAll('.crop:not(.src)')];
+    const srcCrop = tr.querySelector('.crop.src');
+    tr.addEventListener('mousemove', (e) => {
+      const el = e.target.closest('.crop'); if (!el) return;
+      const b = el.getBoundingClientRect(); const px = (e.clientX - b.left) / b.width * 100, py = (e.clientY - b.top) / b.height * 100;
+      for (const c of crops) { c.style.backgroundSize = '400% 400%'; c.style.backgroundPosition = `${px}% ${py}%`; }
+      if (srcCrop) { srcCrop.style.backgroundSize = '400% auto'; srcCrop.style.backgroundPosition = `${px}% ${py}%`; }
+    });
+    tr.addEventListener('mouseleave', () => { for (const c of crops) { c.style.backgroundSize = '100% 100%'; c.style.backgroundPosition = '0 0'; } if (srcCrop) { srcCrop.style.backgroundSize = 'contain'; srcCrop.style.backgroundPosition = '0 0'; } });
+  });
+}
+
+let sortKey = 'time', sortDir = 1;
+function table(rows, gpuById) {
+  const cols = [['gpu', 'GPU'], ['variant', 'Candidate'], ['space', 'Space'], ['precision', 'Precision'], ['status', 'Status'], ['time', 'trimmed µs', 1], ['median', 'median', 1], ['p95', 'p95', 1], ['flicker', 'flicker', 1], ['motionGain', 'gain', 1], ['temporalPsnr', 'scroll dB', 1], ['ssimY', 'SSIM', 1], ['psnrY', 'PSNR Y', 1], ['psnrRgb', 'PSNR RGB', 1], ['hf', 'HF', 1], ['notes', 'Notes']];
+  const flat = rows.map(r => { const v = variantById[r.variant]; return { gpu: gpuById[r.gpu].name, variant: v.label, space: v.space, precision: v.precision, status: r.status, time: r.time?.trimmed, median: r.time?.median, p95: r.time?.p95, flicker: r.quality?.flicker, motionGain: r.quality?.motionGain, temporalPsnr: r.quality?.temporalPsnr, ssimY: r.quality?.ssimY, psnrY: r.quality?.psnrY, psnrRgb: r.quality?.psnrRgb, hf: r.quality?.hf, notes: r.reason || r.notes || '' }; });
+  flat.sort((a, b) => { const x = a[sortKey], y = b[sortKey]; if (x == null) return 1; if (y == null) return -1; return (x < y ? -1 : x > y ? 1 : 0) * sortDir; });
+  let html = '<tr>' + cols.map(c => `<th class="${c[2] ? 'num' : ''}" data-k="${c[0]}">${c[1]}${sortKey === c[0] ? (sortDir > 0 ? ' ▲' : ' ▼') : ''}</th>`).join('') + '</tr>';
+  for (const f of flat) html += '<tr>' + cols.map(c => c[2] ? `<td class="num">${fmt(f[c[0]], c[0] === 'ssimY' || c[0] === 'hf' || c[0] === 'flicker' ? 4 : (c[0] === 'motionGain' ? 3 : 1))}</td>` : `<td>${c[0] === 'status' ? `<span class="tag ${esc(f.status)}">${esc(f.status)}</span>` : esc(f[c[0]])}</td>`).join('') + '</tr>';
+  $('table').innerHTML = html;
+  $('table').querySelectorAll('th').forEach(th => th.addEventListener('click', () => { const k = th.dataset.k; if (sortKey === k) sortDir = -sortDir; else { sortKey = k; sortDir = 1; } render(); }));
+  $('csv').onclick = () => {
+    const lines = [cols.map(c => c[1]).join(',')].concat(flat.map(f => cols.map(c => JSON.stringify(f[c[0]] ?? '')).join(',')));
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([lines.join('\n')], { type: 'text/csv' })); a.download = `scaler-bench-${$('selCase').value}-${$('selRange').value}.csv`; a.click();
+  };
+}
+
+render();
+addEventListener('resize', render);
+</script>
+</body>
+</html>

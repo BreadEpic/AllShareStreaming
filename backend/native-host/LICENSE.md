@@ -37,6 +37,24 @@ explicite, faute de quoi la propriété ci-dessus est perdue.
 | ViGEmClient | BSD-3-Clause |
 | SDK Windows / Apple | Licence du SDK correspondant |
 
+### Hors frontière : `tools/` (instruments de labo, jamais distribués)
+
+`tools/scaler-bench/` est un banc de shaders D3D11 qui sert à **décider** du
+filtre de réduction du host ; il n'est ni lié à `mw-native-host`, ni installé,
+ni livré (option CMake `MW_BUILD_TOOLS`, OFF par défaut), et
+`cmake/boundary_check.cmake` ne le scanne pas. Il embarque, à côté de leur
+licence, les shaders de trois SDK constructeurs pour les comparer aux nôtres :
+
+| Dépendance du banc | Licence |
+|---|---|
+| AMD FidelityFX FSR 1.0 (`ffx_a.h`, `ffx_fsr1.h`) | MIT |
+| NVIDIA Image Scaling 1.0.3 (`NIS_Scaler.h`, `NIS_Config.h`) | MIT |
+| Qualcomm Snapdragon GSR 1 (`sgsr1_mobile.h`) | BSD-3-Clause |
+
+Aucun de ces fichiers ne doit entrer dans `src/` : le filtre retenu est
+réécrit dans `ColorConvert.cpp` / `GlConvert.cpp` par nous, sous notre
+copyright.
+
 `libdrm.so.2`, `libva.so.2`, `libva-drm.so.2` et `libpipewire-0.3.so.0` sont les
 **seules** bibliothèques système que l'hôte Linux lie — la liste est celle que
 `readelf -d` donne sur le binaire installé, pas celle qu'on espère — et

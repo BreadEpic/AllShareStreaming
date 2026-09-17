@@ -421,3 +421,13 @@ if(MW_BUILD_TESTS)
                      -DMW_NATIVE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
                      -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/boundary_check.cmake)
 endif()
+
+# ── Lab tools ───────────────────────────────────────────────────────────────
+# Instruments for deciding things about the engine, never shipped: off by
+# default, outside the library's licence boundary (tools/ is not scanned, and
+# nothing here links into mw-native-host). Windows only for now — the one tool
+# is a D3D11 shader bench.
+option(MW_BUILD_TOOLS "Build the native host's lab tools (scaler bench)" OFF)
+if(MW_BUILD_TOOLS AND WIN32)
+    add_subdirectory(tools/scaler-bench)
+endif()
