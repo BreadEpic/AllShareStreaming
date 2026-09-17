@@ -169,6 +169,8 @@
         "turnedOff": "Statistiques désactivées.",
         "choiceSaveFailed": "Ce choix n’a pas pu être enregistré.",
         "settingsTitle": "Confidentialité",
+        "remoteOn": "Cet ordinateur envoie des statistiques anonymes sur les flux qu'il diffuse, y compris celui-ci.",
+        "remoteOff": "Cet ordinateur n'envoie aucune statistique sur les flux qu'il diffuse.",
         "ownerOnly": "Seule la machine sur laquelle tourne MoonlightWeb peut modifier cette réponse.",
         "cookiesButton": "Cookies",
         "playerTitle": "Cookies et confidentialité",

@@ -169,6 +169,8 @@
         "turnedOff": "统计已关闭。",
         "choiceSaveFailed": "无法保存该选择。",
         "settingsTitle": "隐私",
+        "remoteOn": "这台电脑会发送关于它所运行的串流的匿名统计，包括本次串流。",
+        "remoteOff": "这台电脑不会发送任何关于它所运行的串流的统计。",
         "ownerOnly": "只有运行 MoonlightWeb 的那台机器可以修改这个选择。",
         "cookiesButton": "Cookie",
         "playerTitle": "Cookie 与隐私",

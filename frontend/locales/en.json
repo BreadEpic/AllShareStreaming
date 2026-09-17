@@ -169,6 +169,8 @@
         "turnedOff": "Statistics are off.",
         "choiceSaveFailed": "Could not save that choice.",
         "settingsTitle": "Privacy",
+        "remoteOn": "This computer sends anonymous statistics about the streams it runs, including this one.",
+        "remoteOff": "This computer sends no statistics about the streams it runs.",
         "ownerOnly": "Only the machine this runs on can change that answer.",
         "cookiesButton": "Cookies",
         "playerTitle": "Cookies & privacy",

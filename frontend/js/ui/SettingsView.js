@@ -220,26 +220,46 @@ export class SettingsView {
      * The privacy block: what leaves this machine, and the switch that stops
      * it. Absent only when the backend would not say — claiming "nothing is
      * sent" without having asked would be the one unacceptable answer.
+     *
+     * Three shapes, and the middle one is the one that is easy to get wrong:
+     *
+     *   - no reporting credentials (anything self-compiled): a statement, since
+     *     a switch that changes nothing would be a lie;
+     *   - somebody else's browser: a statement too. A ticked box nobody can
+     *     untick reads as a setting imposed on the reader, when it is in fact a
+     *     fact about a machine that is not theirs. So they are told what that
+     *     machine does, in a sentence, and why the answer is not theirs;
+     *   - the machine itself: the switch.
+     *
+     * Nothing here is a consent gate for the reader. The census carries no
+     * field that identifies anyone, it is emitted by the host and never by this
+     * page, and this browser stores nothing for it — so a per-browser answer
+     * would have to invent an identifier for a visitor in order to remember it,
+     * which is the opposite of the point. See PrivacyNotice.js for the text.
      */
     _renderPrivacySection() {
         if (!this._statsLoaded) return '';
 
-        // A build with no reporting credentials (anything self-compiled) sends
-        // nothing whatever anyone ticks, so it gets the statement instead of a
-        // switch that would be a lie.
-        const control = !this._statsAvailable
-            ? `<p class="setting-desc">${t('stats.unavailable')}</p>`
-            : `
+        let control;
+        if (!this._statsAvailable) {
+            control = `<p class="setting-desc">${t('stats.unavailable')}</p>`;
+        } else if (!this._statsWritable) {
+            control = `
+                    <div class="settings-field">
+                        <p class="setting-desc">${this._statsGranted ? t('stats.remoteOn') : t('stats.remoteOff')}</p>
+                        <p class="setting-desc">${t('stats.ownerOnly')}</p>
+                    </div>`;
+        } else {
+            control = `
                     <div class="settings-field">
                         <label class="settings-checkbox-label">
                             <input type="checkbox" id="settings-stats-consent"
-                                   ${this._statsGranted ? 'checked' : ''}
-                                   ${this._statsWritable ? '' : 'disabled'} />
+                                   ${this._statsGranted ? 'checked' : ''} />
                             <span class="settings-checkbox-text">${t('stats.toggle')}</span>
                         </label>
                         <p class="setting-desc">${t('stats.toggleDesc')}</p>
-                        ${this._statsWritable ? '' : `<p class="setting-desc">${t('stats.ownerOnly')}</p>`}
                     </div>`;
+        }
 
         return `
                 <div class="settings-section" id="settings-section-privacy">

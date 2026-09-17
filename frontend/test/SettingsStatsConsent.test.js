@@ -69,12 +69,28 @@ describe('SettingsView privacy section', () => {
     // The whole reason it moved out of Admin: a signed-in user on another
     // machine gets to read what is counted about their streams. What they do
     // not get is the answer — that speaks for the machine, not for them.
-    it('shows a remote user the same disclosure, with the switch locked', async () => {
+    //
+    // And it is stated, never shown as a control: a ticked box nobody can
+    // untick reads as a setting forced on the reader, which is the one thing
+    // this section must not do.
+    it('tells a remote user what the machine does, with no switch at all', async () => {
         const html = await load({ decision: 'granted', available: true, writable: false });
-        expect(html).toContain('disabled');
+        expect(html).not.toContain('settings-stats-consent');
+        expect(html).not.toContain('checkbox');
+        expect(html).toContain('text:stats.remoteOn');
         expect(html).toContain('text:stats.ownerOnly');
         expect(html).toContain('text:stats.statsSent1');
         expect(html).toContain('text:stats.statsNever3');
+    });
+
+    // Undecided counts as off, and must read as off: the machine really is
+    // sending nothing, so a remote reader is told exactly that.
+    it('tells a remote user nothing is sent when the machine said no, or was never asked', async () => {
+        for (const decision of ['denied', '']) {
+            const html = await load({ decision, available: true, writable: false });
+            expect(html).toContain('text:stats.remoteOff');
+            expect(html).not.toContain('text:stats.remoteOn');
+        }
     });
 
     it('says so plainly on a build that reports nothing, instead of a switch that lies', async () => {
