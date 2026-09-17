@@ -654,7 +654,7 @@ DataChannelRelay::~DataChannelRelay()
     DataChannelRelay::stop();
 }
 
-/// Make `bufferedAmount` mean something, once per process.
+/// Make `bufferedAmount` mean something.
 ///
 /// usrsctp's send buffer defaults to 1 MiB, and `bufferedAmount` counts only
 /// what libdatachannel keeps AFTER usrsctp refuses — so with the default,
@@ -663,29 +663,29 @@ DataChannelRelay::~DataChannelRelay()
 /// from a place we cannot see into one we can; the bytes in flight are the
 /// same, the blindness is not.
 ///
-/// 256 KiB and not less: usrsctp still has to keep the congestion window fed,
-/// and the bandwidth-delay product of the worst case we care about — a gigabit
-/// LAN at a millisecond of round trip — is about 125 KB. Half of the buffer is
-/// therefore still headroom on the fastest link we serve, while the invisible
-/// share of a backlog drops fourfold.
-void applySctpSettingsOnce()
+/// How much stays invisible is a matter of TIME, so the size follows the
+/// stream's bitrate — see SendBacklog::sendBufferBytesFor for the figures and
+/// the freeze that showed a fixed 256 KiB hiding a whole second at 2 Mbit/s.
+///
+/// A sysctl, read by each SCTP socket at creation: it must be set before the
+/// peer connection, and setting it again for another session in the same
+/// process is fine.
+void applySctpSettings(int bitrateKbps)
 {
-    static std::once_flag once;
-    std::call_once(once, [] {
-        rtc::SctpSettings settings;
-        settings.sendBufferSize = 256 * 1024;
-        rtc::SetSctpSettings(settings);
-        qInfo() << "[DataChannelRelay] SCTP send buffer set to 256 KiB so bufferedAmount "
-                   "reflects the real backlog";
-    });
+    const size_t bytes = SendBacklog::sendBufferBytesFor(bitrateKbps);
+    rtc::SctpSettings settings;
+    settings.sendBufferSize = bytes;
+    rtc::SetSctpSettings(settings);
+    qInfo() << "[DataChannelRelay] SCTP send buffer set to" << (bytes / 1024) << "KiB for"
+            << bitrateKbps << "kbps, so bufferedAmount reflects the real backlog";
 }
 
 bool DataChannelRelay::prepare(const rtc::Configuration& config, bool isInternet)
 {
-    // Before any peer connection, since usrsctp reads this at SCTP init. One
-    // session per stream-worker process, so the first relay here is the only
-    // one that matters.
-    applySctpSettingsOnce();
+    // Before the peer connection, since each SCTP socket reads this when it is
+    // made.
+    applySctpSettings(m_StreamBitrateKbps);
+    m_Backlog.setBitrateKbps(m_StreamBitrateKbps);
 
     if (m_Pc) {
         qWarning() << "[DataChannelRelay] already prepared";

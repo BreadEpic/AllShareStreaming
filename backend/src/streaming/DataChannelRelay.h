@@ -149,6 +149,13 @@ public:
     /// Set once before the relay moves to its own thread, like the flags above.
     void setRideOutLoss(bool enabled) { m_RideOutLoss = enabled; }
 
+    /// The stream's bitrate, which sizes the transport's send buffer and the
+    /// backlog gate's noise floor (SendBacklog.h): both are amounts of TIME,
+    /// and the same bytes are 100 ms at 20 Mbit/s and a second at 2 Mbit/s.
+    /// Unknown (0) keeps the fixed sizes that served the LAN. Set once before
+    /// the relay moves to its own thread, like the flags above.
+    void setStreamBitrateKbps(int kbps) { m_StreamBitrateKbps = kbps; }
+
 private:
     /// Both halves of the bargain, asked at the moment a gap happens.
     ///
@@ -319,6 +326,8 @@ private:
     /// See setRideOutLoss. Written once before the thread move, read on the
     /// relay thread afterwards.
     bool m_RideOutLoss = false;
+    /// See setStreamBitrateKbps. Written once before the thread move.
+    int m_StreamBitrateKbps = 0;
     int m_FrameCount = 0;
     uint32_t m_FrameId = 0; // Monotonic counter for VIDEO fragmentation headers
     /// Wire frameId → the engine's own frame number, for the last few hundred

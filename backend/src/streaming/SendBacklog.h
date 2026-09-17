@@ -57,12 +57,63 @@
 class SendBacklog
 {
 public:
-    /// Occupancy at or below which the buffer counts as drained.
+    /// Occupancy at or below which the buffer counts as drained, at most.
     ///
     /// Not zero: a healthy stream at a high bitrate keeps a fragment or two in
     /// flight at all times, and aging from the first byte would call that a
-    /// backlog. A couple of 16 KB fragments is the noise floor.
-    static constexpr size_t kDrainedBytes = 48 * 1024;
+    /// backlog. A couple of 16 KB fragments is the noise floor — at 20 Mbit/s.
+    /// At 2 Mbit/s the same 48 KB is 200 ms of video, most of the tolerance
+    /// spent before the window even opens, so the floor follows the bitrate:
+    /// kDrainedMs worth of it, between kDrainedBytesMin and this.
+    static constexpr size_t kDrainedBytesMax = 48 * 1024;
+    static constexpr size_t kDrainedBytesMin = 8 * 1024;
+    static constexpr int64_t kDrainedMs = 50;
+
+    /// usrsctp's own send buffer, the part of a backlog `bufferedAmount` never
+    /// shows (see above). 256 KiB was sized for the fastest link we serve — a
+    /// gigabit LAN's bandwidth-delay product is about 125 KB — and at 20 Mbit/s
+    /// it hides 100 ms, which the tolerance absorbs. At 2 Mbit/s it hides a full
+    /// SECOND: a freeze shorter than that never reaches the gate, nothing is
+    /// shed at the source, no keyframe is asked for, and the receiver gets the
+    /// whole second replayed. Measured on a corporate Wi-Fi on 17/09/2026: a
+    /// link queue of 933 ms on the client with zero freezes counted here.
+    ///
+    /// So the buffer is kSendBufferMs of the stream's own bitrate, clamped. The
+    /// floor keeps the congestion window fed on a slow link with a long round
+    /// trip (64 KiB carries 2 Mbit/s up to 260 ms of RTT); the ceiling is the
+    /// figure that already served the LAN.
+    static constexpr int64_t kSendBufferMs = 100;
+    static constexpr size_t kSendBufferBytesMin = 64 * 1024;
+    static constexpr size_t kSendBufferBytesMax = 256 * 1024;
+
+    static constexpr size_t bytesOf(int bitrateKbps, int64_t ms)
+    {
+        return bitrateKbps <= 0 ? 0 : static_cast<size_t>(bitrateKbps) * 1000 / 8 * ms / 1000;
+    }
+
+    static constexpr size_t drainedBytesFor(int bitrateKbps)
+    {
+        const size_t b = bytesOf(bitrateKbps, kDrainedMs);
+        return b < kDrainedBytesMin   ? kDrainedBytesMin
+               : b > kDrainedBytesMax ? kDrainedBytesMax
+                                      : b;
+    }
+
+    static constexpr size_t sendBufferBytesFor(int bitrateKbps)
+    {
+        const size_t b = bytesOf(bitrateKbps, kSendBufferMs);
+        return b < kSendBufferBytesMin   ? kSendBufferBytesMin
+               : b > kSendBufferBytesMax ? kSendBufferBytesMax
+                                         : b;
+    }
+
+    /// The stream's bitrate, for the drained floor. Unknown (0) keeps the
+    /// high-bitrate floor, which is the old behaviour.
+    void setBitrateKbps(int bitrateKbps)
+    {
+        m_DrainedBytes = bitrateKbps > 0 ? drainedBytesFor(bitrateKbps) : kDrainedBytesMax;
+    }
+    size_t drainedBytes() const { return m_DrainedBytes; }
 
     /// How long the buffer may stay backed up before frames start being
     /// dropped.
@@ -81,7 +132,7 @@ public:
     ///         than the tolerance — the caller should shed load.
     bool note(size_t bufferedBytes, int64_t nowMs)
     {
-        if (bufferedBytes <= kDrainedBytes) {
+        if (bufferedBytes <= m_DrainedBytes) {
             m_BackedUpSinceMs = kDrained;
             return false;
         }
@@ -114,4 +165,5 @@ public:
 private:
     static constexpr int64_t kDrained = INT64_MIN;
     int64_t m_BackedUpSinceMs = kDrained;
+    size_t m_DrainedBytes = kDrainedBytesMax;
 };

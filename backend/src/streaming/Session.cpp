@@ -793,6 +793,7 @@ void StreamSession::onLaunchResult(bool ok, const BackendError& err, const Media
         auto* relay = new DataChannelRelay(m_Engine, nullptr);
         relay->setClipboardEnabled(clipboardLocal);
         relay->setInputPolicy(m_InputPolicy);
+        relay->setStreamBitrateKbps(m_StreamBitrateKbps);
 
         // The client's half of the bargain: it says it will decode through the
         // damage. The engine's half — whether the stream really refreshes — is

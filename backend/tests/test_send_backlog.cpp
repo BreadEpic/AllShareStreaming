@@ -94,6 +94,40 @@ void run_send_backlog_tests()
         CHECK(!b.note(kBig, 600));
     }
 
+    SECTION("SendBacklog — the drained floor is 50 ms of the stream, within bounds");
+    {
+        // 20 Mbit/s: 50 ms is 125 KB, capped at the old two-fragment floor.
+        CHECK(SendBacklog::drainedBytesFor(20000) == SendBacklog::kDrainedBytesMax);
+        // 2 Mbit/s: 50 ms is 12.5 KB — the old 48 KB would have been 200 ms.
+        CHECK(SendBacklog::drainedBytesFor(2000) == 12500);
+        // 500 kbit/s: 3 KB, raised to a fragment's worth.
+        CHECK(SendBacklog::drainedBytesFor(500) == SendBacklog::kDrainedBytesMin);
+        // Unknown keeps the old behaviour.
+        SendBacklog b;
+        CHECK(b.drainedBytes() == SendBacklog::kDrainedBytesMax);
+        b.setBitrateKbps(0);
+        CHECK(b.drainedBytes() == SendBacklog::kDrainedBytesMax);
+
+        // And the gate uses it: at 2 Mbit/s, 40 KB held for 400 ms is a
+        // backlog, where the fixed floor would have called it drained.
+        b.setBitrateKbps(2000);
+        CHECK(!b.note(40 * 1024, 0));
+        CHECK(b.note(40 * 1024, 400));
+        CHECK(!b.note(12000, 410)); // under the floor: drained
+    }
+
+    SECTION("SendBacklog — the transport's buffer is 100 ms of the stream, within bounds");
+    {
+        // 20 Mbit/s: 250 KB, the LAN figure.
+        CHECK(SendBacklog::sendBufferBytesFor(20000) == 250000);
+        // 50 Mbit/s: capped where the LAN was already served.
+        CHECK(SendBacklog::sendBufferBytesFor(50000) == SendBacklog::kSendBufferBytesMax);
+        // 2 Mbit/s: 25 KB, raised to keep the congestion window fed. Still four
+        // times less than the fixed 256 KiB that hid a whole second.
+        CHECK(SendBacklog::sendBufferBytesFor(2000) == SendBacklog::kSendBufferBytesMin);
+        CHECK(SendBacklog::sendBufferBytesFor(0) == SendBacklog::kSendBufferBytesMin);
+    }
+
     SECTION("SendBacklog — a clock going backwards cannot shed");
     {
         SendBacklog b;
