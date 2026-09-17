@@ -133,6 +133,10 @@ private:
     /// never needs it — it only wants to know where to draw.
     int m_CursorHotspotX = 0;
     int m_CursorHotspotY = 0;
+    /// Desktop Duplication says the pointer is hidden while Windows shows it —
+    /// see updateCursor(). While this holds, Windows' word is used instead.
+    bool m_HiddenOverridden = false;
+    bool m_HiddenOverrideLogged = false;
     /// Scratch for GetFramePointerShape, reused so a moving cursor does not
     /// allocate. DXGI tells us the size it needs before it fills it.
     std::vector<uint8_t> m_ShapeBuffer;

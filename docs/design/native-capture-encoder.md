@@ -4206,3 +4206,73 @@ compris avec une échelle fractionnaire et quel que soit l'écran choisi — par
 scanout comme par le portail. Sur un seul écran rien ne change. Et s'il reste un
 cas tordu, la version pré-release le raconte dans son journal sans qu'il ait à
 ouvrir un terminal.
+
+## 27. Le pointeur dessiné par le téléphone n'est plus recalé par l'hôte (17/09/2026)
+
+Vu sur l'iPhone de Bruno, hôte DualRTX sous Windows 11, le 16/09 : appui long
+sur la barre de titre d'une fenêtre pour l'attraper, puis, au premier mouvement
+du doigt, la fenêtre et le pointeur partent d'un coup dans le coin haut-gauche
+de l'écran. Tant que le doigt reste immobile, rien ne bouge, quelle que soit la
+durée de l'appui ; c'est le mouvement qui déclenche le saut.
+
+### 27.1 Ce que le journal a montré
+
+Rejoué le 17/09 avec les lignes `[PTR]` du §26 étendues à Windows (positions
+absolues injectées, boutons, rapports de position renvoyés au client) :
+
+```
+12:32:24.189 [PTR] button 1 down, held now: 0
+12:32:24.703 [PTR] pointer report VISIBILITY JUMP: hidden at frame 0,0 (...) previous visible at 717,442
+12:32:30.868 [PTR] absolute JUMP: client 1,2 of 1920x1080 -> desktop 1,2 (previous 957,590)
+12:32:33.745 [PTR] button 1 up, held now: 1
+12:32:33.750 [PTR] pointer report VISIBILITY: visible at frame 159,225 (...) previous hidden at 0,0
+```
+
+Une demi-seconde après l'appui du bouton gauche sur une barre de titre, Desktop
+Duplication déclare le pointeur **caché, en (0, 0)**, et le maintient ainsi
+jusqu'au relâchement — alors que Windows l'affiche, à sa place, pendant tout
+le glissement. Le rapport de position (`cursorpos`, §20.11 et commit 4baa4b91)
+transmettait ce mot tel quel au téléphone.
+
+### 27.2 Deux causes, une par bout
+
+**Côté téléphone.** Depuis le 12/09 le téléphone dessine le pointeur lui-même
+et l'hôte lui renvoyait sa position toutes les 50 ms pour « corriger la dérive »
+une fois le doigt immobile 150 ms. Le front appliquait les coordonnées jointes
+même quand l'hôte disait « caché » : le pointeur dessiné se retrouvait en
+(0, 0) sans que rien ne le montre, et le premier delta du doigt, converti en
+position absolue depuis ce point, téléportait le pointeur de l'hôte — et la
+fenêtre tenue — dans le coin. Le recalage n'existe plus : le premier mot de
+l'hôte place le pointeur (s'il est visible), ensuite seul le doigt le déplace.
+Comme chaque mouvement part en position absolue, le pointeur de l'hôte est de
+toute façon sous le dessin ; un mot de l'hôte ne pouvait qu'être en retard
+d'un aller-retour, ou faux. Décision de Bruno : c'était perturbant, et c'est
+retiré (`_clientCursorHostSaid`, `StreamView.js`).
+
+**Côté hôte.** `DxgiDuplication::updateCursor` confronte désormais un « caché »
+de Desktop Duplication à `GetCursorInfo`, comme `Win32Cursor` le fait déjà pour
+WGC : si Windows montre le pointeur sur cet écran, il est visible, à la position
+que Windows donne (ramenée de l'espace virtualisé DPI aux pixels capturés).
+Tant que cette substitution tient, chaque image relit Windows, y compris quand
+Desktop Duplication ne signale aucune nouvelle du pointeur. Une ligne de log
+la première fois par session. Cela corrige aussi le mode composité (jeu, ou
+`MOBILE_CURSOR_CLIENT_DRAWN = false`), où le pointeur disparaissait de l'image
+pendant un glissement de fenêtre.
+
+Pourquoi Desktop Duplication cache le pointeur pendant la boucle de déplacement
+d'une fenêtre n'est pas établi — hypothèse : Windows passe en curseur logiciel
+pendant cette boucle, et DXGI ne rapporte que le curseur matériel. Le
+contournement ne dépend pas de la réponse.
+
+### 27.3 Vérifié
+
+Windows (DualRTX) : tests natifs 3772/3772, tests front 726/726, instance
+`--dev` relancée avec les deux correctifs. Confirmation sur l'iPhone : à faire
+par Bruno sur cette instance. ⚠️ Les lignes `[PTR]` Windows (`Win32Input`,
+`WindowsSession`) sont temporaires, à retirer avec celles du §26.
+
+**Concrètement, pour l'utilisateur** : sur un téléphone ou une tablette, le
+pointeur dessiné ne bouge plus que sous le doigt. Attraper une fenêtre par sa
+barre de titre et la déplacer la laisse suivre le doigt, sans saut, et le
+pointeur reste visible pendant tout le glissement. Sur un PC client rien ne
+change.

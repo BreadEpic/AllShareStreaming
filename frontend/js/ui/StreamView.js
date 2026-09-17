@@ -163,21 +163,16 @@ const PHONE_CURSOR_CSS_PX = 14;
  * arrives with the stream's latency, which on a slow host is a pointer that
  * trails the finger by a beat and steps rather than glides. Drawn here, it
  * moves the instant the finger does, exactly like the CSS cursor a desktop
- * client gets — the host only ever sends the shape, plus a sparse position so
- * the drawing can be corrected when the two drift apart: the host clamped the
- * pointer at a screen edge, an application moved it, the host's own mouse
- * acceleration stretched a delta. That correction is the jump this switch
- * exists to let a real device judge. False is the previous behaviour.
+ * client gets — the host only ever sends the shape, and its position ONCE,
+ * to say where the pointer starts. It is never corrected from the host after
+ * that: the finger sends absolute positions, so the host's pointer is
+ * wherever the drawing is, and a word from the host can only be late (a
+ * round trip old) or wrong — Desktop Duplication reported "hidden, at 0,0"
+ * for the whole of a title-bar drag (17/09/2026), and a correction taken
+ * from it sent the drawing, then the host's pointer and the window under it,
+ * into the corner. False is the previous behaviour.
  */
 const MOBILE_CURSOR_CLIENT_DRAWN = true;
-
-/**
- * How long after the finger's last move a host position is trusted over our
- * own. While the finger moves, the host's word is late by a round trip and
- * would drag the pointer back under it; once the finger has been still this
- * long, whatever the host says last is where the pointer really is.
- */
-const CLIENT_CURSOR_SETTLE_MS = 150;
 
 /**
  * How long to wait for the host's first position before placing the pointer
@@ -865,23 +860,13 @@ export class StreamView {
         this._hiddenCursorAltCss = null;
         this._cursorForcePending = false;
         // The pointer a touch screen draws for itself (MOBILE_CURSOR_CLIENT_DRAWN).
-        // Where WE think it is, in frame pixels — moved from the finger, corrected
-        // by the host. Null until the host has said once: before that there is
-        // nothing to draw anywhere.
+        // Where WE think it is, in frame pixels — placed once from the host's
+        // first word (or seeded), then moved only by the finger. Null until
+        // then: before that there is nothing to draw anywhere.
         this._clientCursorPos = null;
-        // The host's latest word, when it arrived while the finger was moving:
-        // held until the finger settles, then applied if it is newer than the
-        // last move. See _clientCursorHostSaid.
-        this._clientCursorHostPending = null;
-        this._clientCursorLastMoveAt = 0;
-        this._clientCursorSettleTimer = null;
         this._clientCursorSeedTimer = null;
         // When the finger last steered the pointer, for its speed.
         this._clientCursorSteerAt = 0;
-        // What the host's position reports say about visibility, apart from the
-        // shape's own flag: the pointer leaving the display is reported here
-        // long before the next shape message would say so.
-        this._clientCursorHostVisible = true;
         // The decoded shape: its bitmap size and the extent of its ink, which is
         // what the phone sizes the pointer on (see PHONE_CURSOR_CSS_PX).
         this._clientCursorImg = null;
@@ -7154,7 +7139,6 @@ export class StreamView {
             this._scaledCursor = null;
             this._scaledCursorPending = null;
             this._clientCursorPos = null;
-            this._clientCursorHostPending = null;
             this._clientCursorImg = null;
         }
         this._placeClientCursor();
@@ -7162,12 +7146,12 @@ export class StreamView {
 
     // ── The pointer a touch screen draws for itself ──────────────────────────
     //
-    // See MOBILE_CURSOR_CLIENT_DRAWN. Three inputs, one drawing: the shape the
-    // host named (the `cursor` message, as on a desktop), the finger's own
-    // deltas — applied the instant they are sent, which is what makes the
-    // pointer feel attached to the finger — and the host's sparse position
-    // reports (`cursorpos`), which are late by a round trip and so only
-    // trusted once the finger has been still for CLIENT_CURSOR_SETTLE_MS.
+    // See MOBILE_CURSOR_CLIENT_DRAWN. Two inputs, one drawing: the shape the
+    // host named (the `cursor` message, as on a desktop) and the finger's own
+    // moves — applied the instant they are sent, which is what makes the
+    // pointer feel attached to the finger. The host's position reports
+    // (`cursorpos`) place the pointer once, at the start, and are otherwise
+    // ignored: see _clientCursorHostSaid.
 
     /** Whether this view draws the pointer itself, right now. */
     _clientCursorActive() {
@@ -7324,7 +7308,6 @@ export class StreamView {
             referenceWidth: Math.round(fw),
             referenceHeight: Math.round(fh),
         });
-        this._clientCursorNoteMove();
         this._placeClientCursor();
     }
 
@@ -7337,7 +7320,6 @@ export class StreamView {
         const p = this._clientCursorPos;
         p.x = Math.max(0, Math.min(fw > 0 ? fw - 1 : p.x, p.x + dx * s));
         p.y = Math.max(0, Math.min(fh > 0 ? fh - 1 : p.y, p.y + dy * s));
-        this._clientCursorNoteMove();
         this._placeClientCursor();
     }
 
@@ -7349,63 +7331,27 @@ export class StreamView {
             fh = this._pictureHeight();
         if (!(fw > 0) || !(fh > 0)) return;
         this._clientCursorPos = { x: fx * fw, y: fy * fh };
-        this._clientCursorNoteMove();
         this._placeClientCursor();
     }
 
-    _clientCursorNoteMove() {
-        this._clientCursorLastMoveAt = performance.now();
-        if (this._clientCursorSettleTimer) clearTimeout(this._clientCursorSettleTimer);
-        this._clientCursorSettleTimer = setTimeout(() => {
-            this._clientCursorSettleTimer = null;
-            this._clientCursorSettled();
-        }, CLIENT_CURSOR_SETTLE_MS);
-    }
-
-    /** The host said where its pointer is (frame pixels). */
+    /**
+     * The host said where its pointer is (frame pixels). Used ONCE, to place
+     * the pointer before the finger has moved it — the host is the only one
+     * who knows where it starts. Never afterwards: the finger sends absolute
+     * positions, so the host's pointer is wherever the drawing is, and a word
+     * from the host can only be late (a round trip old, mid-gesture) or wrong
+     * — Desktop Duplication reported "hidden, at 0,0" for the whole of a
+     * title-bar drag on Windows 11 (17/09/2026), and the drawing, then the
+     * host's pointer and the window under it, followed it into the corner.
+     * A hidden pointer carries no position at all and places nothing.
+     */
     _clientCursorHostSaid(msg) {
-        if (!this._clientCursorActive()) return;
-        this._clientCursorHostVisible = msg.visible !== false;
-        const said = { x: Number(msg.x), y: Number(msg.y), at: performance.now() };
-        if (!isFinite(said.x) || !isFinite(said.y)) {
-            this._placeClientCursor();
-            return;
-        }
-        // The first word places the pointer; afterwards the host is trusted
-        // only over a finger that has been still for a while — mid-gesture its
-        // word is a round trip old and would drag the pointer back.
-        if (
-            !this._clientCursorPos ||
-            said.at - this._clientCursorLastMoveAt >= CLIENT_CURSOR_SETTLE_MS
-        ) {
-            this._clientCursorApplyHost(said);
-            return;
-        }
-        this._clientCursorHostPending = said;
-        this._placeClientCursor();
-    }
-
-    /** The finger has been still for CLIENT_CURSOR_SETTLE_MS. */
-    _clientCursorSettled() {
-        const said = this._clientCursorHostPending;
-        this._clientCursorHostPending = null;
-        // Only a word that arrived after the last move describes where the
-        // pointer came to rest; an older one describes mid-gesture.
-        if (said && said.at > this._clientCursorLastMoveAt) this._clientCursorApplyHost(said);
-    }
-
-    _clientCursorApplyHost(said) {
-        const p = this._clientCursorPos;
-        if (p) {
-            // The correction — the jump this whole switch exists to measure.
-            const d = Math.hypot(said.x - p.x, said.y - p.y);
-            if (d >= 2) {
-                console.log(
-                    '[StreamView] Client cursor: host correction of ' + d.toFixed(0) + ' frame px',
-                );
-            }
-        }
-        this._clientCursorPos = { x: said.x, y: said.y };
+        if (!this._clientCursorActive() || this._clientCursorPos) return;
+        if (msg.visible === false) return;
+        const x = Number(msg.x),
+            y = Number(msg.y);
+        if (!isFinite(x) || !isFinite(y)) return;
+        this._clientCursorPos = { x, y };
         this._placeClientCursor();
     }
 
@@ -7420,7 +7366,6 @@ export class StreamView {
             this._clientCursorActive() &&
             this._hostDrawsCursor &&
             this._hostCursorVisible &&
-            this._clientCursorHostVisible &&
             !!pos &&
             fw > 0 &&
             fh > 0;
@@ -7642,10 +7587,6 @@ export class StreamView {
             this.streamEl.removeEventListener('touchcancel', this._onTouchEnd);
             this._stopScrollMomentum();
             this._stopPanMomentum();
-        }
-        if (this._clientCursorSettleTimer) {
-            clearTimeout(this._clientCursorSettleTimer);
-            this._clientCursorSettleTimer = null;
         }
         if (this._clientCursorSeedTimer) {
             clearTimeout(this._clientCursorSeedTimer);

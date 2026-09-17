@@ -22,6 +22,7 @@
 #include "VigemGamepad.h"
 
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -91,6 +92,10 @@ private:
     void injectMousePosition(const InputEvent& event);
     /// Applies the press if — and only if — it changes the button's state.
     void injectMouseButton(int button, bool down);
+    /// [PTR] diagnostics: one line for the first absolute positions, then
+    /// only for a jump — a pointer that teleports, told from one the client
+    /// sent there. Temporary (issue #18, and the iPhone drag of 16/09/2026).
+    void diagAbsolute(const InputEvent& event);
     /// Sends it regardless. For the release-everything path, which has already
     /// decided what is down.
     void sendMouseButton(int button, bool down);
@@ -167,6 +172,12 @@ private:
     /// lines, hence relaxed ordering — diagnostics, not synchronisation.
     std::atomic<uint64_t> m_Injected{0};
     std::atomic<uint32_t> m_SeenTypes{0};
+
+    // [PTR] diagnostics, see diagAbsolute(). Input-thread only.
+    int m_DiagAbsolute = 0;
+    bool m_DiagHaveLast = false;
+    int64_t m_DiagLastX = 0;
+    int64_t m_DiagLastY = 0;
 
     bool m_Started = false;
 };

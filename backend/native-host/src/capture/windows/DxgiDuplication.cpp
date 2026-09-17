@@ -298,18 +298,63 @@ bool DxgiDuplication::updateCursor(const DXGI_OUTDUPL_FRAME_INFO& info)
     }
 
     // LastMouseUpdateTime is zero when this frame carries no pointer news at
-    // all, and the previous position stands.
-    if (info.LastMouseUpdateTime.QuadPart != 0) {
+    // all, and the previous position stands — unless Windows is being asked
+    // instead (below), in which case every frame is a chance to catch up.
+    const bool news = info.LastMouseUpdateTime.QuadPart != 0;
+    if (news || m_HiddenOverridden) {
         const bool wasVisible = m_Cursor.visible;
         const int oldX = m_Cursor.x;
         const int oldY = m_Cursor.y;
 
-        m_Cursor.visible = info.PointerPosition.Visible != FALSE;
+        bool visible = news && info.PointerPosition.Visible != FALSE;
+        int px = news ? static_cast<int>(info.PointerPosition.Position.x)
+                      : m_Cursor.x + m_CursorHotspotX;
+        int py = news ? static_cast<int>(info.PointerPosition.Position.y)
+                      : m_Cursor.y + m_CursorHotspotY;
+
+        // Desktop Duplication reports the pointer HIDDEN, at (0, 0), for a
+        // pointer Windows is still showing: seen on Windows 11 for the whole
+        // of a title-bar drag, from half a second after the left button goes
+        // down until it goes up (17/09/2026, from an iPhone). A client drawing
+        // the pointer itself was told "hidden, at the corner" and, steering
+        // from there on the next finger move, dragged the window into the
+        // corner. Windows' own word settles it, the way Win32Cursor reads it
+        // for WGC: showing and on this display means visible, at the place it
+        // says — scaled from the DPI-virtualized desktop into captured pixels.
+        if (!visible) {
+            CURSORINFO ci = {};
+            ci.cbSize = sizeof(ci);
+            const bool showing =
+                ::GetCursorInfo(&ci) && (ci.flags & CURSOR_SHOWING) != 0 && m_DesktopRect.valid() &&
+                ci.ptScreenPos.x >= m_DesktopRect.left && ci.ptScreenPos.x < m_DesktopRect.right &&
+                ci.ptScreenPos.y >= m_DesktopRect.top && ci.ptScreenPos.y < m_DesktopRect.bottom;
+            if (showing) {
+                const int rw = m_DesktopRect.width();
+                const int rh = m_DesktopRect.height();
+                const double sx = rw > 0 && m_Width > 0 ? static_cast<double>(m_Width) / rw : 1.0;
+                const double sy = rh > 0 && m_Height > 0 ? static_cast<double>(m_Height) / rh : 1.0;
+                px = static_cast<int>((ci.ptScreenPos.x - m_DesktopRect.left) * sx);
+                py = static_cast<int>((ci.ptScreenPos.y - m_DesktopRect.top) * sy);
+                visible = true;
+                if (!m_HiddenOverridden && !m_HiddenOverrideLogged) {
+                    m_HiddenOverrideLogged = true;
+                    log::info("[native] cursor: Desktop Duplication reports the pointer hidden "
+                              "while Windows shows it at " +
+                              std::to_string(px) + "," + std::to_string(py) +
+                              " — Windows' word kept (once per session)");
+                }
+            }
+            m_HiddenOverridden = showing;
+        } else {
+            m_HiddenOverridden = false;
+        }
+
+        m_Cursor.visible = visible;
         // Position is given for the hotspot; the image starts above and left of
         // it. Drawing at the hotspot would offset every cursor by its own
         // shape — an arrow would look right and a crosshair would not.
-        m_Cursor.x = info.PointerPosition.Position.x - m_CursorHotspotX;
-        m_Cursor.y = info.PointerPosition.Position.y - m_CursorHotspotY;
+        m_Cursor.x = px - m_CursorHotspotX;
+        m_Cursor.y = py - m_CursorHotspotY;
 
         changed = changed || m_Cursor.visible != wasVisible ||
                   (m_Cursor.visible && (m_Cursor.x != oldX || m_Cursor.y != oldY));
