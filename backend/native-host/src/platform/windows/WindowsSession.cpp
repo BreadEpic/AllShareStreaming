@@ -695,11 +695,31 @@ private:
             m_Info.hdr = false;
         }
 
+        // The resample filter for a stream smaller than the screen: the
+        // bench's pick (Lanczos-2 dilated, linear light — docs/bench-native-host
+        // §8j) on every hardware encoder, the free bilinear on the software
+        // tier, whose machine has no GPU time to spend either. MW_SCALER=
+        // bilinear|lanczos2 overrides it, for the A/B on a real stream.
+        using ScaleFilter = convert::ColorConvert::ScaleFilter;
+        ScaleFilter filter = m_Target.encoder == EncoderApi::Software ? ScaleFilter::Bilinear
+                                                                      : ScaleFilter::Lanczos2;
+        {
+            char value[16] = {};
+            const DWORD n = ::GetEnvironmentVariableA("MW_SCALER", value, sizeof(value));
+            if (n > 0 && n < sizeof(value)) {
+                if (convert::parseScaleFilter(value, filter))
+                    log::info(std::string("[native] MW_SCALER in effect: ") + toString(filter));
+                else
+                    log::info(std::string("[native] MW_SCALER=") + value +
+                              " is not a filter (bilinear, lanczos2) — ignored");
+            }
+        }
+
         if (!m_Converter->init(pipelineDevice(), m_Capture->format(), m_Capture->width(),
                                m_Capture->height(), outputWidth, outputHeight,
                                m_Target.yuv444 ? convert::ColorConvert::Chroma::C444
                                                : convert::ColorConvert::Chroma::C420,
-                               hdr, error))
+                               hdr, filter, error))
             return false;
         if (m_Converter->toneMapsToSdr())
             log::info("[native] SDR stream of an HDR desktop — tone-mapped on the GPU");

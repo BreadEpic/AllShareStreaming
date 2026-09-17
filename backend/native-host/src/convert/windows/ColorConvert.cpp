@@ -15,11 +15,22 @@
  * this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
+// windows.h's min/max macros would eat the std:: ones FrameFit.h and the
+// resample geometry use; the audio files do the same.
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
 #include "ColorConvert.h"
 
 #include "../../core/Log.h"
+#include "../../platform/macos/FrameFit.h"
 
 #include <d3dcompiler.h>
+
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
 
 using Microsoft::WRL::ComPtr;
 
@@ -315,6 +326,91 @@ float2 PsChromaHdr(VsOut i) : SV_TARGET
 }
 )HLSL";
 
+// ── The resample pass: Lanczos-2 dilated to the ratio, separable ────────────
+//
+// What the bench (tools/scaler-bench, 17/09/2026) picked over every fixed-
+// radius filter and every vendor upscaler: the only family that is a real
+// low-pass at any ratio is a kernel STRETCHED to the ratio, and Lanczos-2 is
+// the cheapest of it that stays within 1 dB of the reference. Two 1-D passes
+// instead of the bench's one 2-D pass: 2 × 7 taps at 1440p → 1080p where the
+// square kernel took 49, 2 × 13 at 4K → 720p where it took 169.
+//
+// In linear light: the 8-bit desktop is decoded per tap on the way in and the
+// _SRGB render target re-encodes the result on the way out, so the average of
+// black and white text pixels is the grey the eye expects rather than the
+// darker one gamma-space averaging gives — measured +4.6 dB on that alone.
+// The scRGB paths are linear already (MW_DECODE 0).
+//
+// Every size is a compile-time constant (this shader is built per session for
+// one geometry), so the tap loop unrolls and there is no constant buffer. One
+// entry point, compiled twice: MW_HORIZONTAL 1 reads the capture along X into
+// an output-wide, source-high intermediate; 0 reads that intermediate along Y
+// into the output-sized picture.
+constexpr char kScaleShaderSource[] = R"HLSL(
+Texture2D<float4> Source : register(t0);
+
+struct VsOut
+{
+    float4 position : SV_POSITION;
+    float2 uv       : TEXCOORD0;
+};
+
+float3 SrgbToLinear(float3 c)
+{
+    return c <= 0.04045 ? c / 12.92 : pow(max(c + 0.055, 0.0) / 1.055, 2.4);
+}
+
+// Lanczos with two lobes, x already divided by the dilation.
+float Lanczos2(float x)
+{
+    x = abs(x);
+    if (x < 1e-5) return 1.0;
+    if (x >= 2.0) return 0.0;
+    float px = 3.14159265 * x;
+    return 2.0 * sin(px) * sin(px * 0.5) / (px * px);
+}
+
+float3 Fetch(int x, int y)
+{
+    float3 c = Source.Load(int3(x, y, 0)).rgb;
+#if MW_DECODE
+    c = SrgbToLinear(c);
+#endif
+    return c;
+}
+
+float4 PsScale(VsOut i) : SV_TARGET
+{
+    // The output pixel's centre in source pixels along the filtered axis, and
+    // its row (or column) along the other, which the pass keeps as it is.
+#if MW_HORIZONTAL
+    float centre = i.uv.x * MW_LEN - 0.5;
+    int   fixed  = int(i.uv.y * MW_FIXED);
+#else
+    float centre = i.uv.y * MW_LEN - 0.5;
+    int   fixed  = int(i.uv.x * MW_FIXED);
+#endif
+    int first = int(ceil(centre - 2.0 * MW_DILATE));
+    float3 acc = 0.0;
+    float  sum = 0.0;
+    [unroll]
+    for (int t = 0; t < MW_TAPS; ++t) {
+        int   p = first + t;
+        float w = Lanczos2((float(p) - centre) / MW_DILATE);
+        p = clamp(p, 0, int(MW_LEN) - 1);
+#if MW_HORIZONTAL
+        acc += Fetch(p, fixed) * w;
+#else
+        acc += Fetch(fixed, p) * w;
+#endif
+        sum += w;
+    }
+    // Lanczos undershoots on hard edges; light does not go negative, and an
+    // _SRGB target would clamp anyway.
+    return float4(max(acc / sum, 0.0), 1.0);
+}
+)HLSL";
+
 /// @p scRgbSource picks what the BT.709 entry points read: the 8-bit desktop,
 /// or the FP16 one through the tone map. Spelled "0"/"1" rather than left
 /// undefined, so the shader's #if never depends on what fxc makes of an
@@ -338,13 +434,49 @@ bool compile(const char* entryPoint, const char* target, bool scRgbSource, ComPt
     return false;
 }
 
+/// One direction of the resample pass. @p length is the source extent along
+/// the filtered axis, @p output the picture's extent along it, @p fixed the
+/// extent of the other axis (rows for horizontal, columns for vertical).
+bool compileScale(bool horizontal, bool decode, int length, int output, int fixed,
+                  ComPtr<ID3DBlob>& blob, std::string& error)
+{
+    const double dilate = std::max(1.0, static_cast<double>(length) / output);
+    const int taps = static_cast<int>(std::ceil(4.0 * dilate)) + 1;
+    char dilateText[32];
+    std::snprintf(dilateText, sizeof(dilateText), "%.9f", dilate);
+    const std::string tapsText = std::to_string(taps);
+    const std::string lengthText = std::to_string(length) + ".0";
+    const std::string fixedText = std::to_string(fixed) + ".0";
+    const D3D_SHADER_MACRO defines[] = {{"MW_HORIZONTAL", horizontal ? "1" : "0"},
+                                        {"MW_DECODE", decode ? "1" : "0"},
+                                        {"MW_DILATE", dilateText},
+                                        {"MW_TAPS", tapsText.c_str()},
+                                        {"MW_LEN", lengthText.c_str()},
+                                        {"MW_FIXED", fixedText.c_str()},
+                                        {nullptr, nullptr}};
+    ComPtr<ID3DBlob> errors;
+    const HRESULT hr =
+        ::D3DCompile(kScaleShaderSource, sizeof(kScaleShaderSource) - 1, "ColorScale.hlsl", defines,
+                     nullptr, "PsScale", "ps_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0,
+                     blob.GetAddressOf(), errors.GetAddressOf());
+    if (SUCCEEDED(hr)) return true;
+
+    error = std::string("could not compile the ") + (horizontal ? "horizontal" : "vertical") +
+            " resample";
+    if (errors && errors->GetBufferPointer()) {
+        error += ": ";
+        error += static_cast<const char*>(errors->GetBufferPointer());
+    }
+    return false;
+}
+
 } // namespace
 
 ColorConvert::~ColorConvert() = default;
 
 bool ColorConvert::init(ID3D11Device* device, DXGI_FORMAT sourceFormat, int sourceWidth,
                         int sourceHeight, int outputWidth, int outputHeight, Chroma chroma,
-                        bool hdr, std::string& error)
+                        bool hdr, ScaleFilter filter, std::string& error)
 {
     if (!device) {
         error = "no D3D11 device";
@@ -394,8 +526,35 @@ bool ColorConvert::init(ID3D11Device* device, DXGI_FORMAT sourceFormat, int sour
         return false;
     }
 
+    // The resample pass only where there is something to resample: at 1:1
+    // the conversion reads the capture as it always did, and pays nothing.
+    const bool scaling = m_OutputWidth != m_SourceWidth || m_OutputHeight != m_SourceHeight;
+    m_Filter = scaling ? filter : ScaleFilter::Bilinear;
+    m_Letterboxed = false;
+    m_PictureX = m_PictureY = 0.0f;
+    m_PictureWidth = static_cast<float>(m_OutputWidth);
+    m_PictureHeight = static_cast<float>(m_OutputHeight);
+    if (m_Filter != ScaleFilter::Bilinear) {
+        // A source of another shape is fitted between bars, as macOS does
+        // (FrameFit.h), rather than stretched as the bilinear path does: the
+        // Selector never starts a session this way, so this is a display that
+        // changed mode under a session told not to follow it.
+        const platform::FrameFit fit =
+            platform::frameFit(m_SourceWidth, m_SourceHeight, m_OutputWidth, m_OutputHeight);
+        const float w = std::floor(m_SourceWidth * fit.scale + 0.5f);
+        const float h = std::floor(m_SourceHeight * fit.scale + 0.5f);
+        if (w < m_OutputWidth - 1 || h < m_OutputHeight - 1) {
+            m_Letterboxed = true;
+            m_PictureWidth = std::max(2.0f, w);
+            m_PictureHeight = std::max(2.0f, h);
+            m_PictureX = std::floor((m_OutputWidth - m_PictureWidth) / 2.0f);
+            m_PictureY = std::floor((m_OutputHeight - m_PictureHeight) / 2.0f);
+        }
+    }
+
     if (!createShaders(error)) return false;
     if (!createOutput(error)) return false;
+    if (m_Filter != ScaleFilter::Bilinear && !createScaler(error)) return false;
 
     log::info("[native] colour conversion: " + std::to_string(m_SourceWidth) + "x" +
               std::to_string(m_SourceHeight) +
@@ -405,7 +564,84 @@ bool ColorConvert::init(ID3D11Device* device, DXGI_FORMAT sourceFormat, int sour
               std::to_string(m_OutputWidth) + "x" + std::to_string(m_OutputHeight) +
               (m_Hdr                      ? " P010 4:2:0 (BT.2020 PQ, limited)"
                : m_Chroma == Chroma::C444 ? " AYUV 4:4:4 (BT.709 limited)"
-                                          : " NV12 4:2:0 (BT.709 limited)"));
+                                          : " NV12 4:2:0 (BT.709 limited)") +
+              (!scaling                            ? ", 1:1"
+               : m_Filter == ScaleFilter::Bilinear ? ", scaled bilinear in the pass"
+                                                   : ", scaled Lanczos-2 (linear light)") +
+              (m_Letterboxed
+                   ? ", letterboxed to " + std::to_string(static_cast<int>(m_PictureWidth)) + "x" +
+                         std::to_string(static_cast<int>(m_PictureHeight))
+                   : ""));
+    return true;
+}
+
+bool ColorConvert::createScaler(std::string& error)
+{
+    const int pictureWidth = static_cast<int>(m_PictureWidth);
+    const int pictureHeight = static_cast<int>(m_PictureHeight);
+    // The 8-bit desktop is decoded to light on the way in; the FP16 paths are
+    // light already.
+    const bool decode = !m_Hdr && !m_ToneMap;
+
+    ComPtr<ID3DBlob> h, v;
+    if (!compileScale(true, decode, m_SourceWidth, pictureWidth, m_SourceHeight, h, error))
+        return false;
+    if (!compileScale(false, false, m_SourceHeight, pictureHeight, pictureWidth, v, error))
+        return false;
+    if (FAILED(m_Device->CreatePixelShader(h->GetBufferPointer(), h->GetBufferSize(), nullptr,
+                                           m_ScaleHShader.ReleaseAndGetAddressOf())) ||
+        FAILED(m_Device->CreatePixelShader(v->GetBufferPointer(), v->GetBufferSize(), nullptr,
+                                           m_ScaleVShader.ReleaseAndGetAddressOf()))) {
+        error = "could not create the resample shaders";
+        return false;
+    }
+
+    // The intermediate: picture-wide, source-high, linear light in FP16 —
+    // 8 bits of linear would posterise the shadows the sRGB curve spends
+    // half its codes on.
+    D3D11_TEXTURE2D_DESC desc = {};
+    desc.Width = static_cast<UINT>(pictureWidth);
+    desc.Height = static_cast<UINT>(m_SourceHeight);
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+    if (FAILED(m_Device->CreateTexture2D(&desc, nullptr, m_ScaledMid.ReleaseAndGetAddressOf())) ||
+        FAILED(m_Device->CreateRenderTargetView(m_ScaledMid.Get(), nullptr,
+                                                m_ScaledMidTarget.ReleaseAndGetAddressOf())) ||
+        FAILED(m_Device->CreateShaderResourceView(m_ScaledMid.Get(), nullptr,
+                                                  m_ScaledMidView.ReleaseAndGetAddressOf()))) {
+        error = "could not create the resample intermediate";
+        return false;
+    }
+
+    // The scaled picture the conversion reads. On the 8-bit path a TYPELESS
+    // texture written through an _SRGB view (the encode is free) and read
+    // through a UNORM one (the conversion wants the encoded signal, as it
+    // had from the capture); the scRGB paths stay FP16 and linear.
+    desc.Width = static_cast<UINT>(m_OutputWidth);
+    desc.Height = static_cast<UINT>(m_OutputHeight);
+    desc.Format = decode ? DXGI_FORMAT_R8G8B8A8_TYPELESS : DXGI_FORMAT_R16G16B16A16_FLOAT;
+    if (FAILED(m_Device->CreateTexture2D(&desc, nullptr, m_Scaled.ReleaseAndGetAddressOf()))) {
+        error = "could not create the scaled picture";
+        return false;
+    }
+    D3D11_RENDER_TARGET_VIEW_DESC rtv = {};
+    rtv.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+    rtv.Format = decode ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : DXGI_FORMAT_R16G16B16A16_FLOAT;
+    D3D11_SHADER_RESOURCE_VIEW_DESC srv = {};
+    srv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    srv.Texture2D.MipLevels = 1;
+    srv.Format = decode ? DXGI_FORMAT_R8G8B8A8_UNORM : DXGI_FORMAT_R16G16B16A16_FLOAT;
+    if (FAILED(m_Device->CreateRenderTargetView(m_Scaled.Get(), &rtv,
+                                                m_ScaledTarget.ReleaseAndGetAddressOf())) ||
+        FAILED(m_Device->CreateShaderResourceView(m_Scaled.Get(), &srv,
+                                                  m_ScaledView.ReleaseAndGetAddressOf()))) {
+        error = "could not view the scaled picture";
+        return false;
+    }
     return true;
 }
 
@@ -629,11 +865,56 @@ bool ColorConvert::convert(ID3D11Texture2D* source, const capture::CursorState& 
         m_SourceViewFor = source;
     }
 
-    // The cursor rectangle, expressed in SOURCE uv because that is the space the
-    // shader samples in. Drawing in output space instead would misplace the
-    // pointer by the scale factor on any stream that is not native resolution.
+    // The resample pass, when there is one: the capture goes through the
+    // horizontal filter into the intermediate, the intermediate through the
+    // vertical one into the scaled picture, and the conversion below reads
+    // THAT at 1:1. Bars, if any, are cleared to black first — the vertical
+    // pass only paints the fitted rectangle.
+    m_Context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    m_Context->IASetInputLayout(nullptr);
+    m_Context->VSSetShader(m_VertexShader.Get(), nullptr, 0);
+    if (m_Filter != ScaleFilter::Bilinear) {
+        D3D11_VIEWPORT pass = {};
+        pass.Width = m_PictureWidth;
+        pass.Height = static_cast<float>(m_SourceHeight);
+        pass.MaxDepth = 1.0f;
+        ID3D11RenderTargetView* midTarget[] = {m_ScaledMidTarget.Get()};
+        ID3D11ShaderResourceView* captured[] = {m_SourceView.Get()};
+        m_Context->OMSetRenderTargets(1, midTarget, nullptr);
+        m_Context->RSSetViewports(1, &pass);
+        m_Context->PSSetShader(m_ScaleHShader.Get(), nullptr, 0);
+        m_Context->PSSetShaderResources(0, 1, captured);
+        m_Context->Draw(3, 0);
+
+        ID3D11RenderTargetView* scaledTarget[] = {m_ScaledTarget.Get()};
+        ID3D11ShaderResourceView* unbind[] = {nullptr};
+        ID3D11ShaderResourceView* mid[] = {m_ScaledMidView.Get()};
+        m_Context->PSSetShaderResources(0, 1, unbind);
+        m_Context->OMSetRenderTargets(1, scaledTarget, nullptr);
+        if (m_Letterboxed) {
+            const float black[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+            m_Context->ClearRenderTargetView(m_ScaledTarget.Get(), black);
+        }
+        pass.TopLeftX = m_PictureX;
+        pass.TopLeftY = m_PictureY;
+        pass.Width = m_PictureWidth;
+        pass.Height = m_PictureHeight;
+        m_Context->RSSetViewports(1, &pass);
+        m_Context->PSSetShader(m_ScaleVShader.Get(), nullptr, 0);
+        m_Context->PSSetShaderResources(0, 1, mid);
+        m_Context->Draw(3, 0);
+        m_Context->PSSetShaderResources(0, 1, unbind);
+        m_Context->OMSetRenderTargets(0, nullptr, nullptr);
+    }
+
+    // The cursor rectangle, expressed in the uv of whatever the conversion
+    // samples: the capture, or the scaled picture — the same square when the
+    // shapes match, the fitted one between the bars when they do not. Drawing
+    // in output pixels instead would misplace the pointer by the scale factor
+    // on any stream that is not native resolution.
     const bool drawCursor = cursor.visible && m_CursorPixelsView && cursor.width > 0 &&
                             cursor.height > 0 && m_SourceWidth > 0 && m_SourceHeight > 0;
+    const bool resampled = m_Filter != ScaleFilter::Bilinear;
     {
         D3D11_MAPPED_SUBRESOURCE mapped = {};
         if (FAILED(m_Context->Map(m_OverlayBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
@@ -656,20 +937,26 @@ bool ColorConvert::convert(ID3D11Texture2D* source, const capture::CursorState& 
         p[1] = top / static_cast<float>(m_SourceHeight);
         p[2] = width / static_cast<float>(m_SourceWidth);
         p[3] = height / static_cast<float>(m_SourceHeight);
+        if (resampled) {
+            // Source uv → scaled-picture uv: the identity unless letterboxed.
+            const float sx = m_PictureWidth / static_cast<float>(m_OutputWidth);
+            const float sy = m_PictureHeight / static_cast<float>(m_OutputHeight);
+            p[0] = m_PictureX / static_cast<float>(m_OutputWidth) + p[0] * sx;
+            p[1] = m_PictureY / static_cast<float>(m_OutputHeight) + p[1] * sy;
+            p[2] *= sx;
+            p[3] *= sy;
+        }
         p[4] = drawCursor ? 1.0f : 0.0f;
         p[5] = m_SdrWhite;
         p[6] = p[7] = 0.0f;
         m_Context->Unmap(m_OverlayBuffer.Get(), 0);
     }
 
-    ID3D11ShaderResourceView* views[] = {m_SourceView.Get(), m_CursorPixelsView.Get(),
-                                         m_CursorInvertView.Get()};
+    ID3D11ShaderResourceView* views[] = {resampled ? m_ScaledView.Get() : m_SourceView.Get(),
+                                         m_CursorPixelsView.Get(), m_CursorInvertView.Get()};
     ID3D11SamplerState* samplers[] = {m_Sampler.Get(), m_NearestSampler.Get()};
     ID3D11Buffer* constants[] = {m_OverlayBuffer.Get()};
 
-    m_Context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    m_Context->IASetInputLayout(nullptr);
-    m_Context->VSSetShader(m_VertexShader.Get(), nullptr, 0);
     m_Context->PSSetShaderResources(0, 3, views);
     m_Context->PSSetSamplers(0, 2, samplers);
     m_Context->PSSetConstantBuffers(0, 1, constants);

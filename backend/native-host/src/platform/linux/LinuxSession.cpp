@@ -46,6 +46,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -176,10 +177,23 @@ public:
                              outputHeight > 0 ? outputHeight : capture.height(), fps, bitrateKbps,
                              intraRefresh, tuning, error))
             return false;
+        // The resample filter for a stream smaller than the screen: the
+        // bench's pick (Lanczos-2 dilated, linear light — docs/bench-native-host
+        // §8j), the GPU tier being the one with a GPU to spend on it. The
+        // 780M's own figure is what settles whether it stays the default
+        // here; MW_SCALER=bilinear|lanczos2 is the A/B on a real stream.
+        convert::ScaleFilter filter = convert::ScaleFilter::Lanczos2;
+        if (const char* value = std::getenv("MW_SCALER"); value && *value) {
+            if (convert::parseScaleFilter(value, filter))
+                log::info(std::string("[native] MW_SCALER in effect: ") + toString(filter));
+            else
+                log::info(std::string("[native] MW_SCALER=") + value +
+                          " is not a filter (bilinear, lanczos2) — ignored");
+        }
         m_Converter = std::make_unique<convert::GlConvert>();
         if (!m_Converter->init(capture.renderNodePath(), capture.fourcc(), capture.width(),
                                capture.height(), m_Encoder->inputTarget().width,
-                               m_Encoder->inputTarget().height, error))
+                               m_Encoder->inputTarget().height, filter, error))
             return false;
         return m_Converter->bindTarget(m_Encoder->inputTarget(), error);
     }

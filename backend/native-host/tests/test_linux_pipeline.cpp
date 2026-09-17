@@ -285,7 +285,7 @@ void run_linux_pipeline_tests()
     // ── Convert ─────────────────────────────────────────────────────────────
     convert::GlConvert gl;
     CHECK(gl.init(kms.renderNodePath(), frame.fourcc, frame.width, frame.height, frame.width,
-                  frame.height, error));
+                  frame.height, convert::ScaleFilter::Bilinear, error));
     if (!error.empty()) std::fprintf(stderr, "  %s\n", error.c_str());
     CHECK(gl.bindTarget(nv12Target, error));
     if (!error.empty()) std::fprintf(stderr, "  %s\n", error.c_str());
@@ -348,7 +348,7 @@ void run_linux_pipeline_tests()
         } else {
             convert::GlConvert gl2;
             CHECK(gl2.init(kms.renderNodePath(), frame.fourcc, frame.width, frame.height,
-                           frame.width, frame.height, error));
+                           frame.width, frame.height, convert::ScaleFilter::Bilinear, error));
             CHECK(gl2.bindTarget(encoder.inputTarget(), error));
             if (!error.empty()) std::fprintf(stderr, "  %s\n", error.c_str());
 

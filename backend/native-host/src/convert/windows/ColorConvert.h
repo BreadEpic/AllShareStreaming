@@ -19,6 +19,7 @@
 
 #include "../../capture/windows/IWindowsCapture.h"
 #include "../CursorDraw.h"
+#include "../ScaleFilter.h"
 
 #include <d3d11.h>
 #include <wrl/client.h>
@@ -43,8 +44,11 @@ namespace mw::native::convert {
 /// ── What this costs ─────────────────────────────────────────────────────────
 ///
 /// One GPU pass, zero CPU copies, and the result stays in VRAM on the adapter
-/// that captured it. The scale to a smaller requested resolution rides along in
-/// the same pass, so asking for 1080p from a 1440p screen costs nothing extra.
+/// that captured it. At 1:1 that is all there is. A smaller stream is either
+/// scaled inside the same pass by the sampler (ScaleFilter::Bilinear — free,
+/// and aliased) or, on the tiers that can afford a few hundred microseconds,
+/// resampled first by two 1-D Lanczos-2 passes into an output-sized picture
+/// the conversion then reads 1:1 (ScaleFilter::Lanczos2). See the enum.
 class ColorConvert
 {
 public:
@@ -69,6 +73,9 @@ public:
 
     ColorConvert(const ColorConvert&) = delete;
     ColorConvert& operator=(const ColorConvert&) = delete;
+
+    /// How the picture is brought down to a smaller stream — see ScaleFilter.h.
+    using ScaleFilter = convert::ScaleFilter;
 
     /// Whether init() will accept frames in @p format.
     ///
@@ -116,9 +123,19 @@ public:
     /// representation. 4:4:4 has no such constraint but is rounded the same way
     /// to keep one code path and to stay friendly to every encoder.
     bool init(ID3D11Device* device, DXGI_FORMAT sourceFormat, int sourceWidth, int sourceHeight,
-              int outputWidth, int outputHeight, Chroma chroma, bool hdr, std::string& error);
+              int outputWidth, int outputHeight, Chroma chroma, bool hdr, ScaleFilter filter,
+              std::string& error);
 
     Chroma chroma() const { return m_Chroma; }
+
+    /// The filter in effect: Bilinear whenever nothing is being scaled,
+    /// whatever was asked — the resample pass has no work at 1:1.
+    ScaleFilter scaleFilter() const { return m_Filter; }
+
+    /// Whether the picture sits between bars: a source of another shape than
+    /// the output, on the resample path. The stretch of the bilinear path is
+    /// not letterboxing.
+    bool letterboxed() const { return m_Letterboxed; }
 
     /// Whether the output is P010 in BT.2020 PQ rather than 8-bit BT.709.
     bool hdr() const { return m_Hdr; }
@@ -160,6 +177,9 @@ public:
 private:
     bool createShaders(std::string& error);
     bool createOutput(std::string& error);
+    /// The resample pass: its two shaders, the half-scaled intermediate and
+    /// the output-sized picture the conversion reads. Only when scaling.
+    bool createScaler(std::string& error);
 
     /// Re-upload the cursor's small textures, and tell the shader where to put
     /// them. Cheap on every frame but the ones where the shape changed.
@@ -204,6 +224,29 @@ private:
     /// the previous frame forever — a freeze that looks like a network fault.
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_SourceView;
     ID3D11Texture2D* m_SourceViewFor = nullptr;
+
+    /// The resample pass, present only when m_Filter is not Bilinear.
+    /// Horizontal into m_ScaledMid (output width, source height, FP16 linear),
+    /// vertical into m_Scaled (output size; sRGB-encoded 8-bit on the 8-bit
+    /// path — an _SRGB target encodes the linear result for free — FP16 on
+    /// the scRGB paths). The conversion then samples m_ScaledView where it
+    /// sampled the capture.
+    Microsoft::WRL::ComPtr<ID3D11PixelShader> m_ScaleHShader;
+    Microsoft::WRL::ComPtr<ID3D11PixelShader> m_ScaleVShader;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> m_ScaledMid;
+    Microsoft::WRL::ComPtr<ID3D11RenderTargetView> m_ScaledMidTarget;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_ScaledMidView;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> m_Scaled;
+    Microsoft::WRL::ComPtr<ID3D11RenderTargetView> m_ScaledTarget;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_ScaledView;
+    ScaleFilter m_Filter = ScaleFilter::Bilinear;
+    bool m_Letterboxed = false;
+    /// Where the picture lands in m_Scaled: the whole of it, or the fitted
+    /// rectangle between the bars.
+    float m_PictureX = 0.0f;
+    float m_PictureY = 0.0f;
+    float m_PictureWidth = 0.0f;
+    float m_PictureHeight = 0.0f;
 
     Chroma m_Chroma = Chroma::C420;
     bool m_Hdr = false;

@@ -1,62 +1,89 @@
+# Moteur natif de capture & encodage — MoonlightWeb Native Host
 
-## 28. Le downscale : ce que fait la passe de conversion, et le banc pour la remplacer (17/09/2026)
+> Chantier demandé dans `moonlightweb-native-capture-encoder-plan.md`.
+> Branche : `feature/native-capture-encoder`.
+>
+> Ce document est le livrable d'architecture de la mission (§34) **tenu à jour
+> par ce qui a été mesuré**, pas par ce qui était prévu. Chaque chiffre ici a
+> été relevé sur du matériel réel ; les sections marquées ⚠️ consignent une
+> hypothèse que le banc a **réfutée**, et sont les plus utiles à lire.
+>
+> Le plan de session d'origine vit dans
+> `~/.claude/plans/splendid-enchanting-rossum.md` ; en cas de divergence,
+> **c'est ce fichier-ci qui fait foi** — il est le seul des deux à être
+> versionné avec le code qu'il décrit.
 
-### 28.1 Ce qui est fait aujourd'hui
+---
 
-Quand le client demande moins que l'écran (1440p → 1080p), la réduction est
-faite **dans la passe RGB → YUV**, par le viewport plus petit que la source et
-un sampler `D3D11_FILTER_MIN_MAG_MIP_LINEAR` sur un SRV à un seul mip
-(`ColorConvert.cpp:463`, `:623`, `:678`) ; Linux idem en GLES (`GlConvert.cpp:329`,
-`:524`) ; le palier CPU Linux fait un bilinéaire 16.16 (`BgraToI420.h:97`) ;
-macOS ne réduit pas lui-même, ScreenCaptureKit livre la taille demandée
-(`SckCapture.mm:379`). Donc sur Windows et Linux : **un fetch bilinéaire, noyau
-de 2 texels quel que soit le ratio, en espace gamma** (SRV `_UNORM`, pas
-`_SRGB`). À 0,75 il manque un tiers du noyau : aliasing et scintillement sur
-les traits fins au défilement, battement de netteté de période 4, bords
-assombris par la moyenne en gamma ; et la chroma 4:2:0 est rééchantillonnée
-depuis la source pleine résolution, ratio 2,67 en un seul tap. Les échelons
-75 %/50 % d'`EncodeLoadCap` retombent sur les mêmes ratios.
+## 1. Résumé exécutif
 
-La capture ne peut pas produire plus petit : DDA donne le mode
-(`DxgiDuplication.cpp:184`), WGC la taille de l'item (`WgcCapture.cpp:270`), et
-le host ne change jamais le mode de l'écran. Le Selector ramène toujours la
-demande à la forme de l'écran (`Selector.cpp:351`), donc le pipeline ne voit
-qu'une réduction à aspect identique ; seul un changement de mode en session
-avec `followDisplayShape=false` crée un écart, étiré sur Windows/Linux,
-letterboxé sur macOS (`FrameFit.h`).
+MoonlightWeb est un **client** GameStream : pour streamer la machine sur
+laquelle il tourne, il fallait installer Sunshine. Ce chantier lui donne son
+propre moteur de capture et d'encodage, dans le processus qui tient déjà la
+PeerConnection.
 
-### 28.2 Le banc
+Le gain de latence ne vient pas du transport (inchangé) mais de ce qui
+disparaît en amont :
 
-Décision de Bruno (17/09) : macOS intouché ; tier CPU Linux et encodeur
-logiciel Windows intouchés (machines lentes) ; Linux GPU → priorité perf ;
-Windows encodeurs matériels → meilleur rapport qualité/perf ; le choix vient
-d'un banc et non d'une théorie. Le banc est `mw-scaler-bench`
-(`backend/native-host/tools/scaler-bench/`, `-DMW_BUILD_TOOLS=ON`), décrit en
-§8j de `docs/bench-native-host.md` : temps de la passe seule par timestamps
-GPU, qualité contre une référence Lanczos-3 linéaire, test de défilement
-(gain de mouvement / flicker), crops, rapport HTML interactif ; tous les GPU
-de la machine, SDR et HDR (synthétisé), perceptuel et linéaire, fp32 et
-`min16float` ; FSR1, NIS, SGSR1 et `ID3D11VideoProcessor` en plus des
-filtres classiques.
+```
+AVANT (host local via Sunshine)
+  capture → encode → RTP+FEC+AES-GCM → UDP loopback → moonlight-common-c
+    (réassemblage, déchiffrement, FEC) → QByteArray → signal Qt en file
+    → relais → fragmentation → SCTP/DTLS → navigateur
 
-Ce que le premier passage a déjà établi, sans attendre la campagne : NIS
-refuse toute réduction par contrat ; FSR1 fp16 est faux sur NVIDIA (chemin
-`min16float` de fxc) ; les timestamps 3D ne voient pas `VideoProcessorBlt`
-sur NVIDIA et Intel (chrono mur à la place, non comparable) ; NVIDIA fait du
-bilinéaire dans son VideoProcessor, Intel quelque chose de mieux, AMD quelque
-chose de plus flou. Sur 1440p → 1080p SDR, le bilinéaire actuel a un flicker
-de 0,16 pour un gain de 0,78 ; le même en linéaire 0,087 / 0,91 pour le même
-prix (16 µs sur la 5060 Ti) ; un Lanczos-3 dilaté en linéaire fait 0,0002 /
-1,00 pour 450 µs. **La décision (quel filtre, sur quel tier) attend la
-campagne complète et le choix de Bruno** ; l'intégration (passe
-intermédiaire, chroma en vraie moyenne 2×2, letterbox aligné sur macOS,
-`MW_SCALER` pour l'A/B) est décrite dans le plan et reste à faire.
+APRÈS (moteur natif)
+  capture (surface GPU) → encode (zéro-copie) → fragmentation → SCTP/DTLS → navigateur
+```
 
-**Concrètement, pour l'utilisateur** : rien ne change encore. Le banc est
-l'instrument qui dira, chiffres et crops à l'appui, quel filtre remplacera le
-bilinéaire quand le stream est plus petit que l'écran — et sur quelles
-machines.
-           # sonde + boucle de session
+Supprimés : un aller-retour réseau, RTP, FEC, un chiffrement AES-GCM redondant
+(DTLS chiffre déjà), le réassemblage, **et un saut de signal Qt en file**.
+
+### Mesuré (RTX 5060 Ti, 2560×1440, H.264)
+
+| Étape | Mesure |
+|---|---|
+| Capture DXGI (présent → acquis) | **0,06 ms** moyenne, 0,11 ms au pire |
+| Encodage NVENC (contenu statique) | **3,46 ms** moyenne, 3,70 ms au pire |
+| Copies mémoire par frame | **1** (lecture du bitstream GPU→CPU) |
+
+Capacités confirmées en ouvrant une vraie session : AV1, HEVC, H.264, 10-bit,
+4:4:4.
+
+---
+
+## 2. Où le module se greffe
+
+Deux points d'extension **existaient déjà** et étaient prévus pour ça :
+
+| Point | Fichier |
+|---|---|
+| `IStreamBackend` | `backend/src/backend/streambackend/IStreamBackend.h` |
+| `MediaDescriptor` (union taguée) | `.../MediaDescriptor.h` |
+
+Le seul refactor du code existant est l'extraction d'**`IMediaEngine`**
+(`backend/src/streaming/IMediaEngine.h`) hors de `MoonlightShim`, pour que les
+relais parlent à un moteur abstrait plutôt qu'à moonlight-common-c.
+`MoonlightShim` en dérive sans qu'une ligne de son corps change.
+
+**Inchangé, et devant le rester** : tout le chemin `gamestream` / `wolf` /
+`multiseat`, le format de trame sur le DataChannel (en-tête 17 o), le décodeur
+WebCodecs du navigateur. L'encodeur natif produit de l'Annex-B/OBU exactement
+comme Sunshine, donc le frontend n'a rien à changer pour la vidéo.
+
+---
+
+## 3. Structure
+
+```
+backend/native-host/              # cible CMake mw-native-host (STATIC)
+  LICENSE.md                      # la frontière juridique, expliquée
+  cmake/boundary_check.cmake      # …et rendue mécanique
+  include/mw/native/              # API publique : C++17 pur, zéro Qt, zéro GPL
+  src/core/                       # Probe, Selector, Log, façade
+  src/capture/windows/            # DxgiDuplication (+ WGC en repli, à venir)
+  src/convert/windows/            # ColorConvert : NV12 (4:2:0) et AYUV (4:4:4)
+  src/encode/windows/             # NvencApi, NvencCapabilities, NvencEncoder
+  src/platform/windows/           # sonde + boucle de session
   third_party/nvenc-headers/      # nv-codec-headers (MIT), SDK 12.0
   tests/                          # Qt-free, exécutables sur CI sans GPU
 ```
@@ -1054,7 +1081,7 @@ libre de redevance)**. D'où la préférence AV1 quand les deux bouts suivent.
 | Six étapes mesurées par frame, p95/p99 dans les stats et le log (§4, point 4) | |
 | Clavier/souris (`SendInput`), manette (ViGEm) + rumble | |
 | Installeur : ViGEmBus en silencieux | |
-| Banc de shaders de réduction `mw-scaler-bench` (§28, 17/09/2026) | Le filtre de réduction lui-même : choix d'après la campagne, puis passe intermédiaire dans `ColorConvert`/`GlConvert` |
+| Banc de shaders de réduction `mw-scaler-bench` + passe Lanczos-2 séparable en lumière linéaire dans `ColorConvert`/`GlConvert`, letterbox, `MW_SCALER` (§28, 17/09/2026) | L'A/B sur un vrai flux par encodeur (`MW_SCALER`), le visuel client 1:1 |
 
 **Le chemin est complet côté serveur**, et jouable : le host natif apparaît sans
 pairing, un clic sur un écran construit un `NativeMediaEngine` qui alimente le
@@ -4250,3 +4277,127 @@ pointeur dessiné ne bouge plus que sous le doigt. Attraper une fenêtre par sa
 barre de titre et la déplacer la laisse suivre le doigt, sans saut, et le
 pointeur reste visible pendant tout le glissement. Sur un PC client rien ne
 change.
+
+## 28. Le downscale : ce que fait la passe de conversion, et le banc pour la remplacer (17/09/2026)
+
+### 28.1 Ce qui est fait aujourd'hui
+
+Quand le client demande moins que l'écran (1440p → 1080p), la réduction est
+faite **dans la passe RGB → YUV**, par le viewport plus petit que la source et
+un sampler `D3D11_FILTER_MIN_MAG_MIP_LINEAR` sur un SRV à un seul mip
+(`ColorConvert.cpp:463`, `:623`, `:678`) ; Linux idem en GLES (`GlConvert.cpp:329`,
+`:524`) ; le palier CPU Linux fait un bilinéaire 16.16 (`BgraToI420.h:97`) ;
+macOS ne réduit pas lui-même, ScreenCaptureKit livre la taille demandée
+(`SckCapture.mm:379`). Donc sur Windows et Linux : **un fetch bilinéaire, noyau
+de 2 texels quel que soit le ratio, en espace gamma** (SRV `_UNORM`, pas
+`_SRGB`). À 0,75 il manque un tiers du noyau : aliasing et scintillement sur
+les traits fins au défilement, battement de netteté de période 4, bords
+assombris par la moyenne en gamma ; et la chroma 4:2:0 est rééchantillonnée
+depuis la source pleine résolution, ratio 2,67 en un seul tap. Les échelons
+75 %/50 % d'`EncodeLoadCap` retombent sur les mêmes ratios.
+
+La capture ne peut pas produire plus petit : DDA donne le mode
+(`DxgiDuplication.cpp:184`), WGC la taille de l'item (`WgcCapture.cpp:270`), et
+le host ne change jamais le mode de l'écran. Le Selector ramène toujours la
+demande à la forme de l'écran (`Selector.cpp:351`), donc le pipeline ne voit
+qu'une réduction à aspect identique ; seul un changement de mode en session
+avec `followDisplayShape=false` crée un écart, étiré sur Windows/Linux,
+letterboxé sur macOS (`FrameFit.h`).
+
+### 28.2 Le banc
+
+Décision de Bruno (17/09) : macOS intouché ; tier CPU Linux et encodeur
+logiciel Windows intouchés (machines lentes) ; Linux GPU → priorité perf ;
+Windows encodeurs matériels → meilleur rapport qualité/perf ; le choix vient
+d'un banc et non d'une théorie. Le banc est `mw-scaler-bench`
+(`backend/native-host/tools/scaler-bench/`, `-DMW_BUILD_TOOLS=ON`), décrit en
+§8j de `docs/bench-native-host.md` : temps de la passe seule par timestamps
+GPU, qualité contre une référence Lanczos-3 linéaire, test de défilement
+(gain de mouvement / flicker), crops, rapport HTML interactif ; tous les GPU
+de la machine, SDR et HDR (synthétisé), perceptuel et linéaire, fp32 et
+`min16float` ; FSR1, NIS, SGSR1 et `ID3D11VideoProcessor` en plus des
+filtres classiques.
+
+Ce que le premier passage a déjà établi, sans attendre la campagne : NIS
+refuse toute réduction par contrat ; FSR1 fp16 est faux sur NVIDIA (chemin
+`min16float` de fxc) ; les timestamps 3D ne voient pas `VideoProcessorBlt`
+sur NVIDIA et Intel (chrono mur à la place, non comparable) ; NVIDIA fait du
+bilinéaire dans son VideoProcessor, Intel quelque chose de mieux, AMD quelque
+chose de plus flou. Sur 1440p → 1080p SDR, le bilinéaire actuel a un flicker
+de 0,16 pour un gain de 0,78 ; le même en linéaire 0,087 / 0,91 pour le même
+prix (16 µs sur la 5060 Ti) ; un Lanczos-3 dilaté en linéaire fait 0,0002 /
+1,00 pour 450 µs. **La décision (quel filtre, sur quel tier) attend la
+campagne complète et le choix de Bruno** ; l'intégration (passe
+intermédiaire, chroma en vraie moyenne 2×2, letterbox aligné sur macOS,
+`MW_SCALER` pour l'A/B) est décrite dans le plan et reste à faire.
+
+### 28.3 Ce que la campagne a dit, et ce qui est intégré (17/09/2026, soir)
+
+Campagne complète : 5 cas × SDR/HDR × RTX 5060 Ti, Arc A380, iGPU Radeon
+(2 CU), 300 runs par candidat (`C:\Test\scaler-bench\campaign-1`). Trois
+verdicts, tous les cas confondus :
+
+1. **Le bilinéaire en gamma est le pire endroit où être.** 1440p → 1080p sur
+   le RTX : 16 µs, flicker 0,159, gain de mouvement 0,78, 28,7 dB. Le même
+   fetch en lumière linéaire : même prix, flicker 0,086, gain 0,91, 33,3 dB.
+2. **Les filtres à rayon fixe ne sont pas des réponses** (Catmull-Rom /
+   Mitchell 9 fetches, Lanczos fixe, FSR1, SGSR1) : nets mais aliasés à 1,33,
+   effondrés à ratio 2 (flicker 1,5–1,6 à 1440p → 720p — plus d'énergie
+   parasite que de mouvement réel). Des reconstructeurs, pas des passe-bas.
+3. **Seuls les noyaux dilatés au ratio tiennent partout.** Lanczos-2 dilaté,
+   linéaire, sur le RTX : 1440p → 1080p 261 µs, flicker 0,017, gain 0,91,
+   38,5 dB ; 4K → 720p 408 µs, 0,031, 0,87, 39,1 dB (le bilinéaire y fait
+   4,56 / 22,9 dB). Arc : 480 µs ; iGPU 2 CU : 3,5 ms (mais son bilinéaire
+   fait déjà 300 µs). Lanczos-3 dilaté = la référence à 60 dB, pour 2× le
+   prix et rien de visible en plus. Le VideoProcessor NVIDIA est un
+   bilinéaire, Intel un peu mieux, AMD plus flou ; aucun ne compose le
+   curseur. fp16 : jamais plus rapide, faux sur FSR1 (NVIDIA) et Lanczos-3
+   dilaté (RTX, AMD).
+
+**Décision de Bruno** : Windows encodeurs matériels → Lanczos-2 dilaté
+linéaire ; Linux GPU → bilinéaire linéaire d'abord, Lanczos-2 si le 780M le
+permet ; macOS, tier CPU Linux, encodeur logiciel Windows intouchés.
+
+**Intégré** (`ScaleFilter.h`, `ColorConvert`, `GlConvert`) :
+
+- une **passe de rééchantillonnage séparable** avant la conversion : Lanczos-2
+  dilaté au ratio, horizontale dans un intermédiaire FP16 linéaire (largeur
+  de sortie × hauteur source), verticale dans une image à la taille de
+  sortie que les passes luma/chroma lisent ensuite **en 1:1** — la chroma
+  4:2:0 redevient une vraie moyenne 2×2. 2 × 7 taps à 1440p → 1080p là où le
+  banc mesurait un noyau carré de 49 ; 2 × 13 à 4K → 720p contre 169 ;
+- **en lumière linéaire** : sur D3D11 le 8 bits est décodé par tap à l'aller
+  et ré-encodé gratuitement par une RTV `_SRGB` sur une texture TYPELESS
+  (lue en `_UNORM` par la conversion) ; sur GLES pas de vue sRGB sur un
+  DMA-BUF importé, donc la passe verticale ré-encode elle-même vers un RGBA8
+  — c'est aussi pourquoi le « bilinéaire linéaire » n'est **pas** gratuit sur
+  Linux (il faudrait décoder 4 taps à la main, autant que la passe H de
+  Lanczos-2) : le tier GPU Linux part donc directement en Lanczos-2, et le
+  chiffre du 780M tranche ;
+- **1:1 → rien** : `scaleFilter()` retombe sur Bilinear, aucune passe, aucune
+  texture ;
+- **letterbox** sur ce chemin : une source d'une autre forme (changement de
+  mode avec `followDisplayShape=false`) est ajustée entre des bandes noires
+  via `FrameFit.h`, comme macOS ; le chemin bilinéaire étire toujours ;
+- **choix par tier** : `WindowsSession::buildPipeline` donne Lanczos2 à
+  NVENC/AMF/VPL/MF et Bilinear à l'encodeur logiciel ; `GpuPipeline::init`
+  (Linux) donne Lanczos2, le `CpuPipeline` est intouché ; `MW_SCALER=
+  bilinear|lanczos2` force l'un ou l'autre pour l'A/B ; GLES sans
+  `GL_EXT_color_buffer_float` retombe en bilinéaire avec une ligne de log ;
+- **test** `test_color_convert.cpp` sur WARP : un damier 1 px réduit de
+  moitié donne le gris de mi-lumière (code 177) par Lanczos-2 et le gris
+  gamma (126) par le bilinéaire — les deux chemins ne peuvent pas être
+  confondus — ; 1:1 sans passe ; 64×32 → 32×32 letterboxé, bandes à 16,
+  image centrée. 3769/3769 sur DualRTX.
+
+**Le 780M a répondu** (UM790Pro, Ubuntu 22.04, Mesa 23.2, `test_linux_session`
+« a 720p stream of a bigger display », 1920×1080 → 1280×720, ratio 1,5) :
+conversion **0,57 ms** par image en Lanczos-2 contre 0,45 ms en bilinéaire —
+0,12 ms de plus, l'encodeur en prend 1,5 — donc Lanczos-2 **reste le défaut
+du tier GPU Linux**. 4000/4000 checks sur la machine.
+
+**Reste** : l'A/B sur un vrai flux par encodeur (`MW_SCALER=bilinear` contre le
+défaut, DualRTX NVENC/VPL, UM790Pro VA-API) et le visuel client 1:1 — à
+Bruno, sur le banc réel.
+
+**Concrètement, pour l'utilisateur** : sur une machine à encodeur matériel, un écran 1440p ou 4K streamé en 1080p arrive désormais sans le scintillement du texte au défilement et nettement plus fidèle (+6 à +16 dB), pour quelques centaines de microsecondes de GPU par image ; un écran qui change de forme en cours de route montre des bandes noires au lieu d'une image écrasée. À la résolution native, ou sur une machine qui encode au CPU, rien ne change.

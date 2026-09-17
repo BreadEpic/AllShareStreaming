@@ -257,7 +257,8 @@ void run_capture_tests()
         // luma-range check below holds for both.
         if (!converter.init(duplication.device(), duplication.format(), duplication.width(),
                             duplication.height(), duplication.width(), duplication.height(),
-                            convert::ColorConvert::Chroma::C420, /*hdr=*/false, convertError)) {
+                            convert::ColorConvert::Chroma::C420, /*hdr=*/false,
+                            convert::ColorConvert::ScaleFilter::Bilinear, convertError)) {
             std::fprintf(stderr, "  conversion skipped: %s\n", convertError.c_str());
         } else {
             CHECK(!converter.hdr());
@@ -549,10 +550,11 @@ void run_capture_tests()
                 if (gpu->supports444(Codec::H264)) {
                     convert::ColorConvert converter444;
                     std::string error444;
-                    if (!converter444.init(duplication.device(), duplication.format(),
-                                           duplication.width(), duplication.height(),
-                                           duplication.width(), duplication.height(),
-                                           convert::ColorConvert::Chroma::C444, false, error444)) {
+                    if (!converter444.init(
+                            duplication.device(), duplication.format(), duplication.width(),
+                            duplication.height(), duplication.width(), duplication.height(),
+                            convert::ColorConvert::Chroma::C444, false,
+                            convert::ColorConvert::ScaleFilter::Bilinear, error444)) {
                         std::fprintf(stderr, "  4:4:4 conversion unavailable: %s\n",
                                      error444.c_str());
                     } else if (!converter444.convert(frame.texture, duplication.cursor(),
@@ -623,7 +625,7 @@ void run_capture_tests()
             convert::ColorConvert hdrConv;
             CHECK(hdrConv.init(hdrDup.device(), hdrDup.format(), hdrDup.width(), hdrDup.height(),
                                hdrDup.width(), hdrDup.height(), convert::ColorConvert::Chroma::C420,
-                               true, hdrError));
+                               true, convert::ColorConvert::ScaleFilter::Bilinear, hdrError));
             CHECK(hdrConv.hdr());
 
             capture::CapturedFrame hdrFrame;
@@ -780,7 +782,7 @@ void run_capture_tests()
                 convert::ColorConvert wgcConv;
                 CHECK(wgcConv.init(wgc.device(), wgc.format(), wgc.width(), wgc.height(),
                                    wgc.width(), wgc.height(), convert::ColorConvert::Chroma::C420,
-                                   false, wgcError));
+                                   false, convert::ColorConvert::ScaleFilter::Bilinear, wgcError));
                 CHECK(wgcConv.convert(wgcFrame.texture, wgc.cursor(), convert::CursorDraw{},
                                       wgcError));
 

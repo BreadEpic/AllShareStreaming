@@ -311,11 +311,13 @@ bool select(const Capabilities& caps, const SessionConfig& config, Selection& ou
     out.height = config.height > 0 ? config.height : out.display->height;
 
     // The frame keeps the display's shape; only its height is the client's.
-    // A frame of another shape is not letterboxed on every platform — the
-    // Windows conversion pass stretches the desktop across it — so a 16:9
-    // screen asked for 1664x1080 came out squeezed into 3:2 (Arc A380,
-    // 14/09/2026). Nothing then marks the picture as wrong: no bars for the
-    // browser's aspect probe to measure, a request honoured to the pixel.
+    // A frame of another shape is not letterboxed on every path — the
+    // bilinear conversion pass (Windows and Linux, software tier) stretches
+    // the desktop across it — so a 16:9 screen asked for 1664x1080 came out
+    // squeezed into 3:2 (Arc A380, 14/09/2026). Nothing then marks the
+    // picture as wrong: no bars for the browser's aspect probe to measure, a
+    // request honoured to the pixel. (The resample path of 17/09/2026 and
+    // macOS letterbox instead; the shape is still settled here, once.)
     //
     // Never upscaled, on any tier (Bruno's rule, 16/09/2026; the fallback tier
     // alone had it before). A client whose setting is 1440p asking a 1080p

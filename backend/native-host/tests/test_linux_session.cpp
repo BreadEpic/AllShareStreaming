@@ -438,5 +438,68 @@ void run_linux_session_tests()
             }
         }
     }
+
+    // ── A smaller stream: the resample pass, and what it costs here ──
+    //
+    // 720p of a bigger display goes through the Lanczos-2 pass by default on
+    // the GPU tier, and through the plain bilinear one under MW_SCALER=
+    // bilinear. Both are run, and the conversion time per frame — on this
+    // platform the pass ends in glFinish, so convertedUs − submittedUs is the
+    // GPU's work too — is printed side by side: the figure that decides
+    // whether the 780M keeps the default (design §28.3).
+    if (display && display->height > 720) {
+        SECTION("Linux — a 720p stream of a bigger display, Lanczos-2 then bilinear");
+        for (const char* scaler : {"lanczos2", "bilinear"}) {
+            ::setenv("MW_SCALER", scaler, 1);
+            SessionConfig small = config;
+            small.clientCodecs = {Codec::H264};
+            small.height = 720;
+            small.width = 0;
+
+            std::atomic<int> smallFrames{0};
+            std::atomic<int64_t> convertSumUs{0};
+            std::atomic<int64_t> convertWorstUs{0};
+            std::atomic<int64_t> encodeSumUs{0};
+            std::string smallEnded;
+            std::string smallError;
+            std::unique_ptr<Session> smallSession = NativeHost::createSession(
+                small,
+                [&](const EncodedFrame& f) {
+                    smallFrames.fetch_add(1);
+                    const int64_t convert = f.convertedUs - f.submittedUs;
+                    convertSumUs.fetch_add(convert);
+                    int64_t worst = convertWorstUs.load();
+                    while (convert > worst &&
+                           !convertWorstUs.compare_exchange_weak(worst, convert)) {}
+                    encodeSumUs.fetch_add(f.encodedUs - f.convertedUs);
+                },
+                nullptr, nullptr, nullptr, [&](const std::string& reason) { smallEnded = reason; },
+                smallError);
+            if (!smallSession) {
+                std::fprintf(stderr, "  createSession failed: %s\n", smallError.c_str());
+                CHECK(false);
+                continue;
+            }
+            CHECK(smallSession->start(smallError));
+            const SessionInfo& smallInfo = smallSession->info();
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+            smallSession->requestKeyframe();
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            smallSession->stop();
+            const int n = smallFrames.load();
+            std::fprintf(stderr,
+                         "  %s: %dx%d, %d frame(s), convert mean %.2f ms worst %.2f ms, encode "
+                         "mean %.2f ms%s\n",
+                         scaler, smallInfo.width, smallInfo.height, n,
+                         n ? convertSumUs.load() / 1000.0 / n : 0.0, convertWorstUs.load() / 1000.0,
+                         n ? encodeSumUs.load() / 1000.0 / n : 0.0,
+                         smallEnded.empty() ? "" : (", ended: " + smallEnded).c_str());
+            CHECK(smallEnded.empty());
+            CHECK(n >= 2);
+            CHECK_EQ(smallInfo.height, 720);
+            CHECK(smallInfo.width < display->width);
+        }
+        ::unsetenv("MW_SCALER");
+    }
 #endif
 }

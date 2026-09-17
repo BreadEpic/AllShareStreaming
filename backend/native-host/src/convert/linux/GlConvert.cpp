@@ -18,6 +18,7 @@
 #include "GlConvert.h"
 
 #include "../../core/Log.h"
+#include "../../platform/macos/FrameFit.h"
 
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
@@ -34,6 +35,8 @@
 #include <GLES2/gl2ext.h>
 // clang-format on
 
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -106,6 +109,90 @@ void main() {
     o = vec2((rgb.b - y) / 1.8556, (rgb.r - y) / 1.5748) * kChromaScale + kChromaBias;
 }
 )GLSL";
+
+// ── The resample pass: Lanczos-2 dilated to the ratio, separable ────────────
+//
+// ColorConvert.cpp's kScaleShaderSource, transcribed (see there for the why:
+// the bench of 17/09/2026). Two 1-D passes, in linear light: the scanout is
+// decoded per tap on the way in, and — GLES having no free sRGB encode on an
+// imported target the way D3D11's _SRGB view gives one — the vertical pass
+// re-encodes its result itself, once per output pixel, into a plain RGBA8 the
+// conversion then reads as it read the scanout. The sizes are #defines
+// prepended per geometry, so the tap loop is a constant.
+constexpr char kScaleBody[] = R"GLSL(
+precision highp float;
+in vec2 uv;
+uniform sampler2D Source;
+out vec4 o;
+
+vec3 srgbToLinear(vec3 c) {
+    return mix(c / 12.92, pow(max(c + 0.055, 0.0) / 1.055, vec3(2.4)), step(0.04045, c));
+}
+vec3 linearToSrgb(vec3 c) {
+    c = max(c, 0.0);
+    return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+}
+// Lanczos with two lobes, x already divided by the dilation.
+float lanczos2(float x) {
+    x = abs(x);
+    if (x < 1e-5) return 1.0;
+    if (x >= 2.0) return 0.0;
+    float px = 3.14159265 * x;
+    return 2.0 * sin(px) * sin(px * 0.5) / (px * px);
+}
+vec3 fetch(int x, int y) {
+    vec3 c = texelFetch(Source, ivec2(x, y), 0).rgb;
+#if MW_DECODE
+    c = srgbToLinear(c);
+#endif
+    return c;
+}
+void main() {
+#if MW_HORIZONTAL
+    float centre = uv.x * MW_LEN - 0.5;
+    int fixedCoord = int(uv.y * MW_FIXED);
+#else
+    float centre = uv.y * MW_LEN - 0.5;
+    int fixedCoord = int(uv.x * MW_FIXED);
+#endif
+    int first = int(ceil(centre - 2.0 * MW_DILATE));
+    vec3 acc = vec3(0.0);
+    float sum = 0.0;
+    for (int t = 0; t < MW_TAPS; ++t) {
+        int p = first + t;
+        float w = lanczos2((float(p) - centre) / MW_DILATE);
+        p = clamp(p, 0, int(MW_LEN) - 1);
+#if MW_HORIZONTAL
+        acc += fetch(p, fixedCoord) * w;
+#else
+        acc += fetch(fixedCoord, p) * w;
+#endif
+        sum += w;
+    }
+    vec3 c = max(acc / sum, 0.0);
+#if MW_ENCODE
+    o = vec4(linearToSrgb(c), 1.0);
+#else
+    o = vec4(c, 1.0);
+#endif
+}
+)GLSL";
+
+/// One direction of the resample pass as a complete fragment shader: the
+/// geometry as #defines, then the body.
+std::string scaleShader(bool horizontal, bool decode, bool encode, int length, int output,
+                        int fixed)
+{
+    const double dilate = std::max(1.0, static_cast<double>(length) / output);
+    const int taps = static_cast<int>(std::ceil(4.0 * dilate)) + 1;
+    char text[512];
+    std::snprintf(text, sizeof(text),
+                  "#version 300 es\n#define MW_HORIZONTAL %d\n#define MW_DECODE %d\n"
+                  "#define MW_ENCODE %d\n#define MW_DILATE %.9f\n#define MW_TAPS %d\n"
+                  "#define MW_LEN %d.0\n#define MW_FIXED %d.0\n",
+                  horizontal ? 1 : 0, decode ? 1 : 0, encode ? 1 : 0, dilate, taps, length, fixed);
+    return std::string(text) + kScaleBody;
+}
 
 PFNEGLGETPLATFORMDISPLAYEXTPROC pGetPlatformDisplay = nullptr;
 PFNEGLCREATEIMAGEKHRPROC pCreateImage = nullptr;
@@ -246,6 +333,17 @@ struct GlConvert::Impl
     GLuint cursorPixels = 0;
     GLuint cursorInvert = 0;
     bool haveCursorTextures = false;
+
+    // The resample pass, when the filter is Lanczos2: horizontal into
+    // scaledMid (picture-wide, source-high, RGBA16F linear), vertical into
+    // scaled (output-sized RGBA8, sRGB-encoded) — which the conversion then
+    // reads where it read the scanout.
+    GLuint scaleHProgram = 0;
+    GLuint scaleVProgram = 0;
+    GLuint scaledMidTexture = 0;
+    GLuint scaledMidFbo = 0;
+    GLuint scaledTexture = 0;
+    GLuint scaledFbo = 0;
 };
 
 GlConvert::GlConvert()
@@ -334,7 +432,8 @@ bool GlConvert::createShaders(std::string& error)
 }
 
 bool GlConvert::init(const std::string& renderNode, uint32_t sourceFourcc, int sourceWidth,
-                     int sourceHeight, int outputWidth, int outputHeight, std::string& error)
+                     int sourceHeight, int outputWidth, int outputHeight, ScaleFilter filter,
+                     std::string& error)
 {
     stop();
     d = std::make_unique<Impl>();
@@ -364,15 +463,118 @@ bool GlConvert::init(const std::string& renderNode, uint32_t sourceFourcc, int s
         return false;
     }
 
+    // The resample pass only where there is something to resample.
+    const bool scaling = m_OutputWidth != m_SourceWidth || m_OutputHeight != m_SourceHeight;
+    m_Filter = scaling ? filter : ScaleFilter::Bilinear;
+    m_Letterboxed = false;
+    m_PictureX = m_PictureY = 0;
+    m_PictureWidth = m_OutputWidth;
+    m_PictureHeight = m_OutputHeight;
+    if (m_Filter != ScaleFilter::Bilinear) {
+        // A source of another shape is fitted between bars, as macOS does
+        // (FrameFit.h), rather than stretched as the bilinear path does.
+        const platform::FrameFit fit =
+            platform::frameFit(m_SourceWidth, m_SourceHeight, m_OutputWidth, m_OutputHeight);
+        const int w = static_cast<int>(std::lround(m_SourceWidth * fit.scale));
+        const int h = static_cast<int>(std::lround(m_SourceHeight * fit.scale));
+        if (w < m_OutputWidth - 1 || h < m_OutputHeight - 1) {
+            m_Letterboxed = true;
+            m_PictureWidth = std::max(2, w);
+            m_PictureHeight = std::max(2, h);
+            m_PictureX = (m_OutputWidth - m_PictureWidth) / 2;
+            m_PictureY = (m_OutputHeight - m_PictureHeight) / 2;
+        }
+    }
+
     if (!createContext(renderNode, error)) return false;
     if (!createShaders(error)) return false;
+    if (m_Filter != ScaleFilter::Bilinear && !createScaler(error)) return false;
     // Built on this thread, converted on another: let go of the context so the
     // capture thread can take it (an EGL context is current on one thread).
     detachThread();
 
     log::info("[native] colour conversion: " + std::to_string(m_SourceWidth) + "x" +
               std::to_string(m_SourceHeight) + " XRGB -> " + std::to_string(m_OutputWidth) + "x" +
-              std::to_string(m_OutputHeight) + " NV12 4:2:0 (BT.709 limited), via EGL");
+              std::to_string(m_OutputHeight) + " NV12 4:2:0 (BT.709 limited), via EGL" +
+              (!scaling                            ? ", 1:1"
+               : m_Filter == ScaleFilter::Bilinear ? ", scaled bilinear in the pass"
+                                                   : ", scaled Lanczos-2 (linear light)") +
+              (m_Letterboxed ? ", letterboxed to " + std::to_string(m_PictureWidth) + "x" +
+                                   std::to_string(m_PictureHeight)
+                             : ""));
+    return true;
+}
+
+bool GlConvert::createScaler(std::string& error)
+{
+    // The intermediate is linear light and needs more than 8 bits, so it is
+    // RGBA16F — colour-renderable only with GL_EXT_color_buffer_float (core
+    // in ES 3.2, an extension below). Without it the pass cannot be built;
+    // the session keeps the bilinear pass and the log says why.
+    const char* extensions = reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS));
+    const bool floatTargets =
+        extensions && (std::strstr(extensions, "GL_EXT_color_buffer_float") ||
+                       std::strstr(extensions, "GL_EXT_color_buffer_half_float"));
+    if (!floatTargets) {
+        log::info("[native] no float render targets on this GL (GL_EXT_color_buffer_float) — "
+                  "the resample pass is unavailable, scaling bilinear in the conversion pass");
+        m_Filter = ScaleFilter::Bilinear;
+        m_Letterboxed = false;
+        m_PictureX = m_PictureY = 0;
+        m_PictureWidth = m_OutputWidth;
+        m_PictureHeight = m_OutputHeight;
+        return true;
+    }
+
+    const GLuint vs = compile(GL_VERTEX_SHADER, kVertex, error);
+    if (!vs) return false;
+    const GLuint fsH = compile(
+        GL_FRAGMENT_SHADER,
+        scaleShader(true, true, false, m_SourceWidth, m_PictureWidth, m_SourceHeight), error);
+    if (!fsH) return false;
+    const GLuint fsV = compile(
+        GL_FRAGMENT_SHADER,
+        scaleShader(false, false, true, m_SourceHeight, m_PictureHeight, m_PictureWidth), error);
+    if (!fsV) return false;
+    d->scaleHProgram = link(vs, fsH, error);
+    if (!d->scaleHProgram) return false;
+    d->scaleVProgram = link(vs, fsV, error);
+    if (!d->scaleVProgram) return false;
+    glDeleteShader(vs);
+    glDeleteShader(fsH);
+    glDeleteShader(fsV);
+
+    d->scaledMidTexture = newTexture(GL_NEAREST);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, m_PictureWidth, m_SourceHeight, 0, GL_RGBA,
+                 GL_HALF_FLOAT, nullptr);
+    glGenFramebuffers(1, &d->scaledMidFbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, d->scaledMidFbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, d->scaledMidTexture,
+                           0);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        error = "the resample intermediate cannot be rendered into";
+        return false;
+    }
+
+    // The scaled picture: sampled linearly by the conversion, as the scanout
+    // was, so a 1:1 read lands on texel centres and the chroma pass's read at
+    // its own centre is a true 2x2 average.
+    d->scaledTexture = newTexture(GL_LINEAR);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, m_OutputWidth, m_OutputHeight, 0, GL_RGBA,
+                 GL_UNSIGNED_BYTE, nullptr);
+    glGenFramebuffers(1, &d->scaledFbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, d->scaledFbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, d->scaledTexture,
+                           0);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        error = "the scaled picture cannot be rendered into";
+        return false;
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    if (glGetError() != GL_NO_ERROR) {
+        error = "GL reported an error building the resample pass";
+        return false;
+    }
     return true;
 }
 
@@ -506,6 +708,36 @@ bool GlConvert::convert(const capture::KmsFrame& frame, const capture::CursorSta
     glBindTexture(GL_TEXTURE_2D, d->sourceTexture);
     pImageTargetTexture(GL_TEXTURE_2D, d->sourceImage);
 
+    // The resample pass, when there is one: the scanout through the
+    // horizontal filter into the intermediate, the intermediate through the
+    // vertical one into the scaled picture, which the conversion below reads
+    // at 1:1. Bars, if any, are cleared to black first — the vertical pass
+    // only paints the fitted rectangle.
+    const bool resampled = m_Filter != ScaleFilter::Bilinear;
+    if (resampled) {
+        const auto scale = [&](GLuint program, GLuint fbo, GLuint input, int x, int y, int w,
+                               int h) {
+            glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+            glViewport(x, y, w, h);
+            glUseProgram(program);
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, input);
+            glUniform1i(glGetUniformLocation(program, "Source"), 0);
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+        };
+        scale(d->scaleHProgram, d->scaledMidFbo, d->sourceTexture, 0, 0, m_PictureWidth,
+              m_SourceHeight);
+        if (m_Letterboxed) {
+            glBindFramebuffer(GL_FRAMEBUFFER, d->scaledFbo);
+            glViewport(0, 0, m_OutputWidth, m_OutputHeight);
+            glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT);
+        }
+        scale(d->scaleVProgram, d->scaledFbo, d->scaledMidTexture, m_PictureX, m_PictureY,
+              m_PictureWidth, m_PictureHeight);
+    }
+    const GLuint scene = resampled ? d->scaledTexture : d->sourceTexture;
+
     const bool drawCursor = cursor.visible && d->haveCursorTextures && cursor.width > 0 &&
                             cursor.height > 0 && m_SourceWidth > 0 && m_SourceHeight > 0;
     const float magnify = draw.magnify > 1.0f ? draw.magnify : 1.0f;
@@ -515,16 +747,27 @@ bool GlConvert::convert(const capture::KmsFrame& frame, const capture::CursorSta
         static_cast<float>(cursor.x + draw.hotspotX) - static_cast<float>(draw.hotspotX) * magnify;
     const float cy =
         static_cast<float>(cursor.y + draw.hotspotY) - static_cast<float>(draw.hotspotY) * magnify;
-    const float rect[4] = {
+    // The cursor rectangle in the uv of whatever the conversion samples: the
+    // scanout, or the scaled picture — the same square unless letterboxed.
+    float rect[4] = {
         cx / static_cast<float>(m_SourceWidth), cy / static_cast<float>(m_SourceHeight),
         cw / static_cast<float>(m_SourceWidth), ch / static_cast<float>(m_SourceHeight)};
+    if (resampled) {
+        const float sx = static_cast<float>(m_PictureWidth) / static_cast<float>(m_OutputWidth);
+        const float sy = static_cast<float>(m_PictureHeight) / static_cast<float>(m_OutputHeight);
+        rect[0] = static_cast<float>(m_PictureX) / static_cast<float>(m_OutputWidth) + rect[0] * sx;
+        rect[1] =
+            static_cast<float>(m_PictureY) / static_cast<float>(m_OutputHeight) + rect[1] * sy;
+        rect[2] *= sx;
+        rect[3] *= sy;
+    }
 
     const auto pass = [&](GLuint program, GLuint fbo, int w, int h) {
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
         glViewport(0, 0, w, h);
         glUseProgram(program);
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, d->sourceTexture);
+        glBindTexture(GL_TEXTURE_2D, scene);
         glUniform1i(glGetUniformLocation(program, "Source"), 0);
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, d->cursorPixels);
@@ -563,11 +806,16 @@ void GlConvert::stop()
         eglMakeCurrent(d->display, EGL_NO_SURFACE, EGL_NO_SURFACE, d->context);
         if (d->lumaFbo) glDeleteFramebuffers(1, &d->lumaFbo);
         if (d->chromaFbo) glDeleteFramebuffers(1, &d->chromaFbo);
-        const GLuint textures[] = {d->sourceTexture, d->lumaTexture, d->chromaTexture,
-                                   d->cursorPixels, d->cursorInvert};
-        glDeleteTextures(5, textures);
+        if (d->scaledMidFbo) glDeleteFramebuffers(1, &d->scaledMidFbo);
+        if (d->scaledFbo) glDeleteFramebuffers(1, &d->scaledFbo);
+        const GLuint textures[] = {d->sourceTexture, d->lumaTexture,  d->chromaTexture,
+                                   d->cursorPixels,  d->cursorInvert, d->scaledMidTexture,
+                                   d->scaledTexture};
+        glDeleteTextures(7, textures);
         if (d->lumaProgram) glDeleteProgram(d->lumaProgram);
         if (d->chromaProgram) glDeleteProgram(d->chromaProgram);
+        if (d->scaleHProgram) glDeleteProgram(d->scaleHProgram);
+        if (d->scaleVProgram) glDeleteProgram(d->scaleVProgram);
         if (d->sourceImage != EGL_NO_IMAGE_KHR) pDestroyImage(d->display, d->sourceImage);
         if (d->lumaImage != EGL_NO_IMAGE_KHR) pDestroyImage(d->display, d->lumaImage);
         if (d->chromaImage != EGL_NO_IMAGE_KHR) pDestroyImage(d->display, d->chromaImage);

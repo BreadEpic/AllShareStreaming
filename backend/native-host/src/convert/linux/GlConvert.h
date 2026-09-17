@@ -20,6 +20,7 @@
 #include "../../capture/CaptureTypes.h"
 #include "../../capture/linux/KmsCapture.h"
 #include "../CursorDraw.h"
+#include "../ScaleFilter.h"
 
 #include <cstdint>
 #include <memory>
@@ -79,8 +80,21 @@ public:
     /// @p sourceFourcc at @p sourceWidth × @p sourceHeight, scaled to
     /// @p outputWidth × @p outputHeight. Output dimensions are rounded down to
     /// even, as NV12 requires.
+    ///
+    /// @p filter is how a smaller output is made (ScaleFilter.h): the plain
+    /// linear fetch of the conversion pass, or a Lanczos-2 resample in linear
+    /// light first. Lanczos-2 needs a float-renderable intermediate
+    /// (GL_EXT_color_buffer_float); a driver without it falls back to
+    /// bilinear, and the log says so. scaleFilter() tells what is in effect.
     bool init(const std::string& renderNode, uint32_t sourceFourcc, int sourceWidth,
-              int sourceHeight, int outputWidth, int outputHeight, std::string& error);
+              int sourceHeight, int outputWidth, int outputHeight, ScaleFilter filter,
+              std::string& error);
+
+    /// The filter in effect: Bilinear at 1:1 whatever was asked.
+    ScaleFilter scaleFilter() const { return m_Filter; }
+    /// Whether the picture sits between black bars (a source of another
+    /// shape, on the resample path; the bilinear path stretches instead).
+    bool letterboxed() const { return m_Letterboxed; }
 
     /// Attach the encoder's surface as the render target. Done once per
     /// session, not per frame: the planes are imported and their framebuffers
@@ -105,6 +119,9 @@ private:
 
     bool createContext(const std::string& renderNode, std::string& error);
     bool createShaders(std::string& error);
+    /// The resample pass: two programs, the intermediate and the scaled
+    /// picture. Only when scaling with Lanczos2.
+    bool createScaler(std::string& error);
     /// Bind the context to the calling thread if it is not already. convert()
     /// runs on the capture thread, init() on whoever built the session.
     bool makeCurrent(std::string& error);
@@ -124,6 +141,14 @@ private:
     int m_OutputWidth = 0;
     int m_OutputHeight = 0;
     uint64_t m_CursorShapeVersion = 0;
+    ScaleFilter m_Filter = ScaleFilter::Bilinear;
+    bool m_Letterboxed = false;
+    /// Where the picture lands in the scaled texture: all of it, or the
+    /// fitted rectangle between the bars.
+    int m_PictureX = 0;
+    int m_PictureY = 0;
+    int m_PictureWidth = 0;
+    int m_PictureHeight = 0;
 };
 
 } // namespace mw::native::convert

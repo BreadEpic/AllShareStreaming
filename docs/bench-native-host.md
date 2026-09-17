@@ -845,6 +845,29 @@ choix de la métrique, nuage qualité × temps, galerie, tableau + CSV). Les
 shaders sont lus à côté de l'exe (`scaler-bench/shaders/`) : un filtre se
 retouche et se relance sans rebuild.
 
+### Les chiffres (campagne du 17/09/2026, `C:\Test\scaler-bench\campaign-1`)
+
+RTX 5060 Ti, SDR, temps de la passe seule (noyau carré une passe, tel que
+mesuré ; l'intégration est séparable, donc moins chère) :
+
+| Cas | bilinéaire (gamma) | bilinéaire linéaire | Lanczos-2 dilaté linéaire |
+|---|---|---|---|
+| 1440p → 1080p | 16 µs · flicker 0,159 · gain 0,78 · 28,7 dB | 16 µs · 0,086 · 0,91 · 33,3 dB | 261 µs · 0,017 · 0,91 · 38,5 dB |
+| 1440p → 720p | 7 µs · 0,663 · 0,82 · 26,1 dB | 7 µs · 1,225 · 0,95 · 26,9 dB | 190 µs · 0,046 · 0,91 · 39,1 dB |
+| 4K → 1440p | 88 µs · 0,150 · 0,86 · 32,5 dB | 88 µs · 0,126 · 0,86 · 33,2 dB | 486 µs · 0,015 · 0,89 · 39,4 dB |
+| 4K → 1080p | 74 µs · 0,238 · 0,90 · 32,1 dB | 73 µs · 0,212 · 0,91 · 33,1 dB | 445 µs · 0,020 · 0,88 · 39,4 dB |
+| 4K → 720p | 39 µs · 4,56 · 1,04 · 22,9 dB | 36 µs · 4,56 · 1,04 · 22,9 dB | 408 µs · 0,031 · 0,87 · 39,1 dB |
+
+Même filtre sur l'Arc A380 : 480 µs à 1080p ; sur l'iGPU Radeon 2 CU du Ryzen
+7000 : 3,5 ms (son bilinéaire fait déjà 300 µs — pas un GPU représentatif d'un
+780M à 12 CU). Les filtres à rayon fixe (Catmull-Rom/Mitchell 9 fetches,
+Lanczos fixes, FSR1, SGSR1) sont nets mais aliasés à 1,33 et s'effondrent à
+ratio 2 (flicker 1,5–1,6). Lanczos-3 dilaté = la référence (60 dB) pour 2× le
+prix. VideoProcessor : NVIDIA = bilinéaire, Intel un peu mieux (30,8 dB),
+AMD plus flou. Sur le 780M (UM790Pro, Mesa), la passe intégrée — séparable —
+coûte 0,57 ms par image à 1080p → 720p contre 0,45 ms en bilinéaire. Décision
+et intégration : §28.3 du design.
+
 ## 9. Pour l'A/B
 
 Le banc encode vers un puits ; l'A/B se fait sur un vrai flux. Une session

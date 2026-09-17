@@ -146,7 +146,8 @@ struct SessionConfig
     /// the DisplayFormatCallback; the client's decoder follows the new
     /// parameter sets on the keyframe that comes with it. False, the default,
     /// keeps the negotiated size and lets the conversion pass absorb the
-    /// difference — stretched on Windows and Linux, letterboxed on macOS.
+    /// difference — letterboxed on macOS and on the Lanczos-2 resample path
+    /// of Windows and Linux, stretched by the bilinear one (software tier).
     ///
     /// The browser sets it when the viewer's aspect setting is "Auto": a
     /// ratio chosen by hand is a ratio the viewer wants kept.
