@@ -3395,7 +3395,7 @@ export class StreamView {
         if (this._gamingMode && this.inputEl) {
             const tryLock = () => {
                 try {
-                    const p = this.inputEl.requestPointerLock();
+                    const p = this._lockPointer();
                     if (p && typeof p.catch === 'function')
                         p.catch(() => {
                             /* hint flow covers it */
@@ -6752,7 +6752,11 @@ export class StreamView {
                 referenceWidth: refW,
                 referenceHeight: refH,
             });
-            this.inputEl.requestPointerLock();
+            const p = this._lockPointer();
+            if (p && typeof p.catch === 'function')
+                p.catch(() => {
+                    /* the "click to capture" hint stays up */
+                });
         };
         this.inputEl.addEventListener('click', this._onGamingClick);
 
@@ -7627,8 +7631,50 @@ export class StreamView {
 
     requestPointerLock() {
         if (!this.pointerLocked && this.inputEl) {
-            this.inputEl.requestPointerLock();
+            this._lockPointer();
         }
+    }
+
+    /**
+     * Take the pointer, asking for the mouse's own counts.
+     *
+     * Without `unadjustedMovement`, movementX/Y is what the viewer's OS made
+     * of the motion: pointer speed, "enhance pointer precision" and display
+     * scaling all applied. The host then injects that as a relative move and
+     * its own pointer settings apply a second time — and a game reading the
+     * cursor (Counter-Strike with m_rawinput 0) gets both. Measured on a
+     * 125 % Windows client on 18/09/2026: 2000 counts injected at ~1 kHz
+     * arrived as 6529 with the default lock, with a 553-pixel single event
+     * and a phantom vertical component from the cursor warp; as exactly 2000,
+     * 20 per event, with unadjusted movement. Slow moves looked fine both
+     * ways, which is why the desktop felt right and aiming did not.
+     *
+     * The option is Chromium-only (Windows, macOS, Linux, ChromeOS). Where it
+     * is refused the promise rejects with NotSupportedError and the plain lock
+     * is asked for instead; Firefox and Safari ignore the argument and return
+     * undefined, so nothing to retry there. The caller's pointerlockchange
+     * handler sees the outcome either way.
+     */
+    _lockPointer() {
+        const el = this.inputEl;
+        if (!el) return null;
+        let p = null;
+        try {
+            p = el.requestPointerLock({ unadjustedMovement: true });
+        } catch (e) {
+            // An old engine that takes no argument object and throws on one.
+            return el.requestPointerLock();
+        }
+        if (!p || typeof p.catch !== 'function') return p;
+        return p.catch((err) => {
+            if (err && err.name === 'NotSupportedError') {
+                console.log(
+                    '[StreamView] Mouse: unadjusted movement unsupported here, plain pointer lock',
+                );
+                return el.requestPointerLock();
+            }
+            throw err;
+        });
     }
 
     // Filler kept in the hidden capture <textarea> so Backspace always has
