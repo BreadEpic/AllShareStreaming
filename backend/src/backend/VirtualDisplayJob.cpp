@@ -19,6 +19,7 @@
 
 #include "backend/streambackend/NativeProbeService.h"
 #include "common/Logger.h"
+#include "mw/native/VirtualDisplay.h"
 #include "server/AppSettings.h"
 #include "streaming/ConsoleSession.h"
 
@@ -38,6 +39,8 @@ constexpr int kTransferTimeoutMs = 60 * 1000;
 constexpr int kExtractTimeoutMs = 60 * 1000;
 constexpr int kHelperTimeoutMs = 5 * 60 * 1000;
 constexpr int kPollIntervalMs = 500;
+/// How long the OS may take to bring an in-process display online.
+constexpr int kOnlineTimeoutMs = 15 * 1000;
 
 const char* stateName(VirtualDisplayJob::State s)
 {
@@ -105,6 +108,12 @@ VirtualDisplayJob::VirtualDisplayJob(QObject* parent)
     m_Deadline.setSingleShot(true);
     connect(&m_Deadline, &QTimer::timeout, this, [this]() {
         m_Poll.stop();
+        if (m_InProcessResult) {
+            m_InProcessResult.reset();
+            mw::native::vdisplay::destroy();
+            fail(QStringLiteral("The virtual display did not come online"));
+            return;
+        }
         fail(QStringLiteral("The elevated helper did not answer in time"));
     });
 }
@@ -157,6 +166,7 @@ QString VirtualDisplayJob::start(const VirtualDisplay::Request& req)
     m_FinishedAt = QDateTime();
     m_HelperOut.clear();
     m_ModeStagePending = false;
+    m_InProcessResult.reset();
 
     if (!QDir().mkpath(VirtualDisplay::stagingDir())) {
         setState(State::Failed);
@@ -167,10 +177,11 @@ QString VirtualDisplayJob::start(const VirtualDisplay::Request& req)
     QFile::remove(VirtualDisplay::resultPath());
     QFile::remove(VirtualDisplay::requestPath());
 
-    if (req.action == VirtualDisplay::Request::Action::Remove || st.installed) {
-        // Removing needs no download; and a driver already present (installed
-        // by hand, or by us earlier) is never re-fetched: the helper only
-        // configures what is there.
+    if (req.action == VirtualDisplay::Request::Action::Remove || st.installed ||
+        st.method == QLatin1String("inprocess")) {
+        // Removing needs no download; a driver already present (installed by
+        // hand, or by us earlier) is never re-fetched: the helper only
+        // configures what is there; and macOS has no driver to fetch at all.
         dispatch();
     } else {
         download();
@@ -333,8 +344,13 @@ void VirtualDisplayJob::dispatch()
     req.write(VirtualDisplay::toJson(m_Request));
     req.close();
 
-    setState(State::Elevating);
     const QString method = VirtualDisplay::probe().method;
+    if (method == QLatin1String("inprocess")) {
+        applyInProcess();
+        return;
+    }
+
+    setState(State::Elevating);
     const QStringList dirArg = {QStringLiteral("--vdisplay-dir"),
                                 QDir::toNativeSeparators(VirtualDisplay::stagingDir())};
 
@@ -357,6 +373,26 @@ void VirtualDisplayJob::dispatch()
     } else {
         fail(QStringLiteral("No way to elevate on this install"));
     }
+}
+
+void VirtualDisplayJob::applyInProcess()
+{
+    // macOS: the display is an object of this process (mw::native::vdisplay).
+    // No helper, no file: the request is applied here and now, and the only
+    // wait is for the OS to bring the display online — polled, not slept.
+    setState(State::Configuring);
+    VirtualDisplay::Result res;
+    if (!VirtualDisplay::applyInProcess(m_Request, &res)) {
+        handleResult(res);
+        return;
+    }
+    if (m_Request.action == VirtualDisplay::Request::Action::Remove) {
+        handleResult(res);
+        return;
+    }
+    m_InProcessResult = res;
+    m_Deadline.start(kOnlineTimeoutMs);
+    m_Poll.start();
 }
 
 void VirtualDisplayJob::runTask()
@@ -443,6 +479,15 @@ void VirtualDisplayJob::runHelper(const QStringList& args, bool inConsoleSession
 
 void VirtualDisplayJob::pollResult()
 {
+    if (m_InProcessResult) {
+        if (!mw::native::vdisplay::isOnline()) return;
+        m_Poll.stop();
+        m_Deadline.stop();
+        const VirtualDisplay::Result res = *m_InProcessResult;
+        m_InProcessResult.reset();
+        handleResult(res);
+        return;
+    }
     QFile f(VirtualDisplay::resultPath());
     if (!f.open(QIODevice::ReadOnly)) return;
     const auto res = VirtualDisplay::parseResult(f.readAll());

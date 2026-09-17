@@ -183,6 +183,7 @@
     "vdisplay": {
         "title": "Add a virtual display",
         "intro": "This computer has no screen attached, so there is nothing to stream. A virtual display gives it one: games and the desktop render to it exactly as to a monitor.",
+        "introExtra": "This computer already has a screen. A virtual display adds another one, at exactly the resolution and refresh rate you want to stream, that no monitor has to match.",
         "loading": "Checking what this computer can do…",
         "loadFailed": "Could not ask the host about virtual displays.",
         "unsupported": "Virtual displays are not available on this host's operating system yet.",
@@ -191,6 +192,7 @@
         "hdr": "HDR (10-bit)",
         "gpu": "Graphics card",
         "hint": "Windows will download the Virtual Display Driver (MIT, signed) and install it silently. Nothing appears on the host; it takes about half a minute.",
+        "hintInProcess": "macOS creates the display itself, instantly. Nothing is downloaded or installed; the display disappears when MoonlightWeb stops and comes back when it starts.",
         "add": "Add display",
         "menuAdd": "Add virtual display",
         "menuRemove": "Remove virtual display",

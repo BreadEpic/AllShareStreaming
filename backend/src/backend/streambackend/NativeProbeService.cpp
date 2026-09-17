@@ -96,7 +96,14 @@ qint64 NativeProbeService::snapshotAgeMs() const
 
 void NativeProbeService::refresh()
 {
-    if (!m_Remote || m_Probe) return;
+    if (!m_Remote) {
+        // In-process: every snapshot() is a fresh probe already. What a caller
+        // asks for here is the NEWS — a display added or removed under the
+        // engine — and ComputerManager listens for it to rebuild the card.
+        emit changed();
+        return;
+    }
+    if (m_Probe) return;
 
     // Nobody will be offered this machine (settings.json native_host_enabled):
     // spawning a probe in the console session to find out what it could have

@@ -17,9 +17,13 @@
 
 #include "backend/VirtualDisplay.h"
 
+#include "backend/streambackend/NativeProbeService.h"
 #include "common/Edition.h"
 #include "common/Logger.h"
 #include "common/WinSystemPath.h"
+#include "mw/native/Capabilities.h"
+#include "mw/native/VirtualDisplay.h"
+#include "server/AppSettings.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -28,9 +32,6 @@
 #include <QJsonDocument>
 
 #ifdef Q_OS_WIN
-#include "backend/streambackend/NativeProbeService.h"
-#include "mw/native/Capabilities.h"
-
 #define NOMINMAX
 #include <windows.h>
 #include <cfgmgr32.h>
@@ -81,6 +82,28 @@ QString archivePath()
 }
 
 // ── Status ──────────────────────────────────────────────────────────────────
+
+namespace {
+
+/// The virtual displays the engine sees right now, whatever made them: the
+/// Windows driver's monitor, this process' CoreGraphics display, a dummy plug.
+void collectActiveDisplays(Status& st, const mw::native::Capabilities& caps)
+{
+    for (const mw::native::DisplayInfo& d : caps.displays) {
+        if (d.kind != mw::native::DisplayKind::Virtual) continue;
+        ActiveDisplay a;
+        a.id = d.id;
+        a.label = QString::fromStdString(d.label);
+        a.width = d.width;
+        a.height = d.height;
+        a.refreshMilliHz = d.refreshMilliHz;
+        a.hdrActive = d.hdrActive;
+        st.activeDisplays.append(a);
+    }
+    st.active = !st.activeDisplays.isEmpty();
+}
+
+} // namespace
 
 QJsonObject toJson(const Status& st, bool admin)
 {
@@ -329,20 +352,8 @@ Status probe()
     st.method = installMethod();
     st.canInstall = !st.method.isEmpty();
     st.osHdrCapable = osHdrCapable();
-
     const mw::native::Capabilities caps = NativeProbeService::instance().snapshot();
-    for (const mw::native::DisplayInfo& d : caps.displays) {
-        if (d.kind != mw::native::DisplayKind::Virtual) continue;
-        ActiveDisplay a;
-        a.id = d.id;
-        a.label = QString::fromStdString(d.label);
-        a.width = d.width;
-        a.height = d.height;
-        a.refreshMilliHz = d.refreshMilliHz;
-        a.hdrActive = d.hdrActive;
-        st.activeDisplays.append(a);
-    }
-    st.active = !st.activeDisplays.isEmpty();
+    collectActiveDisplays(st, caps);
     for (const mw::native::GpuInfo& g : caps.gpus) {
         Gpu gpu;
         gpu.id = g.id;
@@ -359,11 +370,13 @@ Status probe()
 #endif
 }
 
-#else // not Windows: step 2 (macOS, CGVirtualDisplay) and 3 (Linux, portal VIRTUAL)
+#else // macOS: the engine's own display (mw::native::vdisplay); Linux: step 3
 
 bool driverPresent()
 {
-    return false;
+    // No driver anywhere but Windows. "Installed" here means "this process
+    // holds a virtual display": that is what the kebab's Add/Remove follows.
+    return mw::native::vdisplay::isActive();
 }
 
 bool processElevated()
@@ -373,9 +386,73 @@ bool processElevated()
 
 Status probe()
 {
-    return Status{};
+    Status st;
+    st.supported = mw::native::vdisplay::isSupported();
+    if (!st.supported) return st;
+    st.installed = mw::native::vdisplay::isActive();
+    st.method = QStringLiteral("inprocess");
+    st.canInstall = true;
+    // No HDR on the in-process display yet: CoreGraphics exposes no switch
+    // for it that this code trusts, and an HDR that is not measured on a
+    // real Mac is not offered (the dialog hides the box).
+    st.osHdrCapable = false;
+    collectActiveDisplays(st, NativeProbeService::instance().snapshot());
+    return st;
 }
 
 #endif
+
+// ── The in-process display (macOS) ─────────────────────────────────────────
+
+bool applyInProcess(const Request& req, Result* result)
+{
+    Result res;
+    res.stage = QStringLiteral("mode");
+    if (req.action == Request::Action::Remove) {
+        mw::native::vdisplay::destroy();
+        res.ok = true;
+        res.stage = QStringLiteral("done");
+    } else {
+        mw::native::vdisplay::Spec spec;
+        spec.width = req.width;
+        spec.height = req.height;
+        spec.refreshHz = req.refresh;
+        std::string error;
+        res.ok = mw::native::vdisplay::create(spec, &error);
+        if (res.ok) {
+            res.stage = QStringLiteral("done");
+            res.display = QStringLiteral("display %1").arg(mw::native::vdisplay::displayId());
+            if (req.hdr)
+                Logger::info(QStringLiteral(
+                    "[vdisplay] HDR requested on the in-process display: not supported, ignored"));
+        } else {
+            res.error = QString::fromStdString(error);
+        }
+    }
+    if (result) *result = res;
+    return res.ok;
+}
+
+void restoreAtStartup()
+{
+    // The display went away with the last process; the admin's choice did
+    // not. Windows needs nothing here: its driver's device node persists.
+    if (!mw::native::vdisplay::isSupported()) return;
+    const QJsonObject rec = AppSettings().virtualDisplay();
+    if (!rec.value(QLatin1String("added")).toBool()) return;
+    Request req;
+    req.width = rec.value(QLatin1String("width")).toInt(req.width);
+    req.height = rec.value(QLatin1String("height")).toInt(req.height);
+    req.refresh = rec.value(QLatin1String("refresh")).toInt(req.refresh);
+    Result res;
+    if (applyInProcess(req, &res))
+        Logger::info(QStringLiteral("[vdisplay] restored the virtual display: %1x%2 @ %3 Hz")
+                         .arg(req.width)
+                         .arg(req.height)
+                         .arg(req.refresh));
+    else
+        Logger::warning(
+            QStringLiteral("[vdisplay] could not restore the virtual display: %1").arg(res.error));
+}
 
 } // namespace VirtualDisplay

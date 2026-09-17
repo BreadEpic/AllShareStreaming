@@ -108,6 +108,12 @@ elseif(APPLE)
     # Plain C++ against the CoreAudio C API — no Objective-C, hence outside the
     # ARC list above.
     target_sources(mw-native-host PRIVATE src/audio/macos/HostMute.cpp)
+    # The virtual display drives PRIVATE CoreGraphics classes through
+    # objc_msgSend casts and key-value coding, and keeps the one object that
+    # matters alive with an explicit retain. Deliberately outside the ARC list:
+    # ARC cannot see through a cast call, and would either leak or over-release
+    # what comes back from `initWithDescriptor:`.
+    target_sources(mw-native-host PRIVATE src/platform/macos/MacVirtualDisplay.mm)
     set_source_files_properties(${MW_NATIVE_MACOS_SOURCES} PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
     # ScreenCaptureKit needs macOS 12.3; everything else here is older. The
     # deployment target is the top-level build's business (the .pkg says 12.0
@@ -248,6 +254,14 @@ endif()
 
 message(STATUS "mw-native-host: platform backend = ${MW_NATIVE_PLATFORM}")
 
+# The in-process virtual display (include/mw/native/VirtualDisplay.h) exists
+# on macOS only so far. Everywhere else the honest stub answers "not here":
+# on Windows by design (the display is a driver, handled above this module),
+# on Linux until the portal's VIRTUAL source lands.
+if(NOT APPLE)
+    target_sources(mw-native-host PRIVATE src/platform/VirtualDisplayUnsupported.cpp)
+endif()
+
 # ── The CPU encoder ─────────────────────────────────────────────────────────
 # OpenH264, the last rung of the fallback tier on Windows and the only encoder
 # a Linux machine without a render node has. Built from the pinned submodule
@@ -375,6 +389,7 @@ if(MW_BUILD_TESTS)
         tests/test_cadence_align.cpp
         tests/test_restart_backoff.cpp
         tests/test_rate_control.cpp
+        tests/test_virtual_display.cpp
         tests/test_encode_load_cap.cpp
         tests/test_reference_slots.cpp
         tests/test_audio_pacer.cpp

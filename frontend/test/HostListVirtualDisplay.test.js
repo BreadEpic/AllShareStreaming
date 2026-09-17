@@ -116,6 +116,18 @@ describe('the native host card without a display', () => {
         expect(card.querySelector('.host-apps')).not.toBeNull();
     });
 
+    it('offers Add on a host that has screens, as long as none is ours', () => {
+        // The offer follows the driver/display being there or not, never the
+        // number of monitors: a PC with a screen still gets a virtual one at
+        // the resolution the admin wants to stream. Only the empty-state body
+        // is reserved for the headless case.
+        const card = mount(withDisplay({ installed: false, active: false }));
+        expect(card.querySelector('.host-menu .btn-vdisplay-add')).not.toBeNull();
+        expect(card.querySelector('.host-menu .btn-vdisplay-remove')).toBeNull();
+        expect(card.querySelector('.host-empty-display')).toBeNull();
+        expect(card.querySelector('.host-apps')).not.toBeNull();
+    });
+
     it('still offers Add when this install cannot elevate — the dialog explains', () => {
         // The button is not the install; it opens the dialog, which shows the
         // manual path in that case. Hiding it would leave the empty card mute.

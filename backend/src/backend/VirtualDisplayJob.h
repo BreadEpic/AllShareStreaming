@@ -25,6 +25,8 @@
 #include <QString>
 #include <QTimer>
 
+#include <optional>
+
 class QNetworkAccessManager;
 
 /**
@@ -78,6 +80,7 @@ private:
     void download();
     void extract();
     void dispatch();
+    void applyInProcess();
     void runHelper(const QStringList& args, bool inConsoleSession);
     void runTask();
     void pollResult();
@@ -99,4 +102,7 @@ private:
     // The service path runs the driver stage as SYSTEM and the mode stage in
     // the console session; this remembers which half is in flight.
     bool m_ModeStagePending = false;
+    // macOS: the request was applied in this process and the poll is waiting
+    // for the OS to list the display; this is the result to deliver then.
+    std::optional<VirtualDisplay::Result> m_InProcessResult;
 };

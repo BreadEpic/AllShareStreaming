@@ -89,6 +89,7 @@
 #include "streaming/IMediaEngine.h"
 #include "streaming/NativeBench.h"
 #include "backend/streambackend/NativeProbeService.h"
+#include "backend/VirtualDisplay.h"
 #include "backend/VirtualDisplayApply.h"
 #include "backend/streambackend/NativeHostBackend.h"
 #include "Limelight.h" // SCM_* codec-support masks
@@ -1693,6 +1694,10 @@ int main(int argc, char* argv[])
     server.setDomain(appSettings.domain());
     server.setCertPem(appSettings.certPem());
     server.setCertKey(appSettings.certKey());
+
+    // A virtual display the admin added lives only as long as the process
+    // that holds it (macOS): bring it back before the first probe looks.
+    VirtualDisplay::restoreAtStartup();
 
     // Initialize ComputerManager (Phase 2: host discovery)
     ComputerManager computerManager(&app);

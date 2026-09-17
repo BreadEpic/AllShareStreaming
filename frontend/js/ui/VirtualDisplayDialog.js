@@ -88,7 +88,7 @@ export class VirtualDisplayDialog {
             <div class="pairing-dialog vdisplay-dialog" role="dialog" aria-modal="true"
                  aria-labelledby="vdisplay-title">
                 <h2 id="vdisplay-title">${this.esc(t('vdisplay.title'))}</h2>
-                <p class="vdisplay-intro">${this.esc(t('vdisplay.intro'))}</p>
+                <p class="vdisplay-intro">${this.esc(t(this.introKey()))}</p>
                 <div class="vdisplay-form">
                     <p class="vdisplay-loading">${this.esc(t('vdisplay.loading'))}</p>
                 </div>
@@ -178,8 +178,26 @@ export class VirtualDisplayDialog {
                        </label>`
                     : ''
             }
-            <p class="vdisplay-hint">${this.esc(t('vdisplay.hint'))}</p>`;
+            <p class="vdisplay-hint">${this.esc(t(this.hintKey(info)))}</p>`;
         addBtn.hidden = false;
+    }
+
+    /**
+     * Why the dialog is here: a machine with no screen at all (the headless
+     * case), or one that has screens and gets another, at a resolution of the
+     * admin's choosing. The card's verdict decides; nothing is derived.
+     */
+    introKey() {
+        return this.host?.needsVirtualDisplay === false ? 'vdisplay.introExtra' : 'vdisplay.intro';
+    }
+
+    /**
+     * What clicking Add will do on this host, as the server said: download and
+     * install a driver (Windows), or create the display right away without
+     * installing anything (macOS, `method: 'inprocess'`).
+     */
+    hintKey(info) {
+        return info.method === 'inprocess' ? 'vdisplay.hintInProcess' : 'vdisplay.hint';
     }
 
     bindEvents() {

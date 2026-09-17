@@ -94,6 +94,33 @@ describe('VirtualDisplayDialog', () => {
         expect(body.querySelectorAll('#vdisplay-gpu option')).toHaveLength(2);
     });
 
+    it('on macOS says the display is created in place, with no HDR box and no GPU', async () => {
+        // The server's `method: 'inprocess'` is the whole signal: nothing
+        // downloaded, nothing installed, and the OS offers no HDR switch.
+        const body = await open(
+            info({ method: 'inprocess', os_hdr_capable: false, gpus: [], download_url: '' }),
+        );
+        expect(body.querySelector('.vdisplay-hint').textContent.trim()).toBe(
+            'vdisplay.hintInProcess',
+        );
+        expect(body.querySelector('#vdisplay-hdr')).toBeNull();
+        expect(body.querySelector('#vdisplay-gpu')).toBeNull();
+        expect(body.querySelector('#vdisplay-add').hidden).toBe(false);
+    });
+
+    it('words its intro for a headless host or for a host that has screens', async () => {
+        await open(info());
+        expect(document.querySelector('.vdisplay-intro').textContent.trim()).toBe('vdisplay.intro');
+        dialog.close();
+        BackendClient.getVirtualDisplay.mockResolvedValue(info());
+        dialog = new VirtualDisplayDialog({ uuid: 'x', needsVirtualDisplay: false });
+        await dialog.show();
+        await flush();
+        expect(document.querySelector('.vdisplay-intro').textContent.trim()).toBe(
+            'vdisplay.introExtra',
+        );
+    });
+
     it('sends the chosen preset and follows the job to done', async () => {
         const body = await open(info());
         body.querySelector('#vdisplay-res').value = '2560x1440';

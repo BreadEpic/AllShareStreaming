@@ -183,6 +183,7 @@
     "vdisplay": {
         "title": "Ajouter un écran virtuel",
         "intro": "Cet ordinateur n'a aucun écran branché, il n'y a donc rien à diffuser. Un écran virtuel lui en donne un : les jeux et le bureau s'y affichent exactement comme sur un moniteur.",
+        "introExtra": "Cet ordinateur a déjà un écran. Un écran virtuel en ajoute un autre, exactement à la résolution et à la cadence que vous voulez diffuser, sans qu'aucun moniteur n'ait à les supporter.",
         "loading": "Vérification de ce que cet ordinateur peut faire…",
         "loadFailed": "Impossible d'interroger l'hôte sur les écrans virtuels.",
         "unsupported": "Les écrans virtuels ne sont pas encore disponibles sur le système de cet hôte.",
@@ -191,6 +192,7 @@
         "hdr": "HDR (10 bits)",
         "gpu": "Carte graphique",
         "hint": "Windows va télécharger le pilote Virtual Display Driver (MIT, signé) et l'installer silencieusement. Rien ne s'affiche sur l'hôte ; cela prend une trentaine de secondes.",
+        "hintInProcess": "macOS crée l'écran lui-même, instantanément. Rien n'est téléchargé ni installé ; l'écran disparaît quand MoonlightWeb s'arrête et revient à son démarrage.",
         "add": "Ajouter l'écran",
         "menuAdd": "Ajouter un écran virtuel",
         "menuRemove": "Retirer l'écran virtuel",

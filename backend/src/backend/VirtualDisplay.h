@@ -60,6 +60,17 @@
  * with one improvement: the command is the signed exe under Program Files,
  * not a file that was downloaded.
  *
+ * ── macOS: no driver at all ────────────────────────────────────────────────
+ *
+ * CoreGraphics can register a display from a process (the private
+ * CGVirtualDisplay classes BetterDisplay and DeskPad are built on). The
+ * server creates it itself, in-process, at the click — nothing downloaded,
+ * nothing elevated — and again at every startup from the `virtual_display`
+ * record, since the display lives only as long as the process holding it.
+ * The seam is mw::native::vdisplay (native-host/include/mw/native/
+ * VirtualDisplay.h); Linux Wayland will join it through the portal's VIRTUAL
+ * source.
+ *
  * ── Access ──────────────────────────────────────────────────────────────────
  *
  * Deliberately NOT the loopback-only rule of GamepadDriver::mayOffer: a
@@ -255,7 +266,7 @@ struct Status
     bool installed = false;  ///< the driver's device node exists
     bool active = false;     ///< a virtual display is in the probe's list
     bool canInstall = false; ///< an elevation path exists (see method)
-    QString method;          ///< "task" | "elevated" | ""
+    QString method;          ///< "task" | "elevated" | "inprocess" (macOS) | ""
     bool osHdrCapable = false;
     QList<ActiveDisplay> activeDisplays;
     QList<Gpu> gpus;
@@ -281,5 +292,21 @@ bool driverPresent();
 
 /// Windows: is the process token elevated?
 bool processElevated();
+
+// ── The in-process display (macOS) ─────────────────────────────────────────
+//
+// On macOS the display is not a driver but an object this process holds
+// (mw::native::vdisplay, CoreGraphics' virtual display): no download, no
+// elevation, no helper — Status::method is "inprocess" and the job applies
+// the request right here. The display vanishes with the process, which is
+// why it is re-created at startup from the `virtual_display` record.
+
+/// Create (Add) or release (Remove) the process' display. Synchronous; the
+/// display may still be coming online when this returns (the job polls).
+bool applyInProcess(const Request& req, Result* result);
+
+/// At startup: re-create the display the admin added, from AppSettings.
+/// No-op where the display is a driver (Windows) or unsupported.
+void restoreAtStartup();
 
 } // namespace VirtualDisplay

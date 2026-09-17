@@ -1025,7 +1025,7 @@ quelle — dans exactement ces cas :
 | Condition | Détail |
 |---|---|
 | Pas d'API de capture | DDA **et** WGC échouent |
-| Aucun display attaché | machine headless — depuis le 18/09/2026 la carte reste, avec « Add virtual display » (Windows : VDD by MTT téléchargé au clic, tâche élevée `--vdisplay-apply`, voir `backend/src/backend/VirtualDisplay.h`) |
+| Aucun display attaché | machine headless — depuis le 18/09/2026 la carte reste, avec « Add virtual display » (Windows : VDD by MTT téléchargé au clic, tâche élevée `--vdisplay-apply` ; macOS : `CGVirtualDisplay` créé par le process serveur, `mw::native::vdisplay`, recréé au démarrage ; voir `backend/src/backend/VirtualDisplay.h`) |
 | Pas d'encodeur utilisable | aucun GPU avec encodeur **et** codec |
 | Pas de session interactive | service Windows en session 0 |
 | OS trop ancien | Windows < 10 2004 |
