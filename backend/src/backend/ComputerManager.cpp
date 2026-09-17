@@ -26,6 +26,8 @@
 #include "WolfApiClient.h"
 #include "streambackend/NativeHostBackend.h"
 #include "streambackend/NativeProbeService.h"
+#include "VirtualDisplay.h"
+#include "mw/native/Capabilities.h"
 #include "streambackend/StreamBackendSetup.h"
 #include "IdentityManager.h"
 #include "SunshineInstaller.h"
@@ -275,7 +277,15 @@ void ComputerManager::refreshNativeHost()
 
     NvComputer* existing = findHostByUuid(uuid);
 
-    if (!available) {
+    // Headless: the engine is here and enabled, there is simply nothing
+    // attached to capture. That machine is exactly the one that needs its
+    // card to stay — with the "Add Virtual Display" offer in it — rather
+    // than vanish and leave the owner wondering where the host went.
+    const bool noDisplay =
+        !available && NativeHostBackend::isEnabled() &&
+        NativeProbeService::instance().snapshot().reason == mw::native::Unavailability::NoDisplay;
+
+    if (!available && !noDisplay) {
         if (existing) {
             m_Hosts.remove(uuid);
             delete existing;
@@ -309,8 +319,33 @@ void ComputerManager::refreshNativeHost()
     // which read this field for every host — conclude that it supports nothing.
     host->serverCodecModeSupport = NativeHostBackend::codecModeSupport();
 
-    Logger::info(QString("Native host available: %1").arg(host->name));
+    if (noDisplay)
+        Logger::info(QString("Native host has no display: %1 — card kept with the virtual "
+                             "display offer")
+                         .arg(host->name));
+    else
+        Logger::info(QString("Native host available: %1").arg(host->name));
     emit hostsChanged();
+}
+
+QJsonObject ComputerManager::nativeDisplayJson()
+{
+    // The empty-state verdict and the virtual display capability, computed
+    // here so the hosts page never derives them: `state` says whether the
+    // card has displays to show or an offer to make, `virtual_display` what
+    // the kebab may propose (availability only; the admin-level detail is
+    // behind GET /api/native/virtual-display).
+    QJsonObject obj;
+    const mw::native::Capabilities caps = NativeProbeService::instance().snapshot();
+    obj["state"] = caps.available ? QStringLiteral("ok")
+                   : caps.reason == mw::native::Unavailability::NoDisplay
+                       ? QStringLiteral("no_display")
+                       : QStringLiteral("unavailable");
+    const VirtualDisplay::Status vd = VirtualDisplay::probe();
+    QJsonObject v = VirtualDisplay::toJson(vd, /*admin=*/false);
+    v["can_install"] = vd.canInstall;
+    obj["virtual_display"] = v;
+    return obj;
 }
 
 void ComputerManager::loadHosts()
@@ -920,6 +955,9 @@ QJsonArray ComputerManager::getHostsJson() const
         obj["restartSupported"] = it.value()->isLocalMachine()
                                       ? localSunshinePresent()
                                       : caps.value("restartService").toBool();
+        // The native host's display state rides along for the same reason the
+        // capabilities do: the card is built from this list alone.
+        if (it.key() == NativeHostBackend::hostUuid()) obj["nativeDisplay"] = nativeDisplayJson();
         arr.append(obj);
     }
     return arr;

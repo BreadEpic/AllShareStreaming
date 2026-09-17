@@ -568,6 +568,30 @@ bool AppSettings::keyboardDebug() const
 
 static const char kRouterPortsKey[] = "router_ports";
 
+// ── Virtual display ───────────────────────────────────────────────────────────
+
+static const char kVirtualDisplayKey[] = "virtual_display";
+
+QJsonObject AppSettings::virtualDisplay() const
+{
+    return readAll().value(kVirtualDisplayKey).toObject();
+}
+
+void AppSettings::setVirtualDisplay(const QJsonObject& record)
+{
+    QJsonObject obj = readAll();
+    obj[kVirtualDisplayKey] = record;
+    writeAll(obj);
+}
+
+void AppSettings::clearVirtualDisplay()
+{
+    QJsonObject obj = readAll();
+    if (!obj.contains(kVirtualDisplayKey)) return;
+    obj.remove(kVirtualDisplayKey);
+    writeAll(obj);
+}
+
 QList<quint16> AppSettings::rememberedTunnelPorts() const
 {
     QList<quint16> ports;

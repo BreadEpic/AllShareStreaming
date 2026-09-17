@@ -264,6 +264,20 @@ public:
     bool nativeHostEnabled() const;
     void setNativeHostEnabled(bool enabled);
 
+    // ── Virtual display ───────────────────────────────────────────────────────
+    //
+    // What "Add Virtual Display" put on this machine, so the hosts page can
+    // offer "Remove" and the requested mode can be told apart from whatever
+    // the display woke up in. Stored as JSON object "virtual_display",
+    // file-only and NOT seeded — state the job writes, not a preference:
+    //   {"added": true, "width": 2560, "height": 1440, "refresh": 120,
+    //    "hdr": false, "gpu": "", "added_at": "2026-09-17T10:00:00Z"}
+    // Absent (or added:false) means nothing of ours is there.
+
+    QJsonObject virtualDisplay() const;
+    void setVirtualDisplay(const QJsonObject& record);
+    void clearVirtualDisplay();
+
     // ── Update relay ──────────────────────────────────────────────────────────
     //
     // Whether the periodic update check goes through the project's relay

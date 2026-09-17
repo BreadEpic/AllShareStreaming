@@ -265,6 +265,10 @@ add_executable(mw-server
     src/backend/streambackend/StreamBackendSetup.cpp
     src/backend/SunshineInstaller.cpp
     src/backend/GamepadDriver.cpp
+    src/backend/VirtualDisplay.cpp
+    src/backend/VirtualDisplayRules.cpp
+    src/backend/VirtualDisplayJob.cpp
+    src/backend/VirtualDisplayApply.cpp
     # Listed as a source although it is a header: it declares a Q_OBJECT with no
     # .cpp of its own (it is the pure media-engine interface), and AUTOMOC only
     # moc's a header it can see in the target.
@@ -453,8 +457,11 @@ if(WIN32)
     # from the service (ConsoleSession.cpp).
     # taskschd + ole32 + oleaut32: the logon Scheduled Task toggled from the
     # tray and the admin page (Autostart.cpp).
+    # setupapi + newdev + cfgmgr32: the virtual display driver's device node,
+    # created and removed by the --vdisplay-apply helper (VirtualDisplayApply.cpp).
     target_link_libraries(mw-server PRIVATE ws2_32 winmm Bcrypt Crypt32 iphlpapi Dbghelp avrt
-                                            wtsapi32 userenv taskschd ole32 oleaut32)
+                                            wtsapi32 userenv taskschd ole32 oleaut32
+                                            setupapi newdev cfgmgr32)
     # OpenSSL is linked dynamically (import libs) — ship the DLLs next to the exe.
     file(GLOB _mw_ssl_dlls "${_mw_ssl}/lib/${_mw_ssl_arch}/*-3-${_mw_ssl_arch}.dll")
     foreach(_dll ${_mw_ssl_dlls})
@@ -536,6 +543,12 @@ if(MW_BUILD_TESTS)
         # The guard on the ViGEmBus install notice: header-only pure logic, so
         # it verifies here without a driver, a network or the native module.
         tests/test_gamepad_driver.cpp
+        # The virtual display request an elevated helper acts on: the access
+        # rule, the preset-only parser, the task name per edition, the driver
+        # settings it writes. Pure Qt Core, verified here on every platform.
+        tests/test_virtual_display.cpp
+        src/backend/VirtualDisplayRules.cpp
+        src/common/Edition.cpp
         src/server/ConnectionGuard.cpp
         src/server/HttpParser.cpp
         src/server/RequestGuard.cpp

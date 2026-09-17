@@ -63,7 +63,7 @@ An honest inventory of what remains, what constrains the design, and where the l
 **Product**
 - Multi-session beyond the current two slots: the per-stream worker process shipped, so what remains is a variable-size slot table (ports, take-over rules, UI) instead of a hard-coded pair.
 - Bring-your-own-domain is configured by hand in `settings.json` ([§7.5](07-Settings-Reference.md#75-bring-your-own-domain--certificate)); an admin-page field + a certificate panel (CN, expiry, source) would remove the file editing and surface an ageing certificate before the browser does.
-- Host-side virtual display management (resolution matching without changing the host desktop).
+- Virtual display on macOS (`CGVirtualDisplay`, in-process) and Linux Wayland (portal source type *Virtual*): Windows shipped with *Add Virtual Display* on the native host card (headless PC, driver fetched on demand); the other two are studied and next. Resolution matching on a virtual display (a mode per client) remains.
 - More locales (the i18n runtime + Tolgee flow make this cheap; zh shipped recently).
 - Optional TURN relay fallback for networks where even ICE-TCP fails but WSS latency is unacceptable.
 

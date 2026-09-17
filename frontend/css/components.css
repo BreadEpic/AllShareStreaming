@@ -776,6 +776,75 @@ body.ios .settings-checkbox-label input[type='checkbox']:checked::before {
     }
 }
 
+/* ── Virtual display (headless native host) ─────────────────────────────
+   The native host card with nothing plugged in: an empty state with the
+   offer in it, and the dialog that asks which display to invent. */
+.host-empty-display {
+    flex-direction: column;
+    gap: var(--space-3);
+    padding: var(--space-4);
+    text-align: center;
+}
+.host-empty-display-text {
+    margin: 0;
+    font-size: var(--fs-sm);
+    color: var(--text-2);
+    line-height: 1.5;
+}
+.status-badge.nodisplay,
+.status-icon.nodisplay {
+    color: var(--warn, #d9a441);
+}
+.vdisplay-dialog {
+    max-width: 440px;
+}
+.vdisplay-intro,
+.vdisplay-hint {
+    font-size: var(--fs-sm);
+    color: var(--text-2);
+    line-height: 1.5;
+}
+.vdisplay-hint {
+    margin: var(--space-2) 0 0;
+    color: var(--text-3);
+}
+.vdisplay-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    margin: var(--space-4) 0;
+}
+.vdisplay-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    font-size: var(--fs-sm);
+}
+.vdisplay-row select {
+    min-width: 160px;
+}
+.vdisplay-check {
+    justify-content: flex-start;
+}
+.vdisplay-steps {
+    margin: var(--space-2) 0;
+    padding-left: var(--space-5);
+    font-size: var(--fs-sm);
+    color: var(--text-2);
+    line-height: 1.6;
+}
+.vdisplay-status {
+    margin: 0 0 var(--space-3);
+    font-size: var(--fs-sm);
+}
+.vdisplay-status-error {
+    color: var(--danger, #e05252);
+}
+.vdisplay-status-info {
+    color: var(--text-2);
+}
+
 /* ════════════════════════════════════════════════════════════════════════
    Dialog (pairing + future modal dialogs)
    ════════════════════════════════════════════════════════════════════════ */

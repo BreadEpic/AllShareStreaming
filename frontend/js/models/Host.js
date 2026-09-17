@@ -57,6 +57,11 @@ export class Host {
         // which is the default and what every Sunshine card stays. The token is
         // never sent to the browser — backendConfigured only says one is stored.
         this.backendType = data.backendType || '';
+        // The native host only: {state: 'ok'|'no_display'|'unavailable',
+        // virtual_display: {supported, installed, active, can_install}}.
+        // Computed by the server — the card never guesses whether the machine
+        // behind it has a screen.
+        this.nativeDisplay = data.nativeDisplay || null;
         this.backendApiUrl = data.backendApiUrl || '';
         this.backendConfigured = data.backendConfigured === true;
 
@@ -90,6 +95,19 @@ export class Host {
     }
     get isAvailable() {
         return this.isOnline && this.isPaired;
+    }
+
+    // The native host with nothing attached: online and paired by
+    // construction, but with no display to show — the card offers to add a
+    // virtual one instead of an app grid. Checked before isAvailable wherever
+    // a grid would be painted.
+    get needsVirtualDisplay() {
+        return this.backendType === 'native' && this.nativeDisplay?.state === 'no_display';
+    }
+
+    /** The server's virtual display capability for this card, or null. */
+    get virtualDisplay() {
+        return this.backendType === 'native' ? this.nativeDisplay?.virtual_display || null : null;
     }
 
     // Offline but the machine still answers at the IP level → the host is up,
@@ -127,6 +145,7 @@ export class Host {
     }
 
     get statusLabel() {
+        if (this.needsVirtualDisplay) return t('hosts.statusNoDisplay');
         if (this.isUnavailable) return t('hosts.statusUnavailable');
         if (!this.isOnline) return t('hosts.statusOffline');
         if (this.isPaired) return t('hosts.statusReady');
@@ -134,6 +153,7 @@ export class Host {
     }
 
     get statusClass() {
+        if (this.needsVirtualDisplay) return 'nodisplay';
         if (this.isUnavailable) return 'unavailable';
         if (!this.isOnline) return 'offline';
         if (this.isPaired) return 'ready';
@@ -141,6 +161,7 @@ export class Host {
     }
 
     get statusIcon() {
+        if (this.needsVirtualDisplay) return Icons.unavailable; // no screen to stream
         if (this.isUnavailable) return Icons.unavailable; // reachable, service down
         if (!this.isOnline) return Icons.power; // power off
         if (this.isPaired) return Icons.check; // checkmark

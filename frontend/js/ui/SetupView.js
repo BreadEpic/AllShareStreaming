@@ -142,6 +142,7 @@ export class SetupView {
             this._nativePossible = !!(status.native && status.native.possible);
             this._nativeAvailable = !!(status.native && status.native.available);
             this._nativeNeedsPermission = !!(status.native && status.native.needs_permission);
+            this._nativeNeedsDisplay = !!(status.native && status.native.needs_display);
             this._sunshineInstalled = !!(status.sunshine && status.sunshine.installed);
             this._sunshinePaired = !!(status.sunshine && status.sunshine.paired);
             this._autostartInstalled = !!status.autostart_installed;
@@ -382,6 +383,11 @@ export class SetupView {
         if (this._nativeAvailable) return this._okNote(t('setup.hostNative'));
         if (this._nativeNeedsPermission)
             return `<p class="setup-note setup-warn">${t('setup.hostPermission')}</p>`;
+        // Nothing plugged in. The hosts page offers the virtual display on the
+        // card itself; here it is enough to say that this is the missing step
+        // — not to send the machine off to install a second streaming server.
+        if (this._nativeNeedsDisplay)
+            return `<p class="setup-note setup-warn">${t('setup.hostNeedsDisplay')}</p>`;
         // `possible` without either flag is the Windows service case, which this
         // wizard never runs in. Say nothing rather than guess.
         return '';

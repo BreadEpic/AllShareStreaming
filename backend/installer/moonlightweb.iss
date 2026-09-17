@@ -258,6 +258,13 @@ const
   UpdateTaskName = '{#MyAppName} Update';
   UpdateStagedExe = '%LocalAppData%\{#MyAppName}\update\MoonlightWeb-update.exe';
   UpdateSilentArgs = '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-';
+  // Trigger-less, elevated task the running (unprivileged) app starts to add
+  // or remove a virtual display on a headless machine — a driver install that
+  // would otherwise raise a UAC prompt on a desktop with no monitor. Its
+  // action is OUR exe under {app} with a fixed argument: the request it acts
+  // on is a parameters-only file under %LocalAppData% (VirtualDisplay.h).
+  VDisplayTaskName = '{#MyAppName} Virtual Display';
+  VDisplayArgs = '--vdisplay-apply';
 
 var
   InternetPage: TWizardPage;
@@ -786,6 +793,48 @@ begin
          '', SW_HIDE, ewWaitUntilTerminated, rc);
 end;
 
+// --- Virtual display: the elevated helper task -----------------------------
+//
+// Same mechanism as the update task (trigger-less, RunLevel=HighestAvailable,
+// started on demand by the unprivileged server), for the driver install that
+// "Add Virtual Display" needs on a headless PC. Unlike the update task the
+// command is a fixed path under {app} — admin-writable only — so nothing the
+// user's account can write is ever what runs elevated. Hidden: it runs on a
+// desktop that may have no monitor, and it never has anything to show.
+procedure RegisterVirtualDisplayTask();
+var
+  user, xml, xmlPath, exePath: String;
+  rc: Integer;
+begin
+  user := TaskXmlEscape(GetEnv('USERDOMAIN') + '\' + GetEnv('USERNAME'));
+  exePath := TaskXmlEscape(ExpandConstant('{app}\{#MyAppExe}'));
+  // No <?xml?> declaration and pure ASCII, for the same reason as the logon task.
+  xml :=
+    '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">' + #13#10 +
+    '  <RegistrationInfo><Author>MoonlightWeb</Author></RegistrationInfo>' + #13#10 +
+    '  <Principals><Principal id="Author">' +
+    '<UserId>' + user + '</UserId><LogonType>InteractiveToken</LogonType>' +
+    '<RunLevel>HighestAvailable</RunLevel>' +
+    '</Principal></Principals>' + #13#10 +
+    // Element order follows the Task Scheduler schema (schtasks /XML is strict).
+    '  <Settings>' +
+    '<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>' +
+    '<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>' +
+    '<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>' +
+    '<AllowStartOnDemand>true</AllowStartOnDemand>' +
+    '<Hidden>true</Hidden>' +
+    '<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>' +
+    '</Settings>' + #13#10 +
+    // No <Triggers>: the task exists purely to be started on demand.
+    '  <Actions Context="Author"><Exec><Command>"' + exePath + '"</Command>' +
+    '<Arguments>' + VDisplayArgs + '</Arguments></Exec></Actions>' + #13#10 +
+    '</Task>' + #13#10;
+  xmlPath := ExpandConstant('{tmp}\mw-vdisplay-task.xml');
+  if SaveStringToFile(xmlPath, xml, False) then
+    Exec('schtasks.exe', '/Create /TN "' + VDisplayTaskName + '" /XML "' + xmlPath + '" /F',
+         '', SW_HIDE, ewWaitUntilTerminated, rc);
+end;
+
 // Release the files under {app} before the copy: a running server holds its exe
 // and Qt DLLs open and Inno would fail (or defer to a reboot) on every one.
 procedure StopRunningInstance();
@@ -1195,6 +1244,10 @@ begin
 #ifndef DevEdition
   RegisterUpdateTask();
 #endif
+  // The virtual display helper task: every edition, since a DEV build can
+  // stream a headless machine just as well. Refreshed on every install so
+  // the action follows {app}.
+  RegisterVirtualDisplayTask();
 
   // provisioning.json — consumed and removed by the server on first run.
   // An update skips it: the server is already provisioned, and replaying a
@@ -1360,6 +1413,12 @@ begin
     Exec('schtasks.exe', '/Delete /TN "' + UpdateTaskName + '" /F', '', SW_HIDE,
          ewWaitUntilTerminated, rc);
     DelTree(ExpandConstant('{localappdata}\{#MyAppName}\update'), True, True, True);
+    // The virtual display helper task and its staging directory. The driver
+    // itself stays: on a headless PC it is the only screen there is, and the
+    // app's own "Remove virtual display" is the way to take it out.
+    Exec('schtasks.exe', '/Delete /TN "' + VDisplayTaskName + '" /F', '', SW_HIDE,
+         ewWaitUntilTerminated, rc);
+    DelTree(ExpandConstant('{localappdata}\{#MyAppName}\vdisplay'), True, True, True);
     Exec('taskkill.exe', '/IM "{#MyAppExe}" /F', '', SW_HIDE,
          ewWaitUntilTerminated, rc);
     // Remove the firewall rule added at install time.

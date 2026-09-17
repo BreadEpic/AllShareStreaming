@@ -31,6 +31,7 @@ import { Host } from '../models/Host.js';
 import { App } from '../models/App.js';
 import { PairDialog } from './PairDialog.js';
 import { BackendDialog } from './BackendDialog.js';
+import { VirtualDisplayDialog } from './VirtualDisplayDialog.js';
 import { ShareBoard } from './ShareBoard.js';
 import { Toast } from './Toast.js';
 import { t } from '../i18n/i18n.js';
@@ -302,6 +303,34 @@ export class HostListView {
                 if (host) {
                     new BackendDialog(host, { onSaved: () => this.refresh() }).show();
                 }
+                return;
+            }
+
+            const vdisplayAddBtn = e.target.closest('.btn-vdisplay-add');
+            if (vdisplayAddBtn) {
+                this._closeAllMenus();
+                const host = this.hosts.find((h) => h.uuid === vdisplayAddBtn.dataset.uuid);
+                if (host) {
+                    new VirtualDisplayDialog(host, { onDone: () => this.refresh() }).show();
+                }
+                return;
+            }
+
+            const vdisplayRemoveBtn = e.target.closest('.btn-vdisplay-remove');
+            if (vdisplayRemoveBtn) {
+                // The display goes, and every stream of it with it — same
+                // weight as "Stop session".
+                if (!window.confirm(t('vdisplay.removeConfirm'))) return;
+                vdisplayRemoveBtn.disabled = true;
+                vdisplayRemoveBtn.textContent = t('vdisplay.removing');
+                BackendClient.removeVirtualDisplay()
+                    .then(() => this._followVirtualDisplayJob())
+                    .catch((err) => {
+                        console.error('[MW] Remove virtual display failed:', err);
+                        Toast.show(err.message, 'error');
+                        this._closeAllMenus();
+                        this.refresh();
+                    });
                 return;
             }
 
@@ -832,6 +861,32 @@ export class HostListView {
         );
     }
 
+    /**
+     * Follow a virtual display job started from the menu until it ends, then
+     * repaint. One toast either way; the card itself changes through the poll.
+     */
+    async _followVirtualDisplayJob() {
+        for (let i = 0; i < 600 && !this._destroyed; i++) {
+            await new Promise((r) => setTimeout(r, 1000));
+            let job;
+            try {
+                job = await BackendClient.getVirtualDisplayStatus();
+            } catch {
+                continue;
+            }
+            if (job.state === 'done') {
+                Toast.show(t('vdisplay.removed'), 'success');
+                break;
+            }
+            if (job.state === 'failed') {
+                Toast.show(job.error || t('vdisplay.failed'), 'error');
+                break;
+            }
+        }
+        this._closeAllMenus();
+        this.refresh();
+    }
+
     _cardFingerprint(host) {
         return [
             host.uuid,
@@ -845,6 +900,9 @@ export class HostListView {
             host.wakeSupported,
             host.restartSupported,
             host.currentGameId > 0,
+            // The native host's display state: a virtual display appearing or
+            // leaving must repaint the card from empty state to grid and back.
+            JSON.stringify(host.nativeDisplay),
         ].join('|');
     }
 
@@ -975,7 +1033,7 @@ export class HostListView {
 
         // Fill in app grids for available hosts (cache hit = instant).
         for (const host of this.hosts) {
-            if (host.isAvailable) this._ensureAppsLoaded(host);
+            if (host.isAvailable && !host.needsVirtualDisplay) this._ensureAppsLoaded(host);
         }
     }
 
@@ -1011,6 +1069,20 @@ export class HostListView {
                                 // own players in its own streamed UI.
                                 host.isAvailable && host.supportsLobbies !== true
                                     ? `<button class="host-menu-item btn-share" data-uuid="${host.uuid}">${t('sharing.share')}</button>`
+                                    : ''
+                            }
+                            ${
+                                // A headless native host: offer the virtual
+                                // display, or its removal once one of ours is
+                                // there. The server decided both; a card for
+                                // any other host has no such object at all.
+                                host.virtualDisplay?.supported && !host.virtualDisplay.installed
+                                    ? `<button class="host-menu-item btn-vdisplay-add" data-uuid="${host.uuid}">${t('vdisplay.menuAdd')}</button>`
+                                    : ''
+                            }
+                            ${
+                                host.virtualDisplay?.installed
+                                    ? `<button class="host-menu-item btn-vdisplay-remove" data-uuid="${host.uuid}">${t('vdisplay.menuRemove')}</button>`
                                     : ''
                             }
                             ${
@@ -1069,6 +1141,14 @@ export class HostListView {
 
     // Body content driven by the host state.
     renderBody(host) {
+        if (host.needsVirtualDisplay) {
+            // Nothing plugged in: say so, and offer the fix right there. When
+            // this install cannot elevate, the dialog explains the manual path.
+            return `<div class="host-body-center host-empty-display">
+                        <p class="host-empty-display-text">${t('vdisplay.emptyBody')}</p>
+                        <button class="btn btn-secondary btn-vdisplay-add" data-uuid="${host.uuid}">${t('vdisplay.menuAdd')}</button>
+                    </div>`;
+        }
         if (host.isAvailable) {
             // App grid filled asynchronously by _ensureAppsLoaded().
             return `<div class="host-apps" data-uuid="${host.uuid}"></div>`;

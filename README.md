@@ -59,7 +59,7 @@ Moonlight‑Web turns your gaming PC into a stream, and **any device with a mode
 **The native engine** captures a GPU surface and hands it straight to the GPU encoder in the same process that already holds the WebRTC PeerConnection: `capture → encode (zero‑copy) → SCTP/DTLS → browser`. There is no loopback network hop, no RTSP, no RTP, no FEC and no second layer of AES on a link DTLS already encrypts — on an RTX 5060 Ti at 1440p that is **0.06 ms** to acquire a frame and **3.46 ms** to encode it, with **one** memory copy per frame.\
 Video decodes in **WebCodecs + WebGPU/canvas**, audio in **AudioWorklet**.
 
-> The engine also runs when MoonlightWeb is installed as a Windows service: the service starts the capture in the console session, as the logged‑on user. If it cannot run at all (headless machine, no usable encoder, Windows ARM64), the card simply does not appear and the app offers you a host to pair with instead.
+> The engine also runs when MoonlightWeb is installed as a Windows service: the service starts the capture in the console session, as the logged‑on user. If it cannot run at all (no usable encoder, Windows ARM64), the card simply does not appear and the app offers you a host to pair with instead. A **headless** Windows PC — installed through a TV, then left without a screen — keeps its card with an **Add virtual display** offer: the admin picks a size (720p–2160p), a refresh rate (60–120 Hz) and HDR from any browser, and the host downloads the signed Virtual Display Driver and sets it up silently, with no prompt on a desktop nobody is looking at (the machine still needs a logged-on user, e.g. auto-logon).
 
 ### Stream settings
 

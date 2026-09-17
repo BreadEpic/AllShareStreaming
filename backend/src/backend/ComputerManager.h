@@ -195,6 +195,10 @@ private:
     /// capture engine. Called at startup; safe to call again when the display
     /// layout changes.
     void refreshNativeHost();
+
+    /// {state: ok|no_display|unavailable, virtual_display: {...}} for the
+    /// native host card. See ComputerManager.cpp.
+    static QJsonObject nativeDisplayJson();
     // The address the next poll of this host should use — see m_PollAddrIndex.
     NvAddress pollAddressFor(const NvComputer* host) const;
     // allowEmpty guards the one destructive case: writing an empty array wipes

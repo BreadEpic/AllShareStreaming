@@ -89,6 +89,7 @@
 #include "streaming/IMediaEngine.h"
 #include "streaming/NativeBench.h"
 #include "backend/streambackend/NativeProbeService.h"
+#include "backend/VirtualDisplayApply.h"
 #include "backend/streambackend/NativeHostBackend.h"
 #include "Limelight.h" // SCM_* codec-support masks
 #include "streaming/DataChannelRelay.h"
@@ -1348,6 +1349,7 @@ int main(int argc, char* argv[])
     for (int i = 1; i < argc; ++i) {
         static const char* const kQuietStdout[] = {"--stream-worker",
                                                    "--native-probe",
+                                                   "--vdisplay-apply",
                                                    "--status",
                                                    "--new-pin",
                                                    "--enable-internet",
@@ -1384,7 +1386,7 @@ int main(int argc, char* argv[])
         QDir().mkpath(logDir);
 
         QString explicitLog;
-        bool probe = false, worker = false, transient = false;
+        bool probe = false, worker = false, transient = false, vdisplay = false;
         for (int i = 1; i < argc; ++i) {
             // --log <path> and --log=<path>, the two spellings QCommandLineParser
             // accepts; read here so the very first line lands in the right file.
@@ -1396,6 +1398,8 @@ int main(int argc, char* argv[])
                 probe = true;
             else if (qstrcmp(argv[i], "--stream-worker") == 0)
                 worker = true;
+            else if (qstrcmp(argv[i], "--vdisplay-apply") == 0)
+                vdisplay = true;
             else {
                 // Commands that print and exit. Both spellings again: --status
                 // and --native-bench=<spec>. Matching the bare prefix would also
@@ -1422,6 +1426,10 @@ int main(int argc, char* argv[])
             // The console probe runs in the user's session, where the tray
             // client already owns moonlightweb.log.
             Logger::instance()->setLogFile(logDir + QStringLiteral("/moonlightweb-probe.log"));
+        } else if (vdisplay) {
+            // The elevated helper: its own file, so a driver install that went
+            // wrong can be read without the server's log interleaved.
+            Logger::instance()->setLogFile(logDir + QStringLiteral("/moonlightweb-vdisplay.log"));
         } else if (!transient) {
             Logger::instance()->setLogFile(logDir + QStringLiteral("/moonlightweb.log"));
         }
@@ -1536,6 +1544,21 @@ int main(int argc, char* argv[])
                         "object on stdout (used by the service to ask the console session).");
     parser.addOption(nativeProbeOption);
 
+    // The virtual display helper: the elevated half of "Add Virtual Display"
+    // (driver install through SetupAPI) and the desktop half (mode + HDR), run
+    // by the installer's elevated task or by the server as a child. Reads a
+    // request file, answers with a result file and one JSON line on stdout.
+    QCommandLineOption vdisplayApplyOption(
+        "vdisplay-apply", "Apply a pending virtual display request (internal: started by the "
+                          "elevated scheduled task or by the server itself).");
+    parser.addOption(vdisplayApplyOption);
+    QCommandLineOption vdisplayStageOption("stage", "With --vdisplay-apply: all|driver|mode",
+                                           "stage", "all");
+    parser.addOption(vdisplayStageOption);
+    QCommandLineOption vdisplayDirOption("vdisplay-dir",
+                                         "With --vdisplay-apply: the staging directory", "dir");
+    parser.addOption(vdisplayDirOption);
+
     // Development instance: isolated state (see the applicationName switch at
     // startup), no single-instance lock, and alternate default ports — so it can
     // run alongside an installed service without touching it. Never for production.
@@ -1553,6 +1576,11 @@ int main(int argc, char* argv[])
     if (parser.isSet(nativeBenchOption))
         return runNativeBenchCommand(parser.value(nativeBenchOption));
     if (parser.isSet(nativeProbeOption)) return NativeProbeService::runProbeCommand();
+    // Before the single-instance lock: the helper is a deliberate second
+    // process of the same binary, started while the server holds the lock.
+    if (parser.isSet(vdisplayApplyOption))
+        return VirtualDisplayApply::run(parser.value(vdisplayStageOption),
+                                        parser.value(vdisplayDirOption));
 
     // ── Stream-worker child process ─────────────────────────────────────────
     // Branch BEFORE the single-instance lock (the worker is a deliberate second

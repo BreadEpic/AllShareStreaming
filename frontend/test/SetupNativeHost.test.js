@@ -95,6 +95,26 @@ describe('SetupView — a machine that streams itself', () => {
         expect(container.querySelector('#chk-install')).toBeNull();
     });
 
+    it('names the missing display on a headless machine instead of offering Sunshine', async () => {
+        // The engine is there; nothing is plugged in. The hosts page has the
+        // "Add virtual display" offer on the card — the wizard's job is to
+        // say so, not to send the machine off to install a second server.
+        await start(
+            status({
+                native: {
+                    available: false,
+                    reason: 'no display attached',
+                    needs_permission: false,
+                    needs_display: true,
+                    possible: true,
+                },
+            }),
+        );
+        expect(html()).toContain('text:setup.hostNeedsDisplay');
+        expect(html()).not.toContain('text:setup.sunshineTitle');
+        expect(container.querySelector('#chk-install')).toBeNull();
+    });
+
     it('never sends native_host_enabled — the app does not write that setting', async () => {
         await start(
             status({

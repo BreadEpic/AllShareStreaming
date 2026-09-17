@@ -32,6 +32,19 @@ Third-party components (bundled under backend/third_party/)
   enet ................................ MIT
   nanors .............................. CC0-1.0
 
+----------------------------------------------------------------------------
+Third-party components fetched at run time (never bundled, never linked)
+----------------------------------------------------------------------------
+
+  ViGEmBus (nefarius) ................. BSD-3-Clause
+    Windows virtual gamepad bus. Downloaded by the installer, or from the
+    app's notice, from a pinned GitHub release URL verified by SHA-256.
+  Virtual Display Driver (VirtualDrivers, "VDD by MTT") ...... MIT
+    Windows IddCx virtual display. Downloaded on "Add Virtual Display"
+    from a pinned GitHub release URL, SHA-256 verified before installation
+    (backend/src/backend/VirtualDisplay.h). Catalog signed by SignPath
+    Foundation; that certificate is trusted only for the install.
+
 Each component retains its own license; see the corresponding LICENSE files in
 backend/third_party/. This project as a whole is distributed under GPL-3.0 to
 remain compatible with its GPL-licensed dependencies (notably moonlight-common-c).

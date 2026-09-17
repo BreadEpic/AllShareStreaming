@@ -848,6 +848,37 @@ export class BackendClient {
         return this.post('/api/metrics/consent', { granted, message, source });
     }
 
+    // ── Virtual display (headless native host) ───────────────────────────────────
+
+    /**
+     * {supported, installed, active} for everyone; an admin also gets
+     * {can_install, method, download_url, os_hdr_capable, active_displays,
+     * gpus, presets: {resolutions: [[w,h]…], refresh: [hz…]}, job}.
+     *
+     * Every verdict in it is the server's: the driver lands on the machine
+     * running the server, and only that machine knows what it can do.
+     */
+    static async getVirtualDisplay() {
+        return this.get('/api/native/virtual-display');
+    }
+    /**
+     * Start adding a virtual display. Answers 202 with the job status; poll
+     * getVirtualDisplayStatus() until `state` is done or failed. 409 carries
+     * {error, can_install, download_url} when nothing here can elevate.
+     * @param {{width:number, height:number, refresh:number, hdr:boolean, gpu:string}} req
+     */
+    static async addVirtualDisplay(req) {
+        return this.post('/api/native/virtual-display/add', req);
+    }
+    /** Remove the virtual display (device node and driver package). 202 + job. */
+    static async removeVirtualDisplay() {
+        return this.post('/api/native/virtual-display/remove', {});
+    }
+    /** {state, action, error?, reboot_required?, display?, started_at, finished_at?} */
+    static async getVirtualDisplayStatus() {
+        return this.get('/api/native/virtual-display/status');
+    }
+
     // ── Virtual gamepad driver (ViGEmBus) ────────────────────────────────────────
 
     /**
