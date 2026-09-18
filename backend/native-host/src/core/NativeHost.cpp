@@ -90,12 +90,22 @@ std::unique_ptr<Session> NativeHost::createSession(const SessionConfig& config,
                      "tier");
     }
 
+    // "Match my screen" is a Windows session's to attempt (a display mode
+    // change, WindowsSession::applyClientMode). Elsewhere it is Auto from the
+    // start: the fallback box, never upscaled.
+    SessionConfig asked = config;
+#ifndef _WIN32
+    if (fallBackFromMatch(asked))
+        log::info("[native] this platform changes no display mode — \"Match my screen\" "
+                  "streams as Auto");
+#endif
+
     Selection selection;
-    if (!select(caps, config, selection, error)) return nullptr;
+    if (!select(caps, asked, selection, error)) return nullptr;
 
     // Normalize what the platform layer receives, so every backend is handed an
     // already-resolved configuration and none of them re-implements the policy.
-    SessionConfig resolved = config;
+    SessionConfig resolved = asked;
     resolved.displayId = selection.display->id;
     resolved.width = selection.width;
     resolved.height = selection.height;
@@ -103,8 +113,8 @@ std::unique_ptr<Session> NativeHost::createSession(const SessionConfig& config,
     // its display in the client's mode ("Match my screen") looks that mode
     // up by the size the client asked, not by the frame shaped to the mode
     // the display had before.
-    resolved.requestedWidth = config.width;
-    resolved.requestedHeight = config.height;
+    resolved.requestedWidth = asked.width;
+    resolved.requestedHeight = asked.height;
     resolved.fps = selection.fps;
     resolved.hdr = selection.hdr;
     resolved.yuv444 = selection.yuv444;

@@ -105,6 +105,10 @@ public:
         /// Put the display in the requested mode for the session — see
         /// SessionConfig::matchClientDisplay.
         bool matchClientDisplay = false;
+        /// The box fitted instead when that mode cannot be set — see
+        /// SessionConfig::fallbackWidth.
+        int fallbackWidth = 0;
+        int fallbackHeight = 0;
         /// The client's screen, as the browser measured it: refresh in
         /// millihertz (0 = unknown) and whether it paints on vsync. A vsync
         /// client gets a cadence that divides its refresh — see

@@ -73,6 +73,7 @@ describe('resolveStreamSize', () => {
         allowUpscale: false,
         matchDisplay: false,
         followsScreen: false,
+        fallback: null,
     };
 
     it('leaves a fixed rung to the ratio logic: height only', () => {
@@ -96,6 +97,7 @@ describe('resolveStreamSize', () => {
             allowUpscale: false,
             matchDisplay: false,
             followsScreen: true,
+            fallback: null,
         });
         // No screen to read: the host's own size, whatever it is.
         expect(resolveStreamSize({ mode: 'auto' }, { nativeHost: true, device: null })).toEqual({
@@ -128,6 +130,7 @@ describe('resolveStreamSize', () => {
             allowUpscale: true,
             matchDisplay: true,
             followsScreen: true,
+            fallback: { width: 2532, height: 1170 },
         });
         // The same request reaches every host: the backend turns "W:H" at
         // that height into the explicit width Sunshine needs, and GameStream's
@@ -138,6 +141,32 @@ describe('resolveStreamSize', () => {
                 { nativeHost: false, device: { width: 1920, height: 1080 } },
             ).aspect,
         ).toBe('1920:1080');
+    });
+
+    // A phone or a tablet is pinched and zoomed: Auto's box there is 1440
+    // lines by any width, the same whichever way it is held — a 1440p host
+    // streams as it is, a 4K one comes down to 1440, nothing goes below 1080.
+    it('asks a native host for 1440 lines, any width, on a phone or a tablet', () => {
+        const phoneScreen = { width: 2532, height: 1170 };
+        const size = resolveStreamSize(
+            { mode: 'auto' },
+            { nativeHost: true, touch: true, device: phoneScreen },
+        );
+        expect(size.height).toBe(1440);
+        expect(size.aspect).toBe('4096:1440');
+        expect(size.allowUpscale).toBe(false);
+        expect(size.followsScreen).toBe(false);
+        // "Match my screen" on a phone falls back to that same box.
+        const match = resolveStreamSize(
+            { mode: 'device' },
+            { nativeHost: true, touch: true, device: phoneScreen },
+        );
+        expect(match.aspect).toBe('2532:1170');
+        expect(match.fallback).toEqual({ width: 4096, height: 1440 });
+        expect(bitrateReference({ mode: 'auto' }, phoneScreen, true)).toEqual({
+            height: 1440,
+            aspect: '16:9',
+        });
     });
 
     it('falls back to the fixed rung when the screen is unknown', () => {
@@ -159,6 +188,7 @@ describe('resolveStreamSize', () => {
             allowUpscale: false,
             matchDisplay: false,
             followsScreen: false,
+            fallback: null,
         });
         // Out of bounds is pinned, not refused.
         const pinned = resolveStreamSize(

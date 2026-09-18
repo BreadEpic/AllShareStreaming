@@ -158,6 +158,8 @@ void NativeMediaEngine::startCapture(const StartParams& params)
     config.fitRequestedBox = params.fitRequestedBox;
     config.allowUpscale = params.allowUpscale;
     config.matchClientDisplay = params.matchClientDisplay;
+    config.fallbackWidth = params.fallbackWidth;
+    config.fallbackHeight = params.fallbackHeight;
     config.allowElevatedInput = params.viewerAdmin;
     config.muteHostAudio = params.muteHostAudio;
     // The consent this machine was already given, replayed. Empty on the very

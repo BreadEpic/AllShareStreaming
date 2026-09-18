@@ -184,6 +184,14 @@ struct SessionConfig
     int requestedWidth = 0;
     int requestedHeight = 0;
 
+    /// The box to fit instead when matchClientDisplay cannot be honoured —
+    /// no listed mode, a refusal, a platform that changes no modes: the
+    /// client's Auto box, so the session becomes exactly what Auto would have
+    /// been (never upscaled). Zero: fit the requested box itself, no upscale.
+    /// See fallBackFromMatch().
+    int fallbackWidth = 0;
+    int fallbackHeight = 0;
+
     // ── Bench-only, below this line ─────────────────────────────────────────
     //
     // Neither field is ever set by a session a browser started. They exist so

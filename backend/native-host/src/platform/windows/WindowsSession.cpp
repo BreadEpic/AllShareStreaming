@@ -253,6 +253,13 @@ public:
         // session, when its driver lists one — before the capture opens, so
         // the first frame is already the right size. Best effort.
         const bool modeChanged = applyClientMode(*display);
+        // No mode to switch to: the session becomes what Auto would have
+        // been — the client's Auto box to fit, never upscaled — and the
+        // Selector's shaping (done with upscaling allowed) is redone below.
+        const bool fellBack = !modeChanged && fallBackFromMatch(m_Config);
+        if (fellBack)
+            log::info("[native] \"Match my screen\" falls back to Auto: fitting " +
+                      std::to_string(m_Config.width) + "x" + std::to_string(m_Config.height));
 
         if (!openCapture(error)) return false;
         if (!convert::ColorConvert::supportsSource(m_Capture->format())) {
@@ -298,10 +305,11 @@ public:
         // it was; a display just put in the client's mode reshapes it — the
         // box rule against the new size gives the box itself back.
         FrameSize frame{m_Config.width, m_Config.height};
-        if (modeChanged) {
+        if (modeChanged || fellBack) {
             frame = frameForDisplay({m_Capture->width(), m_Capture->height()}, frame,
                                     policyOf(m_Config));
-            log::info("[native] the frame follows the display's new mode: " +
+            log::info(std::string("[native] the frame follows ") +
+                      (modeChanged ? "the display's new mode: " : "the Auto box: ") +
                       std::to_string(m_Config.width) + "x" + std::to_string(m_Config.height) +
                       " -> " + std::to_string(frame.width) + "x" + std::to_string(frame.height));
         }

@@ -2679,6 +2679,15 @@ int main(int argc, char* argv[])
         // "Match my screen": the native host puts its display in that very
         // mode for the session, when its driver lists one.
         const bool reqMatchDisplay = reqFitBox && body["stream_match_display"].toBool(false);
+        // …and the box it fits instead (Auto's) when it cannot. Bounded like a
+        // custom size; 0 = fit the request itself.
+        const auto boxSide = [&body](const char* key) {
+            const int v = body[QLatin1String(key)].toInt(0);
+            return v >= AppSettings::kCustomSizeMin && v <= AppSettings::kCustomSizeMax ? v & ~1
+                                                                                          : 0;
+        };
+        const int reqFallbackW = reqMatchDisplay ? boxSide("stream_fallback_width") : 0;
+        const int reqFallbackH = reqMatchDisplay ? boxSide("stream_fallback_height") : 0;
         qInfo() << "[Session] Aspect" << reqAspect << "→" << reqWidth << "x" << reqHeight
                 << (reqMatchDisplay        ? "(box, the display's mode)"
                     : reqFitBox            ? (reqAllowUpscale ? "(box, may upscale)" : "(box)")
@@ -3051,7 +3060,8 @@ int main(int argc, char* argv[])
             // The viewer's aspect is "Auto": a native stream follows the
             // display's shape when it changes. Absent → the size is kept.
             s->setFollowDisplayShape(body["follow_display_shape"].toBool(false));
-            s->setFrameFit(reqFitBox, reqAllowUpscale, reqMatchDisplay);
+            s->setFrameFit(reqFitBox, reqAllowUpscale, reqMatchDisplay, reqFallbackW,
+                           reqFallbackH);
             s->setClientKind(clientKind);
             // See the worker path: the administrator-window gate.
             s->setViewerAdmin(req.isLocal);
@@ -3183,6 +3193,8 @@ int main(int argc, char* argv[])
             cfg["fitRequestedBox"] = reqFitBox;
             cfg["allowUpscale"] = reqAllowUpscale;
             cfg["matchClientDisplay"] = reqMatchDisplay;
+            cfg["fallbackWidth"] = reqFallbackW;
+            cfg["fallbackHeight"] = reqFallbackH;
             // Whether this browser administers MoonlightWeb here (loopback, the
             // host-key session, or the LAN admin password). The native host
             // keeps everyone else out of windows that run as administrator.

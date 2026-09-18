@@ -429,7 +429,7 @@ export class SettingsView {
         // format at launch, which is unknown here — aspectToNumber() reads it
         // as the 16:9 baseline, which is what the estimate wants.
         const choice = this._readResolutionChoice();
-        const ref = bitrateReference(choice);
+        const ref = bitrateReference(choice, undefined, IS_MOBILE_OR_TABLET);
         const aspect =
             choice.mode === 'fixed'
                 ? this.container.querySelector('#settings-stream-aspect')?.value ||

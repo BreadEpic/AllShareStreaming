@@ -135,4 +135,11 @@ inline FramePolicy policyOf(const SessionConfig& config)
     return FramePolicy{config.fitRequestedBox, config.fitRequestedBox && config.allowUpscale};
 }
 
+/// "Match my screen" could not be honoured: the config becomes Auto's — the
+/// fallback box (or the requested one) to fit, no upscale, no mode to match.
+/// Returns false when there was nothing to fall back from. The caller then
+/// reshapes `width` × `height` against its display (frameForDisplay), as the
+/// Selector would have.
+bool fallBackFromMatch(SessionConfig& config);
+
 } // namespace mw::native

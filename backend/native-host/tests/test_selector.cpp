@@ -567,6 +567,44 @@ void run_selector_tests()
         CHECK(!policyOf(c).allowUpscale);
         c.fitRequestedBox = true;
         CHECK(policyOf(c).allowUpscale);
+
+        // "Match my screen" that cannot be honoured becomes Auto: the
+        // fallback box, no upscale, nothing to match — and nothing happens
+        // to a config that never asked.
+        SessionConfig m;
+        CHECK(!fallBackFromMatch(m));
+        m.fitRequestedBox = true;
+        m.allowUpscale = true;
+        m.matchClientDisplay = true;
+        m.width = 2532;
+        m.height = 1170;
+        m.fallbackWidth = 4096;
+        m.fallbackHeight = 1440;
+        CHECK(fallBackFromMatch(m));
+        CHECK_EQ(m.width, 4096);
+        CHECK_EQ(m.height, 1440);
+        CHECK(!m.allowUpscale);
+        CHECK(!m.matchClientDisplay);
+        CHECK(m.fitRequestedBox);
+        CHECK(!fallBackFromMatch(m));
+        // The box rule then gives a 1440p host its own size, a 4K host 1440
+        // lines, a phone-shaped box notwithstanding.
+        FrameSize g = frameForDisplay({2560, 1440}, {m.width, m.height}, policyOf(m));
+        CHECK_EQ(g.width, 2560);
+        CHECK_EQ(g.height, 1440);
+        g = frameForDisplay({3840, 2160}, {m.width, m.height}, policyOf(m));
+        CHECK_EQ(g.width, 2560);
+        CHECK_EQ(g.height, 1440);
+        // Without a fallback box, the request itself is fitted, never upscaled.
+        SessionConfig r;
+        r.fitRequestedBox = r.allowUpscale = r.matchClientDisplay = true;
+        r.width = 2080;
+        r.height = 1170;
+        r.requestedWidth = 2532;
+        r.requestedHeight = 1170;
+        CHECK(fallBackFromMatch(r));
+        CHECK_EQ(r.width, 2532);
+        CHECK(!r.allowUpscale);
     }
 
     SECTION("Selector — default display");

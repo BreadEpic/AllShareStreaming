@@ -365,6 +365,22 @@ bool select(const Capabilities& caps, const SessionConfig& config, Selection& ou
     return true;
 }
 
+bool fallBackFromMatch(SessionConfig& config)
+{
+    if (!config.matchClientDisplay) return false;
+    config.matchClientDisplay = false;
+    config.allowUpscale = false;
+    config.fitRequestedBox = true;
+    if (config.fallbackWidth > 0 && config.fallbackHeight > 0) {
+        config.width = config.fallbackWidth;
+        config.height = config.fallbackHeight;
+    } else if (config.requestedWidth > 0 && config.requestedHeight > 0) {
+        config.width = config.requestedWidth;
+        config.height = config.requestedHeight;
+    }
+    return true;
+}
+
 FrameSize frameForDisplay(FrameSize display, FrameSize frame, FramePolicy policy)
 {
     if (display.width <= 0 || display.height <= 0 || frame.width <= 0 || frame.height <= 0)

@@ -589,6 +589,8 @@ void StreamSession::onLaunchResult(bool ok, const BackendError& err, const Media
         nativeParams.fitRequestedBox = m_FitRequestedBox;
         nativeParams.allowUpscale = m_AllowUpscale;
         nativeParams.matchClientDisplay = m_MatchClientDisplay;
+        nativeParams.fallbackWidth = m_FallbackWidth;
+        nativeParams.fallbackHeight = m_FallbackHeight;
         // Who is on the other end, for the administrator-window gate.
         nativeParams.viewerAdmin = m_ViewerAdmin;
         // The "mute host audio" stream setting, honoured here as the GameStream

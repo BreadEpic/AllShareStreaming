@@ -1896,7 +1896,7 @@ const MoonlightApp = {
                 customWidth: choice.customWidth,
                 customHeight: choice.customHeight,
             },
-            { nativeHost },
+            { nativeHost, touch: IS_MOBILE_OR_TABLET },
         );
         this._applyResolvedSize(streamingSettings, size);
         this._sizeFollowsScreen = size.followsScreen;
@@ -2401,6 +2401,10 @@ const MoonlightApp = {
         settings.stream_fit_box = size.fitBox;
         settings.stream_allow_upscale = size.allowUpscale;
         settings.stream_match_display = size.matchDisplay;
+        // What a native host fits instead when it cannot take the display
+        // mode "Match my screen" asks for: Auto's box.
+        settings.stream_fallback_width = size.fallback ? size.fallback.width : 0;
+        settings.stream_fallback_height = size.fallback ? size.fallback.height : 0;
         if (size.aspect) settings.stream_aspect = size.aspect;
         if (settings.stream_bitrate_auto !== false && !settings.power_save) {
             settings.stream_bitrate = this._autoBitrateFor(
@@ -2467,7 +2471,7 @@ const MoonlightApp = {
                 customWidth: choice.customWidth,
                 customHeight: choice.customHeight,
             },
-            { nativeHost: host.backendType === 'native', device },
+            { nativeHost: host.backendType === 'native', device, touch: IS_MOBILE_OR_TABLET },
         );
         if (size.height === settings.stream_height && size.aspect === settings.stream_aspect)
             return;
