@@ -601,44 +601,52 @@ struct ActivePath
     QString gdiName;    // "\\.\DISPLAY3"
     QString devicePath; // "\\?\DISPLAY#MTT1337#1&15ecd195&0&UID256#{…}"
     bool primary = false;
+    bool active = true;
+    DISPLAYCONFIG_PATH_INFO raw{}; // as Windows listed it
 };
 
-/// Every active display path, with what identifies it on both sides: the
-/// GDI name (mode calls) and the monitor device path (stable identity).
-std::vector<ActivePath> activePaths()
+/// Every display path Windows lists for @p flags (QDC_ONLY_ACTIVE_PATHS or
+/// QDC_ALL_PATHS, the latter narrowed to attached monitors), with what
+/// identifies it on both sides: the GDI name (mode calls) and the monitor
+/// device path (stable identity).
+std::vector<ActivePath> listPaths(UINT32 flags)
 {
     std::vector<ActivePath> out;
     UINT32 nPaths = 0, nModes = 0;
-    if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &nPaths, &nModes) != ERROR_SUCCESS)
-        return out;
+    if (GetDisplayConfigBufferSizes(flags, &nPaths, &nModes) != ERROR_SUCCESS) return out;
     std::vector<DISPLAYCONFIG_PATH_INFO> paths(nPaths);
     std::vector<DISPLAYCONFIG_MODE_INFO> modes(nModes);
-    if (QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &nPaths, paths.data(), &nModes, modes.data(),
-                           nullptr) != ERROR_SUCCESS)
+    if (QueryDisplayConfig(flags, &nPaths, paths.data(), &nModes, modes.data(), nullptr) !=
+        ERROR_SUCCESS)
         return out;
 
     for (UINT32 i = 0; i < nPaths; ++i) {
         const DISPLAYCONFIG_PATH_INFO& p = paths[i];
+        if (flags == QDC_ALL_PATHS && !p.targetInfo.targetAvailable) continue;
         DISPLAYCONFIG_TARGET_DEVICE_NAME tn{};
         tn.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
         tn.header.size = sizeof(tn);
         tn.header.adapterId = p.targetInfo.adapterId;
         tn.header.id = p.targetInfo.id;
         if (DisplayConfigGetDeviceInfo(&tn.header) != ERROR_SUCCESS) continue;
-        DISPLAYCONFIG_SOURCE_DEVICE_NAME sn{};
-        sn.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
-        sn.header.size = sizeof(sn);
-        sn.header.adapterId = p.sourceInfo.adapterId;
-        sn.header.id = p.sourceInfo.id;
-        if (DisplayConfigGetDeviceInfo(&sn.header) != ERROR_SUCCESS) continue;
 
         ActivePath a;
+        a.raw = p;
+        a.active = (p.flags & DISPLAYCONFIG_PATH_ACTIVE) != 0;
         a.adapterId = p.targetInfo.adapterId;
         a.targetId = p.targetInfo.id;
-        a.gdiName = QString::fromWCharArray(sn.viewGdiDeviceName);
         a.devicePath = QString::fromWCharArray(tn.monitorDevicePath);
+        if (a.active) {
+            DISPLAYCONFIG_SOURCE_DEVICE_NAME sn{};
+            sn.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+            sn.header.size = sizeof(sn);
+            sn.header.adapterId = p.sourceInfo.adapterId;
+            sn.header.id = p.sourceInfo.id;
+            if (DisplayConfigGetDeviceInfo(&sn.header) != ERROR_SUCCESS) continue;
+            a.gdiName = QString::fromWCharArray(sn.viewGdiDeviceName);
+        }
         const UINT32 srcIdx = p.sourceInfo.modeInfoIdx;
-        if (srcIdx != DISPLAYCONFIG_PATH_MODE_IDX_INVALID && srcIdx < modes.size() &&
+        if (a.active && srcIdx != DISPLAYCONFIG_PATH_MODE_IDX_INVALID && srcIdx < modes.size() &&
             modes[srcIdx].infoType == DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE) {
             const POINTL& pos = modes[srcIdx].sourceMode.position;
             a.primary = pos.x == 0 && pos.y == 0;
@@ -646,6 +654,11 @@ std::vector<ActivePath> activePaths()
         out.push_back(a);
     }
     return out;
+}
+
+std::vector<ActivePath> activePaths()
+{
+    return listPaths(QDC_ONLY_ACTIVE_PATHS);
 }
 
 /// The monitor ids hanging off our node, spelled like a device path.
@@ -672,16 +685,173 @@ QStringList ourMonitorIds()
     return out;
 }
 
-std::optional<ActivePath> findOurTarget()
+/// Our monitor among the paths listed for @p flags; QDC_ALL_PATHS finds it
+/// attached but switched off, QDC_ONLY_ACTIVE_PATHS only once it is on.
+std::optional<ActivePath> findOurTarget(UINT32 flags = QDC_ONLY_ACTIVE_PATHS)
 {
     const QStringList ids = ourMonitorIds();
     if (ids.isEmpty()) return std::nullopt;
-    for (const ActivePath& p : activePaths()) {
+    for (const ActivePath& p : listPaths(flags)) {
         const QString path = p.devicePath.toLower();
         for (const QString& id : ids)
             if (path.contains(id)) return p;
     }
     return std::nullopt;
+}
+
+// ── The display layout before ours: saved, kept, restored ──────────────────
+//
+// Windows left to itself answers a new display by activating every display
+// it can find — including one the owner had set to "disconnect" in
+// Settings — and when the new one goes, the extra one stays on. So the
+// active configuration (paths + modes, as the CCD API keeps it) is saved
+// before our node is enabled, imposed again once our display is up (plus
+// ours), and applied back, without ours, when the stream ends: what was on
+// is on, what was off is off, and the primary is the one it was.
+
+struct Topology
+{
+    std::vector<DISPLAYCONFIG_PATH_INFO> paths;
+    std::vector<DISPLAYCONFIG_MODE_INFO> modes;
+};
+
+struct TopologyHeader
+{
+    char magic[4];
+    quint32 version;
+    quint32 nPaths;
+    quint32 nModes;
+    quint32 pathSize;
+    quint32 modeSize;
+};
+constexpr char kTopologyMagic[4] = {'M', 'W', 'V', 'T'};
+constexpr quint32 kTopologyVersion = 1;
+constexpr quint32 kTopologyMaxPaths = 64;
+constexpr quint32 kTopologyMaxModes = 256;
+
+QString topologyPath(const Context& ctx)
+{
+    return ctx.dir + QStringLiteral("/topology.bin");
+}
+
+bool sameTarget(const DISPLAYCONFIG_PATH_INFO& a, const DISPLAYCONFIG_PATH_INFO& b)
+{
+    return a.targetInfo.adapterId.LowPart == b.targetInfo.adapterId.LowPart &&
+           a.targetInfo.adapterId.HighPart == b.targetInfo.adapterId.HighPart &&
+           a.targetInfo.id == b.targetInfo.id;
+}
+
+/// The active configuration, to the staging directory. The directory is the
+/// user's and this process may be elevated: what is read back only ever
+/// reaches SetDisplayConfig, a call any process on the desktop can make.
+bool saveTopology(const Context& ctx, QString* error)
+{
+    Topology t;
+    UINT32 nPaths = 0, nModes = 0;
+    if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &nPaths, &nModes) != ERROR_SUCCESS) {
+        *error = QStringLiteral("GetDisplayConfigBufferSizes failed");
+        return false;
+    }
+    t.paths.resize(nPaths);
+    t.modes.resize(nModes);
+    if (QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &nPaths, t.paths.data(), &nModes, t.modes.data(),
+                           nullptr) != ERROR_SUCCESS) {
+        *error = QStringLiteral("QueryDisplayConfig failed");
+        return false;
+    }
+    t.paths.resize(nPaths);
+    t.modes.resize(nModes);
+    if (nPaths == 0 || nPaths > kTopologyMaxPaths || nModes > kTopologyMaxModes) {
+        *error = QStringLiteral("no active display to remember");
+        return false;
+    }
+
+    TopologyHeader h{};
+    memcpy(h.magic, kTopologyMagic, sizeof(h.magic));
+    h.version = kTopologyVersion;
+    h.nPaths = nPaths;
+    h.nModes = nModes;
+    h.pathSize = sizeof(DISPLAYCONFIG_PATH_INFO);
+    h.modeSize = sizeof(DISPLAYCONFIG_MODE_INFO);
+    QFile f(topologyPath(ctx));
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        *error = QStringLiteral("cannot write %1").arg(f.fileName());
+        return false;
+    }
+    f.write(reinterpret_cast<const char*>(&h), sizeof(h));
+    f.write(reinterpret_cast<const char*>(t.paths.data()),
+            qint64(nPaths * sizeof(DISPLAYCONFIG_PATH_INFO)));
+    f.write(reinterpret_cast<const char*>(t.modes.data()),
+            qint64(nModes * sizeof(DISPLAYCONFIG_MODE_INFO)));
+    return true;
+}
+
+std::optional<Topology> loadTopology(const Context& ctx)
+{
+    QFile f(topologyPath(ctx));
+    if (!f.open(QIODevice::ReadOnly)) return std::nullopt;
+    const QByteArray raw = f.readAll();
+    TopologyHeader h{};
+    if (raw.size() < qsizetype(sizeof(h))) return std::nullopt;
+    memcpy(&h, raw.constData(), sizeof(h));
+    if (memcmp(h.magic, kTopologyMagic, sizeof(h.magic)) != 0 || h.version != kTopologyVersion ||
+        h.pathSize != sizeof(DISPLAYCONFIG_PATH_INFO) ||
+        h.modeSize != sizeof(DISPLAYCONFIG_MODE_INFO) || h.nPaths == 0 ||
+        h.nPaths > kTopologyMaxPaths || h.nModes > kTopologyMaxModes)
+        return std::nullopt;
+    const qsizetype expected = qsizetype(sizeof(h) + h.nPaths * h.pathSize + h.nModes * h.modeSize);
+    if (raw.size() != expected) return std::nullopt;
+
+    Topology t;
+    t.paths.resize(h.nPaths);
+    t.modes.resize(h.nModes);
+    memcpy(t.paths.data(), raw.constData() + sizeof(h), h.nPaths * h.pathSize);
+    memcpy(t.modes.data(), raw.constData() + sizeof(h) + h.nPaths * h.pathSize,
+           h.nModes * h.modeSize);
+    for (const DISPLAYCONFIG_PATH_INFO& p : t.paths) {
+        for (const UINT32 idx : {p.sourceInfo.modeInfoIdx, p.targetInfo.modeInfoIdx})
+            if (idx != DISPLAYCONFIG_PATH_MODE_IDX_INVALID && idx >= h.nModes) return std::nullopt;
+    }
+    return t;
+}
+
+/// Whether every display of @p t is still attached — a saved layout from
+/// before a reboot names adapters that no longer exist.
+bool topologyStillAttached(const Topology& t)
+{
+    UINT32 nPaths = 0, nModes = 0;
+    if (GetDisplayConfigBufferSizes(QDC_ALL_PATHS, &nPaths, &nModes) != ERROR_SUCCESS) return false;
+    std::vector<DISPLAYCONFIG_PATH_INFO> paths(nPaths);
+    std::vector<DISPLAYCONFIG_MODE_INFO> modes(nModes);
+    if (QueryDisplayConfig(QDC_ALL_PATHS, &nPaths, paths.data(), &nModes, modes.data(), nullptr) !=
+        ERROR_SUCCESS)
+        return false;
+    paths.resize(nPaths);
+    for (const DISPLAYCONFIG_PATH_INFO& want : t.paths) {
+        bool found = false;
+        for (const DISPLAYCONFIG_PATH_INFO& have : paths)
+            if (sameTarget(want, have) && (have.targetInfo.targetAvailable != 0)) found = true;
+        if (!found) return false;
+    }
+    return true;
+}
+
+/// Apply @p t as the whole configuration: a display it does not name goes off.
+/// Not saved to Windows' database: ours is still attached at this point, and
+/// an entry "ours off" for this set of displays would be what Windows replays
+/// the next time the node comes up — the display would never appear.
+bool applyTopology(const Topology& t, QString* error)
+{
+    std::vector<DISPLAYCONFIG_PATH_INFO> paths = t.paths;
+    std::vector<DISPLAYCONFIG_MODE_INFO> modes = t.modes;
+    const LONG rc =
+        SetDisplayConfig(UINT32(paths.size()), paths.data(), UINT32(modes.size()), modes.data(),
+                         SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES);
+    if (rc != ERROR_SUCCESS) {
+        *error = QStringLiteral("SetDisplayConfig: %1").arg(lastErrorText(DWORD(rc)));
+        return false;
+    }
+    return true;
 }
 
 /// Query the active display configuration, let @p edit change it, apply it.
@@ -705,9 +875,9 @@ template <typename Edit> bool applyDisplayConfig(Edit edit, QString* error)
     paths.resize(nPaths);
     modes.resize(nModes);
     if (!edit(paths, modes, error)) return false;
-    const LONG rc = SetDisplayConfig(nPaths, paths.data(), nModes, modes.data(),
-                                     SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG |
-                                         SDC_ALLOW_CHANGES | SDC_SAVE_TO_DATABASE);
+    const LONG rc = SetDisplayConfig(
+        UINT32(paths.size()), paths.data(), UINT32(modes.size()), modes.data(),
+        SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES | SDC_SAVE_TO_DATABASE);
     if (rc != ERROR_SUCCESS) {
         *error = QStringLiteral("SetDisplayConfig: %1").arg(lastErrorText(DWORD(rc)));
         return false;
@@ -762,6 +932,68 @@ bool setMode(const QString& devicePath, QString* error)
         error);
 }
 
+/// Switch on the attached, inactive display @p attached (a QDC_ALL_PATHS
+/// entry): its path joins the active ones, modes and position left to
+/// Windows. Needed when Windows' own answer to the monitor is "off" — its
+/// database remembers the last layout for this set of displays, and that is
+/// what a stream's end leaves.
+bool switchOn(const ActivePath& attached, QString* error)
+{
+    return applyDisplayConfig(
+        [&](std::vector<DISPLAYCONFIG_PATH_INFO>& paths,
+            std::vector<DISPLAYCONFIG_MODE_INFO>& modes, QString*) {
+            Q_UNUSED(modes);
+            DISPLAYCONFIG_PATH_INFO p = attached.raw;
+            // A source already driving another display on that adapter
+            // would make a clone: take a free one.
+            for (;;) {
+                bool taken = false;
+                for (const DISPLAYCONFIG_PATH_INFO& q : paths)
+                    if (q.sourceInfo.adapterId.LowPart == p.sourceInfo.adapterId.LowPart &&
+                        q.sourceInfo.adapterId.HighPart == p.sourceInfo.adapterId.HighPart &&
+                        q.sourceInfo.id == p.sourceInfo.id)
+                        taken = true;
+                if (!taken || p.sourceInfo.id >= 15) break;
+                ++p.sourceInfo.id;
+            }
+            p.flags = DISPLAYCONFIG_PATH_ACTIVE;
+            p.sourceInfo.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+            p.targetInfo.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+            p.targetInfo.statusFlags = 0;
+            paths.push_back(p);
+            return true;
+        },
+        error);
+}
+
+/// Switch off every active display that is neither in @p t nor ours at
+/// @p devicePath — what Windows lit up on its own when ours appeared.
+/// @return how many went off; -1 on failure.
+int pruneToTopology(const Topology& t, const QString& devicePath, QString* error)
+{
+    int pruned = 0;
+    const bool ok = applyDisplayConfig(
+        [&](std::vector<DISPLAYCONFIG_PATH_INFO>& paths,
+            std::vector<DISPLAYCONFIG_MODE_INFO>& modes, QString*) {
+            Q_UNUSED(modes);
+            const int ours = pathIndexFor(paths, devicePath);
+            std::vector<DISPLAYCONFIG_PATH_INFO> keep;
+            for (size_t i = 0; i < paths.size(); ++i) {
+                bool wanted = int(i) == ours;
+                for (const DISPLAYCONFIG_PATH_INFO& p : t.paths)
+                    if (sameTarget(p, paths[i])) wanted = true;
+                if (wanted)
+                    keep.push_back(paths[i]);
+                else
+                    ++pruned;
+            }
+            paths = keep;
+            return true;
+        },
+        error);
+    return ok ? pruned : -1;
+}
+
 /// Make the display at @p devicePath the primary one: every desktop origin
 /// shifted so that one lands on (0,0), in one configuration change.
 bool makePrimary(const QString& devicePath, QString* error)
@@ -791,12 +1023,52 @@ bool makePrimary(const QString& devicePath, QString* error)
         error);
 }
 
+// ── Stage "snapshot": the desktop half that runs before the node goes on ──
+
+int stageSnapshot(Context& ctx)
+{
+    using Action = VirtualDisplay::Request::Action;
+    ctx.result.ok = true;
+    ctx.result.stage = QStringLiteral("snapshot");
+    if (ctx.request.action != Action::Activate) return kExitOk;
+    QString error;
+    if (saveTopology(ctx, &error)) {
+        Logger::info(QStringLiteral("[vdisplay-apply] display layout saved"));
+    } else {
+        // Not fatal: the primary alone is restored then (the way back below).
+        QFile::remove(topologyPath(ctx));
+        Logger::warning(QStringLiteral("[vdisplay-apply] display layout not saved: %1").arg(error));
+    }
+    return kExitOk;
+}
+
 int stageMode(Context& ctx)
 {
     using Action = VirtualDisplay::Request::Action;
     const QString stage = QStringLiteral("mode");
 
     if (ctx.request.action == Action::Deactivate) {
+        ctx.result.ok = true;
+        ctx.result.stage = stage;
+        // The layout from before ours, applied while ours still exists: that
+        // switches ours off, puts every other display back where it was and
+        // gives the primary role back, in one change. The node goes next.
+        if (const auto saved = loadTopology(ctx)) {
+            QString error;
+            if (!topologyStillAttached(*saved)) {
+                Logger::info(QStringLiteral(
+                    "[vdisplay-apply] the saved display layout names a display that is "
+                    "gone — restoring the primary only"));
+            } else if (applyTopology(*saved, &error)) {
+                Logger::info(QStringLiteral("[vdisplay-apply] display layout restored"));
+                QFile::remove(topologyPath(ctx));
+                return kExitOk; // the driver stage (disable) follows
+            } else {
+                Logger::warning(
+                    QStringLiteral("[vdisplay-apply] display layout not restored: %1").arg(error));
+            }
+            QFile::remove(topologyPath(ctx));
+        }
         // The previous primary back in its role, while ours still exists —
         // Windows would otherwise pick one itself when ours goes.
         if (!ctx.request.restorePrimary.isEmpty()) {
@@ -815,8 +1087,6 @@ int stageMode(Context& ctx)
                 Logger::info(QStringLiteral(
                     "[vdisplay-apply] the previous primary display is gone — Windows picks"));
         }
-        ctx.result.ok = true;
-        ctx.result.stage = stage;
         return kExitOk; // the driver stage (disable) follows
     }
     if (ctx.request.action != Action::Activate) {
@@ -825,13 +1095,29 @@ int stageMode(Context& ctx)
         return finish(ctx);
     }
 
-    // The display appears a moment after the driver starts; ten seconds is
-    // generous for a UMDF driver and a single monitor.
+    // The monitor appears a moment after the driver starts; ten seconds is
+    // generous for a UMDF driver and a single monitor. Whether Windows then
+    // switches it on is its database's call — attached and off, we do it.
     std::optional<ActivePath> target;
     QElapsedTimer wait;
     wait.start();
-    while (!(target = findOurTarget()) && wait.elapsed() < 10 * 1000)
+    bool switchedOn = false;
+    QString error;
+    while (!(target = findOurTarget()) && wait.elapsed() < 10 * 1000) {
+        if (!switchedOn) {
+            if (const auto attached = findOurTarget(QDC_ALL_PATHS)) {
+                switchedOn = true;
+                if (switchOn(*attached, &error))
+                    Logger::info(QStringLiteral(
+                        "[vdisplay-apply] the virtual display was attached but off: switched on"));
+                else
+                    Logger::warning(
+                        QStringLiteral("[vdisplay-apply] cannot switch the virtual display on: %1")
+                            .arg(error));
+            }
+        }
         QThread::msleep(250);
+    }
     if (!target) {
         if (ctx.result.rebootRequired) {
             ctx.result.ok = true;
@@ -847,7 +1133,20 @@ int stageMode(Context& ctx)
         if (p.primary && p.devicePath.compare(target->devicePath, Qt::CaseInsensitive) != 0)
             ctx.result.previousPrimary = p.devicePath;
 
-    QString error;
+    // Only what was on before, plus ours: Windows may have switched on a
+    // display the owner keeps disconnected.
+    if (const auto saved = loadTopology(ctx)) {
+        const int pruned = pruneToTopology(*saved, target->devicePath, &error);
+        if (pruned < 0)
+            Logger::warning(
+                QStringLiteral("[vdisplay-apply] extra displays not switched off: %1").arg(error));
+        else if (pruned > 0)
+            Logger::info(QStringLiteral("[vdisplay-apply] %1 display(s) Windows switched on "
+                                        "with ours switched off again")
+                             .arg(pruned));
+        if (auto again = findOurTarget()) target = again;
+    }
+
     if (setMode(target->devicePath, &error)) {
         Logger::info(QStringLiteral("[vdisplay-apply] %1 set to %2x%3@%4")
                          .arg(target->gdiName)
@@ -906,33 +1205,45 @@ int run(const QString& stageArg, const QString& dirArg)
 
 #ifdef Q_OS_WIN
     using Action = VirtualDisplay::Request::Action;
-    const bool wantDriver = stage == QLatin1String("driver") || stage == QLatin1String("all");
-    const bool wantMode = stage == QLatin1String("mode") || stage == QLatin1String("all");
-    if (!wantDriver && !wantMode)
+    const bool all = stage == QLatin1String("all");
+    const bool wantSnapshot = all || stage == QLatin1String("snapshot");
+    const bool wantDriver = all || stage == QLatin1String("driver");
+    const bool wantMode = all || stage == QLatin1String("mode");
+    if (!wantSnapshot && !wantDriver && !wantMode)
         return failAt(ctx, QStringLiteral("request"),
                       QStringLiteral("unknown stage %1").arg(stage));
 
-    // Deactivate runs the desktop half first (restore the primary while our
-    // display still exists), every other verb the elevated half first.
-    const bool modeFirst = ctx.request.action == Action::Deactivate;
-    const auto first =
-        modeFirst ? (wantMode ? &stageMode : nullptr) : (wantDriver ? &stageDriver : nullptr);
-    const auto second =
-        modeFirst ? (wantDriver ? &stageDriver : nullptr) : (wantMode ? &stageMode : nullptr);
-
-    if (first) {
-        const int rc = first(ctx);
-        // A stage finishes itself on failure and when the verb is complete;
-        // otherwise it returns without writing so the other half can go on.
-        if (!ctx.result.ok || ctx.result.stage == QLatin1String("done")) return rc;
-        if (!second) return finish(ctx);
+    // Activate: remember the desktop, switch the node on, set the desktop.
+    // Deactivate: the desktop half first (the layout back while our display
+    // still exists), then the node. Every other verb: the node, then the
+    // desktop half, which has nothing to do.
+    std::vector<int (*)(Context&)> stages;
+    if (ctx.request.action == Action::Activate) {
+        if (wantSnapshot) stages.push_back(&stageSnapshot);
+        if (wantDriver) stages.push_back(&stageDriver);
+        if (wantMode) stages.push_back(&stageMode);
+    } else if (ctx.request.action == Action::Deactivate) {
+        if (wantMode) stages.push_back(&stageMode);
+        if (wantDriver) stages.push_back(&stageDriver);
+    } else {
+        if (wantDriver) stages.push_back(&stageDriver);
+        if (wantMode) stages.push_back(&stageMode);
     }
-    if (second) {
-        const int rc = second(ctx);
-        if (!ctx.result.ok || ctx.result.stage == QLatin1String("done")) return rc;
-        // Deactivate ends on the driver stage, which does not finish itself.
+    if (stages.empty()) {
+        ctx.result.ok = true;
         ctx.result.stage = QStringLiteral("done");
+        return finish(ctx);
     }
+
+    for (const auto stageFn : stages) {
+        const int rc = stageFn(ctx);
+        // A stage finishes itself on failure and when the verb is complete;
+        // otherwise it returns without writing so the next one can go on.
+        if (!ctx.result.ok || ctx.result.stage == QLatin1String("done")) return rc;
+    }
+    // Ends on a stage that does not finish itself (Deactivate's driver
+    // stage, or one half of a split run): the caller reads the result file.
+    if (all) ctx.result.stage = QStringLiteral("done");
     return finish(ctx);
 #else
     Q_UNUSED(stage);

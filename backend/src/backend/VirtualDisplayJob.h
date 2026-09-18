@@ -24,6 +24,7 @@
 #include <QList>
 #include <QObject>
 #include <QString>
+#include <QStringList>
 #include <QTimer>
 
 #include <functional>
@@ -116,9 +117,9 @@ private:
     QTimer m_Deadline;
     QTimer m_Release;
     QByteArray m_HelperOut;
-    // The service path runs the elevated half as SYSTEM and the desktop half
-    // in the console session; this remembers which half is still to run.
-    std::optional<QString> m_NextStage;
+    // The service path runs the node stage as SYSTEM and the desktop stages
+    // in the console session, one child each; these are the ones still to run.
+    QStringList m_NextStages;
     // macOS: the request was applied in this process and the poll is waiting
     // for the OS to list the display; this is the result to deliver then.
     std::optional<VirtualDisplay::Result> m_InProcessResult;

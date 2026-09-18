@@ -24,25 +24,36 @@
  * that needs rights the server does not have.
  *
  * Started by the elevated scheduled task (stage "all"), by the SYSTEM service
- * as a child (stage "driver") followed by a console-session child (stage
- * "mode"), or by a hand-elevated instance. It reads request.json from the
- * staging directory, does exactly what that says, writes result.json and
- * prints the same JSON line on stdout. Never a window, never a message box:
- * the task runs hidden on a desktop that may have no monitor at all.
+ * as one child per stage (the desktop halves in the console session, the
+ * node half as SYSTEM), or by a hand-elevated instance. It reads
+ * request.json from the staging directory, does exactly what that says,
+ * writes result.json and prints the same JSON line on stdout. Never a
+ * window, never a message box: the task runs hidden on a desktop that may
+ * have no monitor at all.
  *
+ * Stage "snapshot" (any desktop process, Activate only, first): save the
+ *   active display layout — paths and modes — to topology.bin.
  * Stage "driver" (elevated):
- *   add    — re-hash the three driver files against the constants compiled in
- *            here, write the driver's settings XML, trust the catalog's
- *            signer for the duration, create the Root\MttVDD node and install
- *            the package on it (SetupAPI + newdev), untrust again.
- *   remove — remove the device node, delete the package from the driver
- *            store, delete the settings file.
- * Stage "mode" (any desktop process): wait for the virtual display to appear,
- *   set the requested resolution and refresh rate, switch HDR on or off.
+ *   install    — re-hash the three driver files against the constants
+ *                compiled in here, write the driver's settings XML if there
+ *                is none, trust the catalog's signer for the duration, create
+ *                the Root\MttVDD node named "MoonlightWeb Virtual Display"
+ *                and install the package on it (SetupAPI + newdev), untrust
+ *                again, leave the node disabled.
+ *   uninstall  — remove our node; delete the package from the driver store
+ *                only if no other node uses it.
+ *   activate   — enable our node.
+ *   deactivate — disable it.
+ * Stage "mode" (any desktop process):
+ *   activate   — wait for the virtual display to appear, switch off what
+ *                Windows switched on with it, set 1080p at 120 Hz SDR, make
+ *                it primary.
+ *   deactivate — before the node goes: the saved layout back (or, without
+ *                one, the previous primary back in its role).
  */
 namespace VirtualDisplayApply {
 
-/// @param stage "all" | "driver" | "mode"
+/// @param stage "all" | "snapshot" | "driver" | "mode"
 /// @param dir   staging directory; empty = VirtualDisplay::stagingDir()
 /// @return process exit code: 0 ok, 1 failed, 3010 ok but reboot required
 int run(const QString& stage, const QString& dir);

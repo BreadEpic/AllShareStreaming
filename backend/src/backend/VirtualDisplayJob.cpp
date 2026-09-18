@@ -127,7 +127,8 @@ void VirtualDisplayJob::activate(Callback cb)
     if (!running() && m_Queue.isEmpty()) {
         const VirtualDisplay::Status st = VirtualDisplay::probe();
         if (!st.supported) {
-            if (cb) cb(false, QStringLiteral("Virtual displays are not supported on this platform"));
+            if (cb)
+                cb(false, QStringLiteral("Virtual displays are not supported on this platform"));
             return;
         }
         if (!st.installed) {
@@ -197,7 +198,7 @@ void VirtualDisplayJob::startNext()
     m_StartedAt = QDateTime::currentDateTimeUtc();
     m_FinishedAt = QDateTime();
     m_HelperOut.clear();
-    m_NextStage.reset();
+    m_NextStages.clear();
     m_InProcessResult.reset();
 
     const VirtualDisplay::Status st = VirtualDisplay::probe();
@@ -291,16 +292,25 @@ void VirtualDisplayJob::dispatch()
         runTask();
     } else if (method == QLatin1String("elevated")) {
         if (!qEnvironmentVariableIsEmpty("MW_SERVICE")) {
-            // Session 0 can switch the device node but has no desktop to set
-            // a mode or a primary on: that half runs in the console session.
-            // Activate: node first, then desktop. Deactivate: the reverse.
-            const bool activate = m_Request.action == Action::Activate;
-            m_NextStage = activate ? QStringLiteral("mode") : QStringLiteral("driver");
-            const QString firstStage = activate ? QStringLiteral("driver") : QStringLiteral("mode");
+            // Session 0 can switch the device node but has no desktop to read
+            // or set a layout on: those halves run in the console session,
+            // one child per stage, in the order VirtualDisplayApply::run
+            // would take them in one process.
+            switch (m_Request.action) {
+            case Action::Activate:
+                m_NextStages = {QStringLiteral("snapshot"), QStringLiteral("driver"),
+                                QStringLiteral("mode")};
+                break;
+            case Action::Deactivate:
+                m_NextStages = {QStringLiteral("mode"), QStringLiteral("driver")};
+                break;
+            default: m_NextStages = {QStringLiteral("driver"), QStringLiteral("mode")}; break;
+            }
+            const QString firstStage = m_NextStages.takeFirst();
             runHelper(QStringList{VirtualDisplay::applyArgument(),
                                   QStringLiteral("--stage=") + firstStage}
                           << dirArg,
-                      !activate);
+                      firstStage != QLatin1String("driver"));
         } else {
             runHelper(QStringList{VirtualDisplay::applyArgument(), QStringLiteral("--stage=all")}
                           << dirArg,
@@ -457,15 +467,14 @@ void VirtualDisplayJob::handleResult(const VirtualDisplay::Result& res)
                                  : res.error);
         return;
     }
-    if (m_NextStage) {
-        // One half done; the other runs where it can — the desktop half as
-        // the console user, the node half as SYSTEM.
-        const QString stage = *m_NextStage;
-        m_NextStage.reset();
+    if (!m_NextStages.isEmpty()) {
+        // One stage done; the next runs where it can — the desktop halves
+        // as the console user, the node half as SYSTEM.
+        const QString stage = m_NextStages.takeFirst();
         runHelper({VirtualDisplay::applyArgument(), QStringLiteral("--stage=") + stage,
                    QStringLiteral("--vdisplay-dir"),
                    QDir::toNativeSeparators(VirtualDisplay::stagingDir())},
-                  stage == QLatin1String("mode"));
+                  stage != QLatin1String("driver"));
         return;
     }
     setState(State::Refreshing);

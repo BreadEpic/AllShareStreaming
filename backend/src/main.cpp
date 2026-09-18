@@ -1554,8 +1554,8 @@ int main(int argc, char* argv[])
         "vdisplay-apply", "Apply a pending virtual display request (internal: started by the "
                           "elevated scheduled task or by the server itself).");
     parser.addOption(vdisplayApplyOption);
-    QCommandLineOption vdisplayStageOption("stage", "With --vdisplay-apply: all|driver|mode",
-                                           "stage", "all");
+    QCommandLineOption vdisplayStageOption(
+        "stage", "With --vdisplay-apply: all|snapshot|driver|mode", "stage", "all");
     parser.addOption(vdisplayStageOption);
     QCommandLineOption vdisplayDirOption("vdisplay-dir",
                                          "With --vdisplay-apply: the staging directory", "dir");

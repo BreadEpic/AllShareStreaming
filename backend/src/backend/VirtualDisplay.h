@@ -206,7 +206,7 @@ QString toString(Request::Action action);
 struct Result
 {
     bool ok = false;
-    QString stage; ///< where it ended: "driver" | "mode" | "done"
+    QString stage; ///< where it ended: "snapshot" | "driver" | "mode" | "done"
     QString error; ///< English, for the log and the dialog
     bool rebootRequired = false;
     QString display; ///< GDI name of the display that came up ("\\.\DISPLAY3")
