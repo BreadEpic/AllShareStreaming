@@ -28,6 +28,7 @@ import {
 } from '../util/pairingCrypto.js';
 import { defaultIceServers } from './IceServers.js';
 import { isViewMessage } from './hostMessages.js';
+import { setAudioJitterBufferTarget } from '../util/AudioJitter.js';
 
 /**
  * Describe a WebSocket close code for diagnostic logging.
@@ -537,6 +538,9 @@ export class WebRtcMedia {
                 // gesture-blessed element (autoplay unlock); on desktop it returns
                 // false and we play it on our own <audio> element.
                 console.log('[WebRtcMedia] Audio track received');
+                // The browser's buffer is the whole of the audio latency: aim
+                // it, as the video receiver's is aimed from the stats loop.
+                setAudioJitterBufferTarget(this.pc);
                 const stream = new MediaStream([event.track]);
                 if (!iosAudioUnlock.playStream(stream) && this.audioElement) {
                     this.audioElement.srcObject = stream;
