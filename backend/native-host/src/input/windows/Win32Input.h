@@ -19,6 +19,7 @@
 
 #include "../../capture/windows/IWindowsCapture.h"
 #include "../IInputSink.h"
+#include "../RecentreDetector.h"
 #include "VigemGamepad.h"
 
 #include <atomic>
@@ -89,6 +90,9 @@ private:
     /// Warp the pointer to the nearest point of the captured display if it is
     /// on another screen. A relative move applied from there is visible.
     void bringCursorOntoDisplay();
+    /// A client position — placed as such, or, once a game is found to be
+    /// re-centring the pointer, applied as the delta from the previous one.
+    /// See RecentreDetector.
     void injectMousePosition(const InputEvent& event);
     /// Applies the press if — and only if — it changes the button's state.
     void injectMouseButton(int button, bool down);
@@ -152,6 +156,11 @@ private:
     /// Not const: the display can be re-resolved under a running session (see
     /// setDisplayRect). Written and read under the caller's own serialisation.
     capture::DesktopRect m_DisplayRect;
+
+    /// Whether the application under the pointer keeps warping it back to one
+    /// spot — the one case where placing the client's position is wrong.
+    /// Input-thread only, like the diagnostics below.
+    RecentreDetector m_Recentre;
 
     /// Null when ViGEmBus is absent — the overwhelmingly common case, and not a
     /// failure. Keyboard and mouse are unaffected.

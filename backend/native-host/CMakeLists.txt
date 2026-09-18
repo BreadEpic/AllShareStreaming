@@ -373,6 +373,7 @@ if(MW_BUILD_TESTS)
         tests/test_host_mute.cpp
         tests/test_evdev_keymap.cpp
         tests/test_pointer_clamp.cpp
+        tests/test_recentre_detector.cpp
         tests/test_xkb_text_map.cpp
         tests/test_absolute_map.cpp
         tests/test_wayland_layout.cpp

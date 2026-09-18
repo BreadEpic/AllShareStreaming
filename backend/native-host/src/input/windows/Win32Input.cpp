@@ -478,22 +478,31 @@ bool desktopToAbsolute(int64_t desktopX, int64_t desktopY, LONG& outX, LONG& out
 /// secondary monitor would be aimed at as if it were the primary. Both
 /// rectangles come from the same DPI-virtualized coordinate system (see
 /// DesktopRect), so no scaling correction belongs here.
-bool toAbsolute(const capture::DesktopRect& rect, int x, int y, int refW, int refH, LONG& outX,
-                LONG& outY)
+/// A client position, in the client's own picture, as a desktop pixel of the
+/// captured display.
+///
+/// Clamped to the display: a client whose aspect ratio differs slightly can
+/// report a point a pixel or two outside, and letting that through would walk
+/// the cursor onto the neighbouring screen.
+bool clampToDisplay(const capture::DesktopRect& rect, int x, int y, int refW, int refH,
+                    int64_t& outX, int64_t& outY)
 {
     if (refW <= 0 || refH <= 0 || !rect.valid()) return false;
 
-    // Clamp to the display: a client whose aspect ratio differs slightly can
-    // report a point a pixel or two outside, and letting that through would
-    // walk the cursor onto the neighbouring screen.
     const int64_t onDisplayX = rect.left + (static_cast<int64_t>(x) * rect.width()) / refW;
     const int64_t onDisplayY = rect.top + (static_cast<int64_t>(y) * rect.height()) / refH;
-    const int64_t clampedX =
-        std::min<int64_t>(std::max<int64_t>(onDisplayX, rect.left), rect.right - 1);
-    const int64_t clampedY =
-        std::min<int64_t>(std::max<int64_t>(onDisplayY, rect.top), rect.bottom - 1);
+    outX = std::min<int64_t>(std::max<int64_t>(onDisplayX, rect.left), rect.right - 1);
+    outY = std::min<int64_t>(std::max<int64_t>(onDisplayY, rect.top), rect.bottom - 1);
+    return true;
+}
 
-    return desktopToAbsolute(clampedX, clampedY, outX, outY);
+bool toAbsolute(const capture::DesktopRect& rect, int x, int y, int refW, int refH, LONG& outX,
+                LONG& outY)
+{
+    int64_t onDisplayX = 0;
+    int64_t onDisplayY = 0;
+    if (!clampToDisplay(rect, x, y, refW, refH, onDisplayX, onDisplayY)) return false;
+    return desktopToAbsolute(onDisplayX, onDisplayY, outX, outY);
 }
 
 /// Where the pointer is on the desktop, if Windows will say (it will not from
@@ -527,6 +536,9 @@ void Win32Input::setDisplayRect(int left, int top, int right, int bottom)
         rect.right == m_DisplayRect.right && rect.bottom == m_DisplayRect.bottom)
         return;
     m_DisplayRect = rect;
+    // Positions are about to mean somewhere else; what was learnt about
+    // where the pointer keeps returning to is not worth carrying over.
+    m_Recentre.reset();
     log::info("[native] input: display now at " + std::to_string(m_DisplayRect.left) + "," +
               std::to_string(m_DisplayRect.top) + " " + std::to_string(m_DisplayRect.width()) +
               "x" + std::to_string(m_DisplayRect.height()));
@@ -535,6 +547,7 @@ void Win32Input::setDisplayRect(int left, int top, int right, int bottom)
 bool Win32Input::start(std::string& error)
 {
     if (m_Started) return true;
+    m_Recentre.reset();
 
     // Nothing to open, nothing to allocate for keyboard and mouse: SendInput
     // needs no handle and no setup. Whether there IS a desktop to inject into
@@ -1151,13 +1164,11 @@ void Win32Input::diagAbsolute(const InputEvent& event)
                   (r.valid() ? "valid" : "invalid"));
         return;
     }
-    // The same clamp toAbsolute applies, kept in desktop pixels for the line.
-    const int64_t onX =
-        r.left + (static_cast<int64_t>(event.positionX) * r.width()) / event.referenceWidth;
-    const int64_t onY =
-        r.top + (static_cast<int64_t>(event.positionY) * r.height()) / event.referenceHeight;
-    const int64_t x = std::min<int64_t>(std::max<int64_t>(onX, r.left), r.right - 1);
-    const int64_t y = std::min<int64_t>(std::max<int64_t>(onY, r.top), r.bottom - 1);
+    // The same clamp the injection applies, kept in desktop pixels for the line.
+    int64_t x = 0;
+    int64_t y = 0;
+    clampToDisplay(r, event.positionX, event.positionY, event.referenceWidth, event.referenceHeight,
+                   x, y);
     const int64_t jump = std::max<int64_t>(1, r.width() / 4);
     const bool jumped = m_DiagHaveLast && (std::llabs(x - m_DiagLastX) >= jump ||
                                            std::llabs(y - m_DiagLastY) >= jump);
@@ -1178,11 +1189,51 @@ void Win32Input::diagAbsolute(const InputEvent& event)
 void Win32Input::injectMousePosition(const InputEvent& event)
 {
     if (pointerDiagnostics()) diagAbsolute(event);
+    int64_t x = 0;
+    int64_t y = 0;
+    if (!clampToDisplay(m_DisplayRect, event.positionX, event.positionY, event.referenceWidth,
+                        event.referenceHeight, x, y))
+        return;
+
+    // A game that keeps warping the pointer to the middle of its window reads
+    // the mouse as the distance from there — placing the client's position
+    // would hand it half a screen per frame. Found by looking where the
+    // pointer is before each placement; see RecentreDetector for the whole
+    // argument. From then on the client's motion goes in as deltas, exactly
+    // as gaming mode would send them, until the game lets the pointer be.
+    POINT here = {};
+    const bool haveHere = cursorPosition(here);
+    const RecentreDetector::Verdict verdict =
+        m_Recentre.observe(haveHere, here.x, here.y, x, y, steadyNowUs());
+    if (verdict.changed) {
+        if (verdict.relative)
+            log::info("[native] input: the application keeps putting the pointer back at " +
+                      std::to_string(m_Recentre.anchorX()) + "," +
+                      std::to_string(m_Recentre.anchorY()) +
+                      " (a game reading the mouse from the cursor) — client positions go in "
+                      "as deltas from there");
+        else
+            log::info("[native] input: the pointer is no longer put back, client positions "
+                      "are placed again");
+    }
+    if (verdict.relative) {
+        // A pointer that re-enters the picture far from where it left is a
+        // jump the viewer did not make: no game should turn on it.
+        const int64_t jump = std::max<int64_t>(1, m_DisplayRect.width() / 4);
+        if (std::llabs(verdict.deltaX) >= jump || std::llabs(verdict.deltaY) >= jump) return;
+        if (verdict.deltaX == 0 && verdict.deltaY == 0) return;
+        INPUT input = {};
+        input.type = INPUT_MOUSE;
+        input.mi.dx = static_cast<LONG>(verdict.deltaX);
+        input.mi.dy = static_cast<LONG>(verdict.deltaY);
+        input.mi.dwFlags = MOUSEEVENTF_MOVE;
+        sendOne(input);
+        return;
+    }
+
     LONG absX = 0;
     LONG absY = 0;
-    if (!toAbsolute(m_DisplayRect, event.positionX, event.positionY, event.referenceWidth,
-                    event.referenceHeight, absX, absY))
-        return;
+    if (!desktopToAbsolute(x, y, absX, absY)) return;
 
     INPUT input = {};
     input.type = INPUT_MOUSE;
