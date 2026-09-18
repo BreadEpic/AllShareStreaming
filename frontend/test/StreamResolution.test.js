@@ -228,8 +228,9 @@ describe('resolveStreamSize on the virtual display', () => {
         expect(ask({ mode: 'custom', customWidth: 1677, customHeight: 2043 }).aspect).toBe(
             '1676:2042',
         );
-        // Under the floor a display mode is not usable: it is raised to it.
-        expect(ask({ mode: 'custom', customWidth: 400, customHeight: 400 }).aspect).toBe('640:640');
+        // Under the floor a display mode is not usable: the pair is raised to
+        // it whole, its shape kept.
+        expect(ask({ mode: 'custom', customWidth: 400, customHeight: 400 }).aspect).toBe('480:480');
     });
 
     it("gives a rung its lines at this screen's shape, shrunk when it overflows", () => {
@@ -248,6 +249,16 @@ describe('resolveStreamSize on the virtual display', () => {
                 { nativeHost: true, virtualDisplay: true, device: { width: 1920, height: 1080 } },
             ).aspect,
         ).toBe('2560:1440');
+    });
+
+    // A small desktop keeps its own shape: the floor moves the whole size,
+    // it never stretches one side into it.
+    it('leaves a small screen alone, and grows a tiny one whole', () => {
+        const at = (device) =>
+            resolveStreamSize({ mode: 'auto' }, { nativeHost: true, virtualDisplay: true, device });
+        expect(at({ width: 800, height: 600 }).aspect).toBe('800:600');
+        expect(at({ width: 640, height: 480 }).aspect).toBe('640:480');
+        expect(at({ width: 400, height: 300 }).aspect).toBe('640:480');
     });
 
     it('is the ordinary choice again when this screen is unknown', () => {

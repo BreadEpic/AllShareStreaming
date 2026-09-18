@@ -85,28 +85,36 @@ export const FIXED_HEIGHTS = [720, 1080, 1440, 2160];
 export const MOBILE_AUTO_BOX = { width: CUSTOM_SIZE_MAX, height: 1440 };
 
 /** Bounds of a display mode made on demand — what the virtual display driver
- *  will take, and what the decoder on the other side will. The floor is a
- *  desktop still usable; the ceiling is DCI 4K. Mirrored in C++ by
+ *  will take, and what the decoder on the other side will. The floor is VGA's
+ *  480 lines, the smallest mode Windows itself still offers and one the
+ *  driver's own sample lists; the ceiling is DCI 4K. Mirrored in C++ by
  *  VirtualDisplay::kModeMin / kModeMax, which pin the request again. */
-export const MODE_SIZE_MIN = 640;
+export const MODE_SIZE_MIN = 480;
 export const MODE_SIZE_MAX = CUSTOM_SIZE_MAX;
 
 /**
- * A size a display can be made at: even, inside the mode bounds, and brought
- * down at its own shape rather than squeezed when it is too big — a 2160p rung
- * at a phone's 2.16 shape asks for 4676×2160 and gets 4096×1892.
+ * A size a display can be made at: even, inside the mode bounds, and moved at
+ * its own shape rather than squeezed when it is outside them. A 2160p rung at
+ * a phone's 2.16 shape asks for 4676×2160 and gets 4096×1892; a screen smaller
+ * than the floor grows whole, so an 800×600 desktop stays 800×600 and a
+ * 400×300 one becomes 640×480 — never 800×640, which would be a shape nobody
+ * asked for.
  */
 export function fitModeBounds(width, height) {
     let w = Math.round(width);
     let h = Math.round(height);
     if (!(w > 0) || !(h > 0)) return null;
     const over = Math.max(w / MODE_SIZE_MAX, h / MODE_SIZE_MAX);
-    if (over > 1) {
-        w = Math.round(w / over);
-        h = Math.round(h / over);
+    const under = Math.min(w / MODE_SIZE_MIN, h / MODE_SIZE_MIN);
+    const scale = over > 1 ? over : under < 1 ? under : 1;
+    if (scale !== 1) {
+        w = Math.round(w / scale);
+        h = Math.round(h / scale);
     }
-    w = Math.max(MODE_SIZE_MIN, w) & ~1;
-    h = Math.max(MODE_SIZE_MIN, h) & ~1;
+    // A shape so extreme that one side is still out of bounds: the last word
+    // goes to the bounds, not to the shape.
+    w = Math.min(MODE_SIZE_MAX, Math.max(MODE_SIZE_MIN, w)) & ~1;
+    h = Math.min(MODE_SIZE_MAX, Math.max(MODE_SIZE_MIN, h)) & ~1;
     return { width: w, height: h };
 }
 

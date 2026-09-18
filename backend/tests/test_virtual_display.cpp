@@ -157,6 +157,15 @@ void run_virtual_display_tests()
         CHECK(normaliseMode(w, h));
         CHECK_EQ(w, 1364);
         CHECK_EQ(h, 766);
+        // A small desktop passes as it is: 480 lines is the floor, and an
+        // 800×600 client is streamed 800×600, not stretched into a shape it
+        // never asked for (the client already pinned the size at its own
+        // shape — this is the guard behind it).
+        w = 800;
+        h = 600;
+        CHECK(normaliseMode(w, h));
+        CHECK_EQ(w, 800);
+        CHECK_EQ(h, 600);
         // Out of bounds is pinned, never refused: a launch must not fail here.
         w = 99999;
         h = 12;

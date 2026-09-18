@@ -140,11 +140,15 @@ constexpr int kWidth = 1920;
 constexpr int kHeight = 1080;
 constexpr int kRefreshHz = 120;
 
-/// What a requested mode may be. The floor is a size a desktop is still
-/// usable at, the ceiling is what the driver and every encoder on the bench
-/// carry; odd sizes are rounded down because a display mode is made of whole
-/// macroblocks on the encoder that follows it.
-constexpr int kModeMin = 640;
+/// What a requested mode may be. The floor is VGA's 480 lines — the smallest
+/// mode Windows still offers, and one the driver's own sample lists, so a
+/// client on an 800×600 desktop gets 800×600 and not a shape nobody asked
+/// for. The ceiling is what the driver and every encoder on the bench carry.
+/// Odd sizes are rounded down because a display mode is made of whole
+/// macroblocks on the encoder that follows it. This is the last-resort guard:
+/// the client pins a size to these bounds AT ITS OWN SHAPE first
+/// (fitModeBounds in util/StreamResolution.js).
+constexpr int kModeMin = 480;
 constexpr int kModeMax = 4096;
 
 /// What a requested refresh rate may be. The floor is a cadence a desktop is
