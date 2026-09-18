@@ -85,12 +85,6 @@ struct CursorUpdate
     /// that left this display.
     bool visible = false;
 
-    /// …and if it left this display, this says so. A client that draws the
-    /// pointer itself cannot otherwise tell "hidden by an application" from
-    /// "on the other monitor", and only the second one leaves the viewer with
-    /// nothing to aim with. See CursorState::elsewhere.
-    bool elsewhere = false;
-
     /// True for a position report: `visible`, `x` and `y` are meaningful and
     /// nothing else is — no shape, no pixels, no hotspot. Sent while the client
     /// draws the pointer, at most every CursorPositionGate::kIntervalUs, and

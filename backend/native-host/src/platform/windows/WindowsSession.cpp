@@ -1577,6 +1577,7 @@ private:
             // a timeout, so anything gated behind a frame would never run.
             reportCursor();
             reportCursorPosition();
+            recentrePointerIfAway();
 
             if (status == capture::AcquireStatus::Timeout) {
                 // Nothing moved on the desktop — but the pointer we draw onto it
@@ -1946,9 +1947,6 @@ private:
         // with. "Not visible" is exactly right — there is nothing for the
         // client to put on screen. See CursorState::inImage.
         const bool visible = cursor.visible && !cursor.inImage;
-        // "There is a pointer, it is on the other screen" — only worth saying
-        // while there is none to draw here. See CursorState::elsewhere.
-        const bool elsewhere = !visible && cursor.elsewhere;
         // The KIND is checked too, not just the shape version. An application
         // can swap between two standard cursors without DXGI ever handing over
         // a new bitmap — it caches shapes it has already sent — so a client
@@ -1961,18 +1959,16 @@ private:
         const float scale = cursorScale();
         const bool scaleChanged = scale != m_ReportedScale;
         if (!forced && !kindChanged && !scaleChanged && cursor.shapeVersion == m_ReportedShape &&
-            visible == m_ReportedVisible && elsewhere == m_ReportedElsewhere)
+            visible == m_ReportedVisible)
             return;
 
         m_ReportedShape = cursor.shapeVersion;
         m_ReportedVisible = visible;
-        m_ReportedElsewhere = elsewhere;
         m_ReportedKind = kind;
         m_ReportedScale = scale;
 
         CursorUpdate update;
         update.visible = visible;
-        update.elsewhere = elsewhere;
         update.kind = kind;
         update.width = cursor.width;
         update.height = cursor.height;
@@ -2025,6 +2021,78 @@ private:
         update.x = fx;
         update.y = fy;
         m_Callbacks.onCursor(update);
+    }
+
+    /// Bring the pointer back onto the streamed display when it has wandered
+    /// off it — but only while WE draw it into the picture.
+    ///
+    /// That is the whole condition. When the client draws its own pointer it
+    /// has one on screen wherever the host's is, and its next move places the
+    /// host's under it; nothing is lost and nothing should be moved behind the
+    /// viewer's back. When the pointer is drawn into the frame instead —
+    /// gaming mode, or a phone's trackpad — the streamed display is all the
+    /// viewer can see, and a pointer on the host's OTHER monitor is a pointer
+    /// they are steering blind: relative motion still moves it, clicks still
+    /// land, and none of it shows. The middle of the streamed display is the
+    /// one place they can be sure to find it again.
+    ///
+    /// Windows' own word rather than the capture's: Desktop Duplication says
+    /// "not visible" for a pointer on another display and for one an
+    /// application hid, and only the first is ours to fix. Every kMs, which is
+    /// slow enough to cost nothing and quick enough that the pointer is back
+    /// before a second move.
+    void recentrePointerIfAway()
+    {
+        static constexpr int64_t kIntervalUs = 200000;
+        if (!m_CompositeCursor.load() || !m_Capture) return;
+        const int64_t nowUs = steadyNowUs();
+        if (nowUs - m_LastRecentreCheckUs < kIntervalUs) return;
+        m_LastRecentreCheckUs = nowUs;
+
+        CURSORINFO info = {};
+        info.cbSize = sizeof(info);
+        if (!::GetCursorInfo(&info) || (info.flags & CURSOR_SHOWING) == 0) return;
+        const capture::DesktopRect& rect = m_Capture->desktopRect();
+        if (!rect.valid()) return;
+        if (info.ptScreenPos.x >= rect.left && info.ptScreenPos.x < rect.right &&
+            info.ptScreenPos.y >= rect.top && info.ptScreenPos.y < rect.bottom) {
+            // Where it belongs: whatever pulled it away before is over.
+            m_RecentreTries = 0;
+            return;
+        }
+
+        // An application can be holding the pointer on the other display and
+        // pulling it back every frame — Counter-Strike left running on the
+        // primary screen does exactly that. We would lose that tug of war
+        // forever, at five warps a second, and the pointer would flicker
+        // between the two screens for as long as the session lasted. A few
+        // attempts say what can be said; after that the pointer is not free to
+        // move, which is not a thing to keep asking about. The count resets the
+        // moment it is seen back on this display.
+        if (m_RecentreTries >= kMaxRecentreTries) return;
+        ++m_RecentreTries;
+
+        // Through the input sink like any other position, so the display
+        // rectangle, the DPI virtualization and the recentring detector are all
+        // applied exactly once, where they already live. A reference square
+        // rather than the display's own size: the middle of anything is the
+        // middle, and the fields are 16-bit.
+        InputEvent event;
+        event.type = InputEvent::Type::MouseMoveAbsolute;
+        event.positionX = 1000;
+        event.positionY = 1000;
+        event.referenceWidth = 2000;
+        event.referenceHeight = 2000;
+        {
+            std::lock_guard<std::mutex> lock(m_InputMutex);
+            if (!m_Input) return;
+            m_Input->inject(event);
+        }
+        if (!m_LoggedRecentre) {
+            m_LoggedRecentre = true;
+            log::info("[native] cursor: the pointer had left this display while we draw it into "
+                      "the picture — put back in the middle (once per session)");
+        }
     }
 
     /// [PTR] diagnostics: the first position reports, then only a change of
@@ -2418,7 +2486,12 @@ private:
     /// re-sent on every frame.
     uint64_t m_ReportedShape = 0;
     bool m_ReportedVisible = false;
-    bool m_ReportedElsewhere = false;
+    /// See recentrePointerIfAway(): when Windows was last asked, and whether
+    /// the one line has been said. Capture-thread only.
+    int64_t m_LastRecentreCheckUs = 0;
+    int m_RecentreTries = 0;
+    static constexpr int kMaxRecentreTries = 5;
+    bool m_LoggedRecentre = false;
     std::string m_ReportedKind;
     /// Deliberately not 1: the first report must go out whatever the scale is,
     /// and a sentinel that no ratio can equal is what guarantees it.

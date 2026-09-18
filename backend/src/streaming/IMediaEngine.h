@@ -333,14 +333,8 @@ signals:
     /// into the streamed frame's, which differ whenever the client asked for a
     /// resolution the host is not running at — see CursorUpdate::scale. It moves
     /// under a running session, so an update is emitted when it changes alone.
-    ///
-    /// `elsewhere` only ever comes with `visible == false`, and separates the
-    /// two ways of having no pointer to draw: an application hid it (false), or
-    /// it is sitting on another of the host's displays (true). A client with no
-    /// pointer at all on the picture can then say so instead of showing
-    /// nothing — see CursorUpdate::elsewhere.
-    void cursorShapeChanged(QByteArray png, int hotspotX, int hotspotY, bool visible,
-                            bool elsewhere, QString kind, double scale);
+    void cursorShapeChanged(QByteArray png, int hotspotX, int hotspotY, bool visible, QString kind,
+                            double scale);
 
     /// Where the host's pointer IS, in frame pixels, for a client that draws
     /// the pointer without a pointer device of its own to know — a touch

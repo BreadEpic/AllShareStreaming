@@ -178,9 +178,8 @@ bool Win32Cursor::update(CursorState& cursor, const DesktopRect& rect, int captu
     CURSORINFO info = {};
     info.cbSize = sizeof(info);
     if (!::GetCursorInfo(&info)) {
-        const bool changed = cursor.visible || cursor.elsewhere;
+        const bool changed = cursor.visible;
         cursor.visible = false;
-        cursor.elsewhere = false;
         return changed;
     }
 
@@ -209,13 +208,8 @@ bool Win32Cursor::update(CursorState& cursor, const DesktopRect& rect, int captu
     const int x = static_cast<int>((info.ptScreenPos.x - rect.left) * scaleX) - m_HotspotX;
     const int y = static_cast<int>((info.ptScreenPos.y - rect.top) * scaleY) - m_HotspotY;
 
-    // Windows has a pointer and it is not here — see CursorState::elsewhere.
-    const bool elsewhere = showing && !onDisplay;
-    if (cursor.visible != onDisplay || cursor.elsewhere != elsewhere || cursor.x != x ||
-        cursor.y != y)
-        changed = true;
+    if (cursor.visible != onDisplay || cursor.x != x || cursor.y != y) changed = true;
     cursor.visible = onDisplay;
-    cursor.elsewhere = elsewhere;
     cursor.x = x;
     cursor.y = y;
     return changed;

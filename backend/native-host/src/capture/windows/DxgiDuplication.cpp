@@ -304,7 +304,6 @@ bool DxgiDuplication::updateCursor(const DXGI_OUTDUPL_FRAME_INFO& info)
     if (news || m_HiddenOverridden) {
         const bool wasVisible = m_Cursor.visible;
         const bool wasInImage = m_Cursor.inImage;
-        const bool wasElsewhere = m_Cursor.elsewhere;
         const int oldX = m_Cursor.x;
         const int oldY = m_Cursor.y;
 
@@ -329,19 +328,13 @@ bool DxgiDuplication::updateCursor(const DXGI_OUTDUPL_FRAME_INFO& info)
         // pointer. So the pointer is visible AND already in the image — see
         // CursorState::inImage, which is what keeps the drawing from happening
         // twice, here or on the client.
-        bool elsewhere = false;
         if (!visible) {
             CURSORINFO ci = {};
             ci.cbSize = sizeof(ci);
-            const bool anyPointer = ::GetCursorInfo(&ci) && (ci.flags & CURSOR_SHOWING) != 0;
             const bool showing =
-                anyPointer && m_DesktopRect.valid() && ci.ptScreenPos.x >= m_DesktopRect.left &&
-                ci.ptScreenPos.x < m_DesktopRect.right && ci.ptScreenPos.y >= m_DesktopRect.top &&
-                ci.ptScreenPos.y < m_DesktopRect.bottom;
-            // Windows has a pointer and it is not here: on the other monitor,
-            // which is a different thing from an application hiding it. See
-            // CursorState::elsewhere.
-            elsewhere = anyPointer && !showing;
+                ::GetCursorInfo(&ci) && (ci.flags & CURSOR_SHOWING) != 0 && m_DesktopRect.valid() &&
+                ci.ptScreenPos.x >= m_DesktopRect.left && ci.ptScreenPos.x < m_DesktopRect.right &&
+                ci.ptScreenPos.y >= m_DesktopRect.top && ci.ptScreenPos.y < m_DesktopRect.bottom;
             if (showing) {
                 const int rw = m_DesktopRect.width();
                 const int rh = m_DesktopRect.height();
@@ -365,7 +358,6 @@ bool DxgiDuplication::updateCursor(const DXGI_OUTDUPL_FRAME_INFO& info)
 
         m_Cursor.visible = visible;
         m_Cursor.inImage = m_HiddenOverridden;
-        m_Cursor.elsewhere = elsewhere;
         // Position is given for the hotspot; the image starts above and left of
         // it. Drawing at the hotspot would offset every cursor by its own
         // shape — an arrow would look right and a crosshair would not.
@@ -373,7 +365,6 @@ bool DxgiDuplication::updateCursor(const DXGI_OUTDUPL_FRAME_INFO& info)
         m_Cursor.y = py - m_CursorHotspotY;
 
         changed = changed || m_Cursor.visible != wasVisible || m_Cursor.inImage != wasInImage ||
-                  m_Cursor.elsewhere != wasElsewhere ||
                   (m_Cursor.visible && (m_Cursor.x != oldX || m_Cursor.y != oldY));
     }
 

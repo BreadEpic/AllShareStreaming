@@ -120,15 +120,12 @@ MediaTrackRelay::MediaTrackRelay(IMediaEngine* engine, QObject* parent)
     // mode) — same message as DataChannelRelay's, same reasoning there. The
     // input DC carries it here exactly as it does on the other transport.
     connect(m_Shim, &IMediaEngine::cursorShapeChanged, this,
-            [this](QByteArray png, int hotspotX, int hotspotY, bool visible, bool elsewhere,
-                   QString kind, double scale) {
+            [this](QByteArray png, int hotspotX, int hotspotY, bool visible, QString kind,
+                   double scale) {
                 if (m_Stopping.load() || !m_InputDc) return;
                 QJsonObject m;
                 m["type"] = "cursor";
                 m["visible"] = visible;
-                // Not visible AND on another display: the client has no pointer
-                // to draw and can say where it went. Sent only when true.
-                if (elsewhere) m["elsewhere"] = true;
                 m["hotspotX"] = hotspotX;
                 m["hotspotY"] = hotspotY;
                 m["scale"] = scale;

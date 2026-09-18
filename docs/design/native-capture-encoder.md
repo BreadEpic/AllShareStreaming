@@ -4516,27 +4516,37 @@ la rejeter). Sinon elle attend : chaque `mousemove` relit la forme courante
 première forme d'une session est toujours peinte — il n'y en a pas d'autre, et
 rien n'a encore bougé par définition.
 
-### 29.5 « Le pointeur est sur l'autre écran » se voit
+### 29.5 Le pointeur parti sur l'autre écran revient au milieu — là où on ne le voit pas
 
-Amélioration demandée : en mode bureau, quand la souris n'est pas sur l'écran
-stream, mettre un curseur au milieu de l'image. Sans rien d'autre, le client ne
-peut pas distinguer les deux façons de n'avoir aucun pointeur à dessiner : une
-application l'a caché (lecteur vidéo, jeu) ou il est sur un **autre écran** de
-l'hôte. Seule la seconde laisse le viewer sans rien pour viser, et une flèche
-posée sur un lecteur vidéo qui cache volontairement le pointeur serait une
-régression.
+Demandé d'abord pour le mode bureau (un signe au centre de l'image quand le
+pointeur de l'hôte n'est pas sur l'écran stream), livré comme tel, puis **repris
+par Bruno le jour même** : en mode bureau le problème n'existe pas — le pointeur
+de l'hôte suit le curseur du navigateur, le viewer voit toujours le sien, et un
+signe de plus au milieu ne fait que gêner. La flèche centrale et le drapeau
+`elsewhere` qui la portait (message `cursor`, `CursorState`, `CursorUpdate`,
+signal `cursorShapeChanged`) sont **retirés en entier**.
 
-`CursorState::elsewhere` porte donc la différence — les deux captures Windows
-la calculent déjà sans le dire (`GetCursorInfo` montre un pointeur, il n'est pas
-dans le rectangle de cet écran) — et remonte jusqu'au message `cursor`
-(`elsewhere: true`, envoyé seulement quand c'est vrai). macOS et Linux ne la
-lèvent jamais : pour eux rien ne change.
+Ce qui manquait est ailleurs : **quand le pointeur est dessiné DANS l'image** —
+mode jeu, ou le trackpad d'un téléphone — l'écran stream est tout ce que le
+viewer voit. Un pointeur parti sur l'autre moniteur de l'hôte est alors un
+pointeur piloté à l'aveugle : le mouvement relatif le déplace toujours, les
+clics arrivent toujours, et rien ne se montre. C'est donc **la souris de l'hôte**
+qu'il faut ramener, pas un dessin qu'il faut ajouter.
 
-Le client dessine alors `_placeAwayCursor()` : la flèche ordinaire, au centre de
-l'image, à 0,6 d'opacité et un peu plus grande que nature — **un signe, pas un
-pointeur**. Mode bureau seulement (en mode jeu la souris est capturée). Au
-premier mouvement du viewer, une position absolue part, le pointeur de l'hôte
-atterrit sous elle, `visible` redevient vrai et le signe s'efface.
+`WindowsSession::recentrePointerIfAway()` demande à Windows (`GetCursorInfo`,
+pas à la capture : « pas visible » de Desktop Duplication couvre aussi le
+pointeur qu'une application cache, et celui-là ne nous regarde pas) si le
+pointeur est hors du rectangle de l'écran capturé, toutes les 200 ms, et
+seulement tant que `m_CompositeCursor` est vrai. Si oui, une position absolue au
+centre part par le puits d'entrée ordinaire — donc rectangle d'écran,
+virtualisation DPI et détecteur de recentrage s'appliquent une fois, là où ils
+vivent déjà. En mode bureau, rien : le client a son pointeur et le place lui-même.
+
+Borné à **5 tentatives** : une application peut tenir le pointeur sur l'autre
+écran et le reprendre à chaque image (Counter-Strike laissé tourner sur l'écran
+principal fait exactement ça, cf. §29.6). On perdrait ce bras de fer cinq fois
+par seconde pour toute la session, avec un pointeur qui clignote entre les deux
+écrans. Le compteur repart à zéro dès que le pointeur est revu sur cet écran.
 
 ### 29.6 Mode bureau + jeu qui recentre le pointeur : la visée tournait
 
@@ -4616,19 +4626,22 @@ maximale — et sous Wayland il reste nécessaire pour ces jeux-là.
 
 ### 29.7 Vérifié
 
-DualRTX : build complet propre, `mw-native-tests` 4006/4009 — les 3 restants
-sont le pointeur vide tenu par le jeu du §29.3, à rejouer jeux fermés (3864/3864
-sur le même arbre avant que le jeu ne prenne la souris) — ESLint et Prettier
+DualRTX : build complet propre, `mw-native-tests` **4136/4136** — les 3 checks
+de `test_win32_cursor` qui tombaient plus tôt sont revenus au vert dès que le jeu
+a rendu la souris, ce qui confirme au passage le §29.3 — ESLint et Prettier
 propres sur `StreamView.js` et `stream.css`. **À confirmer par Bruno sur le banc
 réel** : mode jeu qui prend la souris au démarrage ; glissement de fenêtre avec
 un seul pointeur, en mode bureau **et** en mode jeu (c'est le mode jeu qui dirait
 si l'image ne portait finalement pas le pointeur : il disparaîtrait pendant le
 glissement au lieu d'être doublé) ; forme du curseur inchangée quand la souris
-physique de l'hôte bouge ; et le signe au centre quand le pointeur de l'hôte est
-sur son autre écran.
+physique de l'hôte bouge ; et le pointeur ramené au centre quand il est parti sur
+l'autre écran, **en mode jeu et sur le trackpad d'un téléphone seulement**.
 
 **Concrètement, pour l'utilisateur** : en Game mode, la session s'ouvre avec la
 souris déjà dans le jeu — plus de pointeur de navigateur qui traîne sur l'image
-ni de sortie accidentelle du cadre. Et en mode bureau, attraper une fenêtre par
-sa barre de titre ne montre plus deux souris : pendant le glissement c'est celle
-de l'hôte qui commande, la sienne s'efface, et elle revient dès qu'on relâche.
+ni de sortie accidentelle du cadre — et si le pointeur de la machine était resté
+sur son autre écran, il revient au milieu de l'écran joué au lieu d'être piloté à
+l'aveugle. En mode bureau, attraper une fenêtre par sa barre de titre ne montre
+plus deux souris : pendant le glissement c'est celle de l'hôte qui commande, la
+sienne s'efface, et elle revient dès qu'on relâche ; et la forme du curseur ne
+change plus toute seule quand quelqu'un touche la souris de la machine.

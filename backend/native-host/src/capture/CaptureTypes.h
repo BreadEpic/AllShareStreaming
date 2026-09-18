@@ -137,14 +137,6 @@ struct CursorState
     /// draws its own "visible" gave the viewer two pointers at once.
     bool inImage = false;
 
-    /// The OS still has a pointer — it is simply not on THIS display. Told
-    /// apart from `visible == false` on purpose: "an application hid the
-    /// pointer" and "the pointer is on the other monitor" look the same to a
-    /// client that draws its own, and only the second one means the viewer has
-    /// no pointer to aim with. Windows fills it; the other platforms leave it
-    /// false, and a client that sees it false is exactly where it was before.
-    bool elsewhere = false;
-
     /// Top-left of the cursor image in captured-frame pixels — the hotspot has
     /// already been subtracted, so this is where the image goes.
     int x = 0;
