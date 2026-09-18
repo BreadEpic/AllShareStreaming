@@ -534,8 +534,8 @@ DataChannelRelay::DataChannelRelay(IMediaEngine* engine, QObject* parent)
     // Rare by construction — one message per shape change, never per frame —
     // so the base64 of a small PNG on the input channel costs nothing.
     connect(m_Shim, &IMediaEngine::cursorShapeChanged, this,
-            [this](QByteArray png, int hotspotX, int hotspotY, bool visible, QString kind,
-                   double scale) {
+            [this](QByteArray png, int hotspotX, int hotspotY, bool visible, bool elsewhere,
+                   QString kind, double scale) {
                 if (m_Stopping.load() || !m_InputDc) return;
                 QJsonObject m;
                 m["type"] = "cursor";
@@ -543,6 +543,9 @@ DataChannelRelay::DataChannelRelay(IMediaEngine* engine, QObject* parent)
                 // been shown it yet" — the browser draws its ordinary arrow.
                 // Not visible means draw nothing.
                 m["visible"] = visible;
+                // Not visible AND on another display: the client has no pointer
+                // to draw and can say where it went. Sent only when true.
+                if (elsewhere) m["elsewhere"] = true;
                 m["hotspotX"] = hotspotX;
                 m["hotspotY"] = hotspotY;
                 // Desktop pixels to frame pixels. Sent even at 1 so a client

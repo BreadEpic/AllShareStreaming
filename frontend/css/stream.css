@@ -277,6 +277,22 @@ body.streaming-active::after {
     -webkit-user-select: none;
 }
 
+/* The "your pointer is on the host's other screen" mark (StreamView's
+   _placeAwayCursor): the same drawing as the pointer above, placed in the
+   middle of the picture and faded, because it is a sign and not a pointer —
+   the first move of the viewer's mouse replaces it with the real one. */
+.stream-away-cursor {
+    position: fixed;
+    left: 0;
+    top: 0;
+    z-index: 51;
+    opacity: 0.6;
+    pointer-events: none;
+    transform-origin: 0 0;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
 /* Last frame of the previous stream, held over the canvas/video until this
    view decodes its own (see StreamView.showStalePoster). Above the picture
    elements so the empty canvas cannot show through, below the input layer so

@@ -200,6 +200,18 @@ const CLIENT_CURSOR_ACCEL_SPEED = 1.0;
  * shown it yet (see _pictureCursor) — a desktop client draws `default` there,
  * an image needs an image. Hotspot at the tip, top-left; ink 12×19.
  */
+/**
+ * How long after the viewer's own pointer moved a shape report from the host
+ * still counts as an answer to that move. A round trip plus the host's own
+ * cadence, with room to spare: shorter than this and a shape asked for by a
+ * slow, deliberate move would be held back until the next one.
+ */
+const CLIENT_POINTER_FRESH_MS = 500;
+
+/** How much bigger than life the "pointer is on another screen" mark is drawn:
+ *  a sign has to read at a glance, and it is never next to a real pointer. */
+const AWAY_CURSOR_SCALE = 1.6;
+
 const CLIENT_CURSOR_ARROW_SVG =
     'data:image/svg+xml;utf8,' +
     encodeURIComponent(
@@ -852,6 +864,14 @@ export class StreamView {
         // Whether there IS a pointer on the streamed display right now. Separate
         // from the image: see _pictureCursor.
         this._hostCursorVisible = false;
+        // …and, when there is none, whether that is because it sits on ANOTHER
+        // of the host's displays rather than because an application hid it.
+        // See _placeAwayCursor.
+        this._hostCursorElsewhere = false;
+        // When the viewer's own pointer last moved. A shape that lands long
+        // after it stopped belongs to someone else's pointer — see the
+        // 'cursor' message.
+        this._lastClientMoveMs = 0;
         // The pointer latched for the duration of a drag, and the bitmap
         // rebuilt at the picture's scale. See _pictureCursor and _scaledCursor.
         this._dragCursor = null;
@@ -1684,6 +1704,7 @@ export class StreamView {
                 <div id="stream-latency-mark" class="stream-latency-mark" hidden></div>
                 <div id="stream-input-layer" class="stream-input-layer"></div>
                 <img id="stream-client-cursor" class="stream-client-cursor" alt="" hidden>
+                <img id="stream-away-cursor" class="stream-away-cursor" alt="" hidden>
                 <div class="stream-click-hint" id="stream-hint">
                     ${t('stream.clickToCapture')}
                 </div>
@@ -1771,6 +1792,11 @@ export class StreamView {
         // The pointer a touch screen draws for itself — see MOBILE_CURSOR_CLIENT_DRAWN.
         this._clientCursorEl = /** @type {HTMLImageElement} */ (
             el.querySelector('#stream-client-cursor')
+        );
+        // The "your pointer is on the host's other screen" mark — see
+        // _placeAwayCursor.
+        this._awayCursorEl = /** @type {HTMLImageElement} */ (
+            el.querySelector('#stream-away-cursor')
         );
         if (this._latencyFlag) this._initLatencyProbe(el);
 
@@ -3337,6 +3363,7 @@ export class StreamView {
         // against an unknown picture (see _pictureWidth); rebuild it, or a
         // pointer nobody has moved keeps that size until the viewer moves it.
         if (first) this._applyHostCursor();
+        if (first) this._placeAwayCursor();
         // There is a picture to take the mouse into now — see
         // _autoCapturePointer. Not on a standby view: it is not the one the
         // viewer is looking at, and activate() takes the lock over for it.
@@ -3951,6 +3978,7 @@ export class StreamView {
             this._invalidateMediaRect();
             // The picture moved on the glass; the pointer drawn over it must too.
             this._placeClientCursor();
+            this._placeAwayCursor();
         };
         const opts = { passive: true, capture: true };
         /** @type {Array<[EventTarget, string, AddEventListenerOptions|undefined]>} */
@@ -5763,6 +5791,7 @@ export class StreamView {
         if (msg.type === 'cursor') {
             // The host's pointer, for us to draw. See _pictureCursor: visible
             // with no image is a real state, not a missing one.
+            const firstShape = !this._hostCursorSeen;
             this._hostDrawsCursor = true;
             this._hostCursorVisible = msg.visible === true;
             this._hostCursorPng = msg.png || null;
@@ -5771,6 +5800,7 @@ export class StreamView {
             // Desktop pixels to frame pixels — see _pictureScale. Absent on a
             // host that predates the field, where the two were assumed equal.
             this._hostCursorScale = msg.scale > 0 ? msg.scale : 1;
+            this._hostCursorElsewhere = msg.elsewhere === true;
             // Once, on the first shape: the counterpart of the host's own line,
             // so "the pointer is missing" can be told from "the pointer never
             // arrived" without instrumenting anything.
@@ -5778,8 +5808,27 @@ export class StreamView {
                 this._hostCursorSeen = true;
                 console.log('[StreamView] Host cursor: drawing it here, not in the frame');
             }
-            this._applyHostCursor();
+            // Repainted now only if this shape is about OUR pointer.
+            //
+            // The shape follows whatever the host's pointer is over, and the
+            // viewer's pointer is not the only thing that moves it: a hand on
+            // the host's own mouse moves it too, over other windows, changing
+            // the shape reported. Painting that here changed the pointer under
+            // a hand that had never moved — an I-beam appearing on a still
+            // desktop pointer because someone at the host swept across a text
+            // field. So a shape that lands while our own pointer has been
+            // still is kept, not shown: it is applied by the next move of the
+            // viewer's mouse, which is when it becomes about their pointer
+            // again (every mousemove re-reads it — see _applyLocalCursor).
+            //
+            // The grace is generous on purpose: the host's answer to our own
+            // move arrives a round trip later, by which time the hand may
+            // already have stopped. And the first shape of a session is always
+            // shown — there is no earlier one to keep, and nothing has moved
+            // yet by definition.
+            if (firstShape || this._clientPointerFresh()) this._applyHostCursor();
             this._clientCursorShapeChanged();
+            this._placeAwayCursor();
             return;
         }
         if (msg.type === 'cursorpos') {
@@ -6704,6 +6753,7 @@ export class StreamView {
             } else {
                 this._lastMouseClientX = e.clientX;
                 this._lastMouseClientY = e.clientY;
+                this._lastClientMoveMs = performance.now();
                 const rect = this._mediaRect();
                 const rawX = e.clientX - rect.left;
                 const rawY = e.clientY - rect.top;
@@ -7092,6 +7142,59 @@ export class StreamView {
         this._updateLocalCursor(this._lastMouseClientX, this._lastMouseClientY);
     }
 
+    /** Whether the viewer's own pointer has moved recently enough that what the
+     *  host is reporting about ITS pointer is an answer to that move. */
+    _clientPointerFresh() {
+        return performance.now() - this._lastClientMoveMs < CLIENT_POINTER_FRESH_MS;
+    }
+
+    /**
+     * The mark that says "your pointer is not on this screen".
+     *
+     * Only when the host says so in those words — its pointer is on another of
+     * its displays, not merely hidden by an application (a video player, a
+     * game): see CursorUpdate::elsewhere. There is then nothing over the
+     * picture at all, ours being hidden in favour of the host's, and the viewer
+     * has no idea where they are aiming. An arrow in the middle of the picture
+     * is that answer, drawn faintly because it is a sign and not a pointer —
+     * the first move of the viewer's mouse sends an absolute position, the
+     * host's pointer lands under it, and this disappears on the same breath.
+     *
+     * Desktop mode only, as asked: gaming mode captures the mouse, and a
+     * captured pointer is the host's own business.
+     */
+    _placeAwayCursor() {
+        const el = this._awayCursorEl;
+        if (!el) return;
+        const show =
+            !this._quitting &&
+            !IS_TOUCH_DEVICE &&
+            !this._gamingMode &&
+            this._firstFrameRendered &&
+            this._hostDrawsCursor &&
+            !this._hostCursorVisible &&
+            this._hostCursorElsewhere;
+        if (!show) {
+            el.hidden = true;
+            return;
+        }
+        const rect = this._mediaRect();
+        if (!rect || !(rect.width > 0) || !(rect.height > 0)) {
+            el.hidden = true;
+            return;
+        }
+        if (el.getAttribute('src') !== CLIENT_CURSOR_ARROW_SVG) el.src = CLIENT_CURSOR_ARROW_SVG;
+        const w = 12 * AWAY_CURSOR_SCALE;
+        const h = 19 * AWAY_CURSOR_SCALE;
+        el.style.width = w + 'px';
+        el.style.height = h + 'px';
+        // Centred on the picture, not on its corner: the tip is the pointer.
+        const cx = rect.left + rect.width / 2 - w / 2;
+        const cy = rect.top + rect.height / 2 - h / 2;
+        el.style.transform = 'translate(' + cx + 'px, ' + cy + 'px)';
+        el.hidden = false;
+    }
+
     /**
      * Tell the host who draws the mouse pointer, and how big.
      *
@@ -7478,9 +7581,11 @@ export class StreamView {
 
         this._onNormalMouseMove = (e) => {
             // Remember where the pointer is so the cursor decision can be
-            // re-applied on window focus (see _refreshLocalCursorOnFocus).
+            // re-applied on window focus (see _refreshLocalCursorOnFocus), and
+            // when — see _clientPointerFresh.
             this._lastMouseClientX = e.clientX;
             this._lastMouseClientY = e.clientY;
+            this._lastClientMoveMs = performance.now();
 
             const rect = this._mediaRect();
             // Absolute pixel position within the displayed image
@@ -7538,6 +7643,7 @@ export class StreamView {
         this._onNormalMouseEnter = (e) => {
             this._lastMouseClientX = e.clientX;
             this._lastMouseClientY = e.clientY;
+            this._lastClientMoveMs = performance.now();
             this._updateLocalCursor(e.clientX, e.clientY);
         };
 
@@ -8875,6 +8981,7 @@ export class StreamView {
                 }
                 return;
             }
+            this._lastClientMoveMs = performance.now();
             const msg = this._absoluteMouseMessage(e.clientX, e.clientY);
             if (msg) this._sendToHost(msg);
         };
@@ -9223,6 +9330,8 @@ export class StreamView {
         // Leaving gaming mode hides the exit reminder and drops the full
         // keyboard lock; entering it keeps the overlay hidden until capture.
         this._updateGamingOverlay();
+        // …and the "pointer is on another screen" mark is a desktop-mode sign.
+        this._placeAwayCursor();
         this._syncKeyboardLock();
         // What a still screen is worth changed with the mode. The input beat
         // would carry it within 100 ms anyway; sending it here means the mode

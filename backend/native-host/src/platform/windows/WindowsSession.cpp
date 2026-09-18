@@ -1946,6 +1946,9 @@ private:
         // with. "Not visible" is exactly right — there is nothing for the
         // client to put on screen. See CursorState::inImage.
         const bool visible = cursor.visible && !cursor.inImage;
+        // "There is a pointer, it is on the other screen" — only worth saying
+        // while there is none to draw here. See CursorState::elsewhere.
+        const bool elsewhere = !visible && cursor.elsewhere;
         // The KIND is checked too, not just the shape version. An application
         // can swap between two standard cursors without DXGI ever handing over
         // a new bitmap — it caches shapes it has already sent — so a client
@@ -1958,16 +1961,18 @@ private:
         const float scale = cursorScale();
         const bool scaleChanged = scale != m_ReportedScale;
         if (!forced && !kindChanged && !scaleChanged && cursor.shapeVersion == m_ReportedShape &&
-            visible == m_ReportedVisible)
+            visible == m_ReportedVisible && elsewhere == m_ReportedElsewhere)
             return;
 
         m_ReportedShape = cursor.shapeVersion;
         m_ReportedVisible = visible;
+        m_ReportedElsewhere = elsewhere;
         m_ReportedKind = kind;
         m_ReportedScale = scale;
 
         CursorUpdate update;
         update.visible = visible;
+        update.elsewhere = elsewhere;
         update.kind = kind;
         update.width = cursor.width;
         update.height = cursor.height;
@@ -2413,6 +2418,7 @@ private:
     /// re-sent on every frame.
     uint64_t m_ReportedShape = 0;
     bool m_ReportedVisible = false;
+    bool m_ReportedElsewhere = false;
     std::string m_ReportedKind;
     /// Deliberately not 1: the first report must go out whatever the scale is,
     /// and a sentinel that no ratio can equal is what guarantees it.
