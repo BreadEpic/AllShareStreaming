@@ -241,8 +241,8 @@ void CgInput::setDisplayRect(int left, int top, int right, int bottom)
     m_Right = right;
     m_Bottom = bottom;
     // A spot the pointer kept returning to on the old rectangle means nothing
-    // on the new one.
-    m_Recentre.reset();
+    // on the new one, and only a spot on this one can be learnt from now on.
+    m_Recentre.setDisplay(left, top, right, bottom);
     if (m_Started)
         log::info("[native] input: display now at " + std::to_string(left) + "," +
                   std::to_string(top) + " " + std::to_string(right - left) + "x" +

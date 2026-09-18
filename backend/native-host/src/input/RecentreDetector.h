@@ -50,6 +50,14 @@ namespace mw::native::input {
 /// come back to the pixel, and a window clipping the pointer only pins it to
 /// an edge the viewer would have to trace on purpose.
 ///
+/// The spot has to be ON the captured display. A game left running on the
+/// host's other screen re-centres the pointer there just the same (GoldSrc
+/// does it in the background, measured 18/09/2026 with Counter-Strike behind
+/// a stream of the second display), and following it would take the mouse
+/// away from the screen the viewer is looking at: every click would land in
+/// the game and the stream would feel dead. Off the display, nothing is ours
+/// to follow, and positions are placed as on any desktop.
+///
 /// From then on the client's positions go in as the difference between two
 /// consecutive ones, applied from wherever the game keeps the pointer: the
 /// game measures exactly the distance the viewer moved. The verdict is
@@ -84,11 +92,16 @@ public:
                 if (!within(foundX, foundY, m_LastX, m_LastY)) {
                     if (m_HaveAnchor && within(foundX, foundY, m_AnchorX, m_AnchorY)) {
                         ++m_Hits;
-                    } else {
+                    } else if (onDisplay(foundX, foundY)) {
                         m_AnchorX = foundX;
                         m_AnchorY = foundY;
                         m_HaveAnchor = true;
                         m_Hits = 1;
+                    } else {
+                        // Held somewhere the viewer cannot see: not a spot
+                        // to learn.
+                        m_HaveAnchor = false;
+                        m_Hits = 0;
                     }
                     if (m_Hits >= kHitsToEnter) {
                         m_Relative = true;
@@ -158,6 +171,19 @@ public:
         m_HaveLast = false;
     }
 
+    /// The captured display, [left, right) x [top, bottom), in the same
+    /// coordinates as the positions observed. Only a spot inside it can be
+    /// the one a game re-centres to (see the header). Unknown — the default —
+    /// means no such check, and forgets everything learnt like reset().
+    void setDisplay(int64_t left, int64_t top, int64_t right, int64_t bottom)
+    {
+        m_DispLeft = left;
+        m_DispTop = top;
+        m_DispRight = right;
+        m_DispBottom = bottom;
+        reset();
+    }
+
     /// Absolute placement lands within a pixel or two of what was asked (the
     /// 16-bit absolute axis rounds), so "the same spot" has some give.
     static constexpr int64_t kTolerance = 2;
@@ -182,6 +208,17 @@ private:
         m_Hits = 0;
         m_MissSinceUs = -1;
     }
+
+    bool onDisplay(int64_t x, int64_t y) const
+    {
+        if (m_DispRight <= m_DispLeft || m_DispBottom <= m_DispTop) return true; // unknown
+        return x >= m_DispLeft && x < m_DispRight && y >= m_DispTop && y < m_DispBottom;
+    }
+
+    int64_t m_DispLeft = 0;
+    int64_t m_DispTop = 0;
+    int64_t m_DispRight = 0;
+    int64_t m_DispBottom = 0;
 
     bool m_HaveLast = false; ///< a position was applied (or, relative, asked)
     int64_t m_LastX = 0;

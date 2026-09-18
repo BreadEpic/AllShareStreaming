@@ -163,6 +163,43 @@ void run_recentre_detector_tests()
         }
     }
 
+    // ── A game on the host's OTHER screen is not followed ───────────────────
+    {
+        // The stream shows the second display, at -2048..0; Counter-Strike
+        // sits in the background on the primary and keeps the pointer at its
+        // centre, 1280,720 — off the captured display (18/09/2026).
+        RecentreDetector d;
+        d.setDisplay(-2048, 0, 0, 1152);
+        d.observe(true, 0, 0, -1548, 372, 0);
+        for (int i = 1; i <= 10; ++i) {
+            const RecentreDetector::Verdict v =
+                d.observe(true, 1280, 720, -1548 - i * 3, 372 + i * 6, i * 8000);
+            CHECK(!v.relative);
+            CHECK(!v.changed);
+        }
+        CHECK(!d.relative());
+        // The same game on the captured display is followed as before.
+        d.setDisplay(0, 0, 2560, 1440);
+        d.observe(true, 0, 0, 400, 900, 100000);
+        d.observe(true, 1280, 720, 410, 900, 108000);
+        d.observe(true, 1280, 720, 420, 900, 116000);
+        CHECK(d.observe(true, 1280, 720, 430, 900, 124000).relative);
+        // A spot on the display's last row and column still counts; one
+        // pixel past its edge does not.
+        RecentreDetector edge;
+        edge.setDisplay(0, 0, 2560, 1440);
+        edge.observe(true, 0, 0, 100, 100, 0);
+        edge.observe(true, 2559, 1439, 110, 100, 8000);
+        edge.observe(true, 2559, 1439, 120, 100, 16000);
+        CHECK(edge.observe(true, 2559, 1439, 130, 100, 24000).relative);
+        RecentreDetector past;
+        past.setDisplay(0, 0, 2560, 1440);
+        past.observe(true, 0, 0, 100, 100, 0);
+        past.observe(true, 2560, 720, 110, 100, 8000);
+        past.observe(true, 2560, 720, 120, 100, 16000);
+        CHECK(!past.observe(true, 2560, 720, 130, 100, 24000).relative);
+    }
+
     // ── A re-entry across the picture is dropped, a mouse move is not ───────
     {
         // 2560 wide: a quarter is 640.

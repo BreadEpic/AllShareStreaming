@@ -4574,7 +4574,13 @@ viewer.
    placements reprennent — 300 ms et pas un seul raté, parce qu'entre un
    placement et l'image suivante du jeu le pointeur est légitimement ailleurs.
    Une main sur la souris physique de l'hôte ne revient jamais au pixel : elle
-   ne déclenche rien. Un delta d'un quart d'écran ou plus est un pointeur qui
+   ne déclenche rien. **Le point doit être sur l'écran capturé** : un jeu laissé
+   en arrière-plan sur l'*autre* écran de l'hôte recentre tout autant (GoldSrc
+   le fait même sans le focus — vu le 18/09 à 17 h 08, CS derrière un stream du
+   second écran : le détecteur l'a suivi, les clics partaient dans le jeu, le
+   stream semblait figé), et le suivre emmènerait la souris hors de l'écran que
+   le viewer regarde. Hors écran, rien à apprendre : placements ordinaires.
+   Un delta d'un quart d'écran ou plus est un pointeur qui
    **rentre dans l'image** loin de là où il en était sorti, pas un geste : il
    est jeté (`isReentryJump`).
 

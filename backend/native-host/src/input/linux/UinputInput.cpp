@@ -569,8 +569,9 @@ void UinputInput::setDisplayRect(int left, int top, int right, int bottom)
     m_RectWidth = right - left;
     m_RectHeight = bottom - top;
     // A spot the pointer kept returning to on the old rectangle means nothing
-    // on the new one.
-    m_Recentre.reset();
+    // on the new one, and only a spot on this one (in desktop coordinates,
+    // which is what the X pointer reports) can be learnt from now on.
+    m_Recentre.setDisplay(left, top, right, bottom);
     if (pointerDiagnostics())
         log::info("[PTR] display rect " + std::to_string(left) + "," + std::to_string(top) + " " +
                   std::to_string(right - left) + "x" + std::to_string(bottom - top));

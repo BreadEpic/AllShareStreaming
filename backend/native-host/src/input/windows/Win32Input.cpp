@@ -537,8 +537,9 @@ void Win32Input::setDisplayRect(int left, int top, int right, int bottom)
         return;
     m_DisplayRect = rect;
     // Positions are about to mean somewhere else; what was learnt about
-    // where the pointer keeps returning to is not worth carrying over.
-    m_Recentre.reset();
+    // where the pointer keeps returning to is not worth carrying over — and
+    // only a spot on this display can be learnt from now on.
+    m_Recentre.setDisplay(rect.left, rect.top, rect.right, rect.bottom);
     log::info("[native] input: display now at " + std::to_string(m_DisplayRect.left) + "," +
               std::to_string(m_DisplayRect.top) + " " + std::to_string(m_DisplayRect.width()) +
               "x" + std::to_string(m_DisplayRect.height()));
