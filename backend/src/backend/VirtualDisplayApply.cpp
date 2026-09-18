@@ -36,9 +36,29 @@
 #include <setupapi.h>
 #include <newdev.h>
 #include <devguid.h>
+#include <cfgmgr32.h>
 #include <wincrypt.h>
 #include <vector>
 #endif
+
+// The helper behind `--vdisplay-apply`: four verbs on "MoonlightWeb Virtual
+// Display" (VirtualDisplay.h), read from a request file, answered in a result
+// file and on stdout.
+//
+//   install     installer, elevated — create our device node from the bundled
+//               driver, named, and leave it DISABLED. No-op when it exists.
+//   uninstall   uninstaller, elevated — remove our node; the driver package
+//               and its settings only if no other node uses them.
+//   activate    a stream starts — enable the node ("driver" stage, elevated),
+//               then on the desktop ("mode" stage): our mode, SDR, and make
+//               it the primary display, remembering which one was.
+//   deactivate  the last stream ended — give the primary role back ("mode"),
+//               then disable the node ("driver").
+//
+// The two stages exist because a service runs the elevated half as SYSTEM in
+// session 0, where there is no desktop to set a mode on, and the desktop half
+// in the console session as the user. The installer's task runs both at once
+// (`--stage=all`), in the order the verb needs.
 
 namespace VirtualDisplayApply {
 namespace {
@@ -212,105 +232,205 @@ bool trustCatalogSigner(const QString& catPath, PublisherTrust& trust, QString* 
     return true;
 }
 
-// ── Device node + driver package ────────────────────────────────────────────
+// ── Device nodes ────────────────────────────────────────────────────────────
 
-bool createDeviceNode(QString* error)
+/// A device info set holding every Display-class node, present or not, with
+/// a way to find ours (hardware id + friendly name) among them.
+struct DisplayNodes
 {
-    HDEVINFO set = SetupDiCreateDeviceInfoList(&GUID_DEVCLASS_DISPLAY, nullptr);
-    if (set == INVALID_HANDLE_VALUE) {
-        *error = QStringLiteral("SetupDiCreateDeviceInfoList: %1").arg(lastErrorText());
+    HDEVINFO set = INVALID_HANDLE_VALUE;
+
+    DisplayNodes()
+        : set(SetupDiGetClassDevsW(&GUID_DEVCLASS_DISPLAY, nullptr, nullptr, 0))
+    {}
+    ~DisplayNodes()
+    {
+        if (set != INVALID_HANDLE_VALUE) SetupDiDestroyDeviceInfoList(set);
+    }
+    bool valid() const { return set != INVALID_HANDLE_VALUE; }
+
+    QString property(const SP_DEVINFO_DATA& data, DWORD prop) const
+    {
+        DWORD size = 0;
+        SetupDiGetDeviceRegistryPropertyW(set, const_cast<SP_DEVINFO_DATA*>(&data), prop, nullptr,
+                                          nullptr, 0, &size);
+        if (size == 0) return QString();
+        std::vector<wchar_t> buf(size / sizeof(wchar_t) + 1, 0);
+        if (!SetupDiGetDeviceRegistryPropertyW(set, const_cast<SP_DEVINFO_DATA*>(&data), prop,
+                                               nullptr, reinterpret_cast<BYTE*>(buf.data()), size,
+                                               nullptr))
+            return QString();
+        return QString::fromWCharArray(buf.data()); // the first string of a MULTI_SZ
+    }
+
+    bool hasHardwareId(const SP_DEVINFO_DATA& data, const QString& wanted) const
+    {
+        DWORD size = 0;
+        SetupDiGetDeviceRegistryPropertyW(set, const_cast<SP_DEVINFO_DATA*>(&data),
+                                          SPDRP_HARDWAREID, nullptr, nullptr, 0, &size);
+        if (size == 0) return false;
+        std::vector<wchar_t> ids(size / sizeof(wchar_t) + 1, 0);
+        if (!SetupDiGetDeviceRegistryPropertyW(set, const_cast<SP_DEVINFO_DATA*>(&data),
+                                               SPDRP_HARDWAREID, nullptr,
+                                               reinterpret_cast<BYTE*>(ids.data()), size, nullptr))
+            return false;
+        for (const wchar_t* h = ids.data(); *h; h += wcslen(h) + 1)
+            if (QString::fromWCharArray(h).compare(wanted, Qt::CaseInsensitive) == 0) return true;
         return false;
     }
-    SP_DEVINFO_DATA data{};
-    data.cbSize = sizeof(data);
-    bool ok = SetupDiCreateDeviceInfoW(set, L"Display", &GUID_DEVCLASS_DISPLAY, nullptr, nullptr,
-                                       DICD_GENERATE_ID, &data) != FALSE;
-    if (!ok) {
-        *error = QStringLiteral("SetupDiCreateDeviceInfo: %1").arg(lastErrorText());
-    } else {
-        // A REG_MULTI_SZ: the id, then two terminators.
-        std::wstring hw = VirtualDisplay::hardwareId().toStdWString();
-        std::vector<wchar_t> multi(hw.begin(), hw.end());
-        multi.push_back(0);
-        multi.push_back(0);
-        ok = SetupDiSetDeviceRegistryPropertyW(set, &data, SPDRP_HARDWAREID,
-                                               reinterpret_cast<const BYTE*>(multi.data()),
-                                               DWORD(multi.size() * sizeof(wchar_t))) != FALSE;
-        if (!ok)
-            *error = QStringLiteral("SetupDiSetDeviceRegistryProperty: %1").arg(lastErrorText());
+
+    /// Every node with the driver's hardware id; `ours` set on the one that
+    /// carries our friendly name.
+    struct Node
+    {
+        SP_DEVINFO_DATA data{};
+        bool ours = false;
+    };
+    std::vector<Node> driverNodes() const
+    {
+        std::vector<Node> out;
+        SP_DEVINFO_DATA data{};
+        data.cbSize = sizeof(data);
+        for (DWORD i = 0; SetupDiEnumDeviceInfo(set, i, &data); ++i) {
+            if (!hasHardwareId(data, VirtualDisplay::hardwareId())) continue;
+            Node n;
+            n.data = data;
+            n.ours = property(data, SPDRP_FRIENDLYNAME)
+                         .compare(VirtualDisplay::displayName(), Qt::CaseInsensitive) == 0;
+            out.push_back(n);
+        }
+        return out;
     }
-    if (ok) {
-        ok = SetupDiCallClassInstaller(DIF_REGISTERDEVICE, set, &data) != FALSE;
-        if (!ok) *error = QStringLiteral("DIF_REGISTERDEVICE: %1").arg(lastErrorText());
+
+    std::optional<SP_DEVINFO_DATA> ours() const
+    {
+        for (const Node& n : driverNodes())
+            if (n.ours) return n.data;
+        return std::nullopt;
     }
-    SetupDiDestroyDeviceInfoList(set);
-    return ok;
+};
+
+bool setEnabled(HDEVINFO set, SP_DEVINFO_DATA& data, bool enable, QString* error)
+{
+    // What Device Manager's Enable/Disable does: a property change, global
+    // then for the current hardware profile (the second is what makes it
+    // take effect at once; devcon does the same pair).
+    for (const DWORD scope : {DWORD(DICS_FLAG_GLOBAL), DWORD(DICS_FLAG_CONFIGSPECIFIC)}) {
+        SP_PROPCHANGE_PARAMS params{};
+        params.ClassInstallHeader.cbSize = sizeof(SP_CLASSINSTALL_HEADER);
+        params.ClassInstallHeader.InstallFunction = DIF_PROPERTYCHANGE;
+        params.StateChange = enable ? DICS_ENABLE : DICS_DISABLE;
+        params.Scope = scope;
+        params.HwProfile = 0;
+        if (!SetupDiSetClassInstallParamsW(set, &data, &params.ClassInstallHeader,
+                                           sizeof(params)) ||
+            !SetupDiCallClassInstaller(DIF_PROPERTYCHANGE, set, &data)) {
+            if (scope == DICS_FLAG_GLOBAL) {
+                *error = QStringLiteral("%1 the device: %2")
+                             .arg(enable ? QStringLiteral("enabling") : QStringLiteral("disabling"))
+                             .arg(lastErrorText());
+                return false;
+            }
+        }
+    }
+    Logger::info(QStringLiteral("[vdisplay-apply] device node %1")
+                     .arg(enable ? QStringLiteral("enabled") : QStringLiteral("disabled")));
+    return true;
 }
 
-bool installPackage(const QString& infPath, bool* reboot, QString* error)
+bool nodeIsEnabled(SP_DEVINFO_DATA& data)
+{
+    ULONG status = 0, problem = 0;
+    if (CM_Get_DevNode_Status(&status, &problem, data.DevInst, 0) != CR_SUCCESS) return false;
+    return !((status & DN_HAS_PROBLEM) && problem == CM_PROB_DISABLED);
+}
+
+/// The name that makes a node ours — in Device Manager and to every lookup.
+bool setFriendlyName(HDEVINFO set, SP_DEVINFO_DATA& data, QString* error)
+{
+    const std::wstring name = VirtualDisplay::displayName().toStdWString();
+    if (!SetupDiSetDeviceRegistryPropertyW(set, &data, SPDRP_FRIENDLYNAME,
+                                           reinterpret_cast<const BYTE*>(name.c_str()),
+                                           DWORD((name.size() + 1) * sizeof(wchar_t)))) {
+        *error = QStringLiteral("SetupDiSetDeviceRegistryProperty(friendly name): %1")
+                     .arg(lastErrorText());
+        return false;
+    }
+    return true;
+}
+
+/// Create our node: a root-enumerated Display-class device with the driver's
+/// hardware id and our friendly name, registered but not yet driven.
+bool createOurNode(HDEVINFO set, SP_DEVINFO_DATA& data, QString* error)
+{
+    data = SP_DEVINFO_DATA{};
+    data.cbSize = sizeof(data);
+    if (!SetupDiCreateDeviceInfoW(set, L"Display", &GUID_DEVCLASS_DISPLAY, nullptr, nullptr,
+                                  DICD_GENERATE_ID, &data)) {
+        *error = QStringLiteral("SetupDiCreateDeviceInfo: %1").arg(lastErrorText());
+        return false;
+    }
+    // A REG_MULTI_SZ: the id, then two terminators.
+    std::wstring hw = VirtualDisplay::hardwareId().toStdWString();
+    std::vector<wchar_t> multi(hw.begin(), hw.end());
+    multi.push_back(0);
+    multi.push_back(0);
+    if (!SetupDiSetDeviceRegistryPropertyW(set, &data, SPDRP_HARDWAREID,
+                                           reinterpret_cast<const BYTE*>(multi.data()),
+                                           DWORD(multi.size() * sizeof(wchar_t)))) {
+        *error = QStringLiteral("SetupDiSetDeviceRegistryProperty(hardware id): %1")
+                     .arg(lastErrorText());
+        return false;
+    }
+    if (!setFriendlyName(set, data, error)) return false;
+    if (!SetupDiCallClassInstaller(DIF_REGISTERDEVICE, set, &data)) {
+        *error = QStringLiteral("DIF_REGISTERDEVICE: %1").arg(lastErrorText());
+        return false;
+    }
+    return true;
+}
+
+bool removeNode(HDEVINFO set, SP_DEVINFO_DATA& data, QString* error)
+{
+    SP_REMOVEDEVICE_PARAMS params{};
+    params.ClassInstallHeader.cbSize = sizeof(SP_CLASSINSTALL_HEADER);
+    params.ClassInstallHeader.InstallFunction = DIF_REMOVE;
+    params.Scope = DI_REMOVEDEVICE_GLOBAL;
+    if (!SetupDiSetClassInstallParamsW(set, &data, &params.ClassInstallHeader, sizeof(params)) ||
+        !SetupDiCallClassInstaller(DIF_REMOVE, set, &data)) {
+        *error = QStringLiteral("DIF_REMOVE: %1").arg(lastErrorText());
+        return false;
+    }
+    Logger::info(QStringLiteral("[vdisplay-apply] device node removed"));
+    return true;
+}
+
+/// Stage the package in the driver store and install it on OUR node only —
+/// never on another node with the same hardware id (the owner's own VDD
+/// keeps whatever driver it has).
+bool installOnNode(HDEVINFO set, SP_DEVINFO_DATA& data, const QString& infPath, bool* reboot,
+                   QString* error)
 {
     const std::wstring inf = QDir::toNativeSeparators(infPath).toStdWString();
-    const std::wstring hw = VirtualDisplay::hardwareId().toStdWString();
+    if (!SetupCopyOEMInfW(inf.c_str(), nullptr, SPOST_PATH, 0, nullptr, 0, nullptr, nullptr)) {
+        *error = QStringLiteral("SetupCopyOEMInf: %1").arg(lastErrorText());
+        return false;
+    }
     BOOL needReboot = FALSE;
-    // The devcon "install" second half: match the package to every node with
-    // this hardware id and install it. INSTALLFLAG_FORCE: a Windows that thinks
-    // it has a better driver for a device that has none is not a judgement call
-    // worth honouring here.
-    if (!UpdateDriverForPlugAndPlayDevicesW(nullptr, hw.c_str(), inf.c_str(), INSTALLFLAG_FORCE,
-                                            &needReboot)) {
-        *error = QStringLiteral("UpdateDriverForPlugAndPlayDevices: %1").arg(lastErrorText());
+    // With no driver named, DiInstallDevice picks the best-ranked package in
+    // the store for this node — the one just staged, or an identical or newer
+    // copy of the same driver the owner installed before us.
+    if (!DiInstallDevice(nullptr, set, &data, nullptr, 0, &needReboot)) {
+        *error = QStringLiteral("DiInstallDevice: %1").arg(lastErrorText());
         return false;
     }
     *reboot = needReboot != FALSE;
     return true;
 }
 
-/// Remove every device node carrying the hardware id (SetupAPI, no pnputil:
-/// its output is localised and its exit codes are not a contract).
-bool removeDeviceNodes(QString* error)
-{
-    HDEVINFO set = SetupDiGetClassDevsW(&GUID_DEVCLASS_DISPLAY, nullptr, nullptr, 0);
-    if (set == INVALID_HANDLE_VALUE) {
-        *error = QStringLiteral("SetupDiGetClassDevs: %1").arg(lastErrorText());
-        return false;
-    }
-    const QString wanted = VirtualDisplay::hardwareId();
-    bool ok = true;
-    SP_DEVINFO_DATA data{};
-    data.cbSize = sizeof(data);
-    for (DWORD i = 0; SetupDiEnumDeviceInfo(set, i, &data); ++i) {
-        DWORD size = 0;
-        SetupDiGetDeviceRegistryPropertyW(set, &data, SPDRP_HARDWAREID, nullptr, nullptr, 0, &size);
-        if (size == 0) continue;
-        std::vector<wchar_t> ids(size / sizeof(wchar_t) + 1, 0);
-        if (!SetupDiGetDeviceRegistryPropertyW(set, &data, SPDRP_HARDWAREID, nullptr,
-                                               reinterpret_cast<BYTE*>(ids.data()), size, nullptr))
-            continue;
-        bool match = false;
-        for (const wchar_t* h = ids.data(); *h; h += wcslen(h) + 1)
-            if (QString::fromWCharArray(h).compare(wanted, Qt::CaseInsensitive) == 0) match = true;
-        if (!match) continue;
-
-        SP_REMOVEDEVICE_PARAMS params{};
-        params.ClassInstallHeader.cbSize = sizeof(SP_CLASSINSTALL_HEADER);
-        params.ClassInstallHeader.InstallFunction = DIF_REMOVE;
-        params.Scope = DI_REMOVEDEVICE_GLOBAL;
-        if (!SetupDiSetClassInstallParamsW(set, &data, &params.ClassInstallHeader,
-                                           sizeof(params)) ||
-            !SetupDiCallClassInstaller(DIF_REMOVE, set, &data)) {
-            *error = QStringLiteral("DIF_REMOVE: %1").arg(lastErrorText());
-            ok = false;
-        } else {
-            Logger::info(QStringLiteral("[vdisplay-apply] device node removed"));
-        }
-    }
-    SetupDiDestroyDeviceInfoList(set);
-    return ok;
-}
-
 /// Delete the package from the driver store: find the oemNN.inf whose provider
-/// and description are the driver's, then SetupUninstallOEMInf. Best effort —
-/// a package left in the store is harmless once its node is gone.
+/// is the driver's, then SetupUninstallOEMInf. Best effort — a package left in
+/// the store is harmless once its nodes are gone.
 void deletePackage()
 {
     HDEVINFO set = SetupDiCreateDeviceInfoList(&GUID_DEVCLASS_DISPLAY, nullptr);
@@ -345,98 +465,157 @@ void deletePackage()
     SetupDiDestroyDeviceInfoList(set);
 }
 
-// ── Stage "driver" ──────────────────────────────────────────────────────────
+// ── Stage "driver": the elevated half ───────────────────────────────────────
 
 int stageDriver(Context& ctx)
 {
+    using Action = VirtualDisplay::Request::Action;
     const QString stage = QStringLiteral("driver");
     if (!VirtualDisplay::processElevated())
         return failAt(ctx, stage, QStringLiteral("this process is not elevated"));
 
-    if (ctx.request.action == VirtualDisplay::Request::Action::Remove) {
-        QString error;
-        if (!removeDeviceNodes(&error)) return failAt(ctx, stage, error);
-        deletePackage();
-        QFile::remove(VirtualDisplay::settingsXmlPath());
+    DisplayNodes nodes;
+    if (!nodes.valid())
+        return failAt(ctx, stage, QStringLiteral("SetupDiGetClassDevs: %1").arg(lastErrorText()));
+    QString error;
+
+    switch (ctx.request.action) {
+    case Action::Install: {
+        if (nodes.ours()) {
+            Logger::info(QStringLiteral("[vdisplay-apply] \"%1\" is already installed")
+                             .arg(VirtualDisplay::displayName()));
+            ctx.result.ok = true;
+            ctx.result.stage = QStringLiteral("done");
+            return finish(ctx);
+        }
+        // The files as the installer laid them out, re-hashed against the
+        // constants compiled into THIS exe before SetupAPI sees them.
+        const QString dir = VirtualDisplay::bundledDriverDir();
+        QString infPath, catPath;
+        for (const VirtualDisplay::DriverFile& f : VirtualDisplay::driverFiles()) {
+            const QString path = dir + QLatin1Char('/') + QLatin1String(f.name);
+            if (fileSha256(path) != QLatin1String(f.sha256))
+                return failAt(ctx, stage,
+                              QStringLiteral("%1 is missing or does not match its pinned hash")
+                                  .arg(QLatin1String(f.name)));
+            if (path.endsWith(QLatin1String(".inf"), Qt::CaseInsensitive)) infPath = path;
+            if (path.endsWith(QLatin1String(".cat"), Qt::CaseInsensitive)) catPath = path;
+        }
+        // The driver's settings: only when nobody wrote any. An owner's own
+        // VDD configured that file, and ours takes the modes it lists.
+        const QString xmlPath = VirtualDisplay::settingsXmlPath();
+        if (!QFile::exists(xmlPath)) {
+            if (!QDir().mkpath(QFileInfo(xmlPath).absolutePath()))
+                return failAt(ctx, stage, QStringLiteral("cannot create %1").arg(xmlPath));
+            QFile f(xmlPath);
+            if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text))
+                return failAt(ctx, stage, QStringLiteral("cannot write %1").arg(xmlPath));
+            f.write(VirtualDisplay::settingsXml().toUtf8());
+        } else {
+            Logger::info(QStringLiteral("[vdisplay-apply] %1 exists — left as it is").arg(xmlPath));
+        }
+
+        PublisherTrust trust;
+        if (!trustCatalogSigner(catPath, trust, &error)) return failAt(ctx, stage, error);
+        SP_DEVINFO_DATA data{};
+        if (!createOurNode(nodes.set, data, &error)) return failAt(ctx, stage, error);
+        bool reboot = false;
+        if (!installOnNode(nodes.set, data, infPath, &reboot, &error)) {
+            // Leave no orphan node behind a failed install.
+            QString ignored;
+            removeNode(nodes.set, data, &ignored);
+            return failAt(ctx, stage, error);
+        }
+        // The name again, now that the driver is bound: installing the
+        // package rewrites the node's description from the INF and, as
+        // measured on the bench, drops the friendly name set before it. This
+        // write is the one that lasts — and the one every lookup relies on.
+        if (!setFriendlyName(nodes.set, data, &error)) {
+            QString ignored;
+            removeNode(nodes.set, data, &ignored);
+            return failAt(ctx, stage, error);
+        }
+        // Off by default: the card turns it on.
+        if (!setEnabled(nodes.set, data, false, &error))
+            Logger::warning(QStringLiteral("[vdisplay-apply] %1").arg(error));
+        ctx.result.ok = true;
+        ctx.result.stage = QStringLiteral("done");
+        ctx.result.rebootRequired = reboot;
+        Logger::info(QStringLiteral("[vdisplay-apply] \"%1\" installed%2")
+                         .arg(VirtualDisplay::displayName(),
+                              reboot ? QStringLiteral(" (reboot required)") : QString()));
+        return finish(ctx);
+    }
+
+    case Action::Uninstall: {
+        bool othersRemain = false;
+        bool ok = true;
+        for (DisplayNodes::Node n : nodes.driverNodes()) {
+            if (!n.ours) {
+                othersRemain = true;
+                continue;
+            }
+            if (!removeNode(nodes.set, n.data, &error)) ok = false;
+        }
+        if (!ok) return failAt(ctx, stage, error);
+        if (!othersRemain) {
+            deletePackage();
+            QFile::remove(VirtualDisplay::settingsXmlPath());
+        } else {
+            Logger::info(QStringLiteral(
+                "[vdisplay-apply] another node uses the driver — package and settings kept"));
+        }
         ctx.result.ok = true;
         ctx.result.stage = QStringLiteral("done");
         return finish(ctx);
     }
 
-    // The settings file first, whether or not the driver is already there: a
-    // driver already installed by hand keeps its node and just gets our modes.
-    const QString xmlPath = VirtualDisplay::settingsXmlPath();
-    if (!QDir().mkpath(QFileInfo(xmlPath).absolutePath()))
-        return failAt(ctx, stage, QStringLiteral("cannot create %1").arg(xmlPath));
-    {
-        QFile f(xmlPath);
-        if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text))
-            return failAt(ctx, stage, QStringLiteral("cannot write %1").arg(xmlPath));
-        f.write(VirtualDisplay::settingsXml(ctx.request).toUtf8());
-    }
-
-    if (VirtualDisplay::driverPresent()) {
-        Logger::info(QStringLiteral("[vdisplay-apply] driver already installed — settings only"));
+    case Action::Activate:
+    case Action::Deactivate: {
+        auto ours = nodes.ours();
+        if (!ours)
+            return failAt(ctx, stage,
+                          QStringLiteral("\"%1\" is not installed on this machine")
+                              .arg(VirtualDisplay::displayName()));
+        const bool enable = ctx.request.action == Action::Activate;
+        if (nodeIsEnabled(*ours) == enable) {
+            Logger::info(QStringLiteral("[vdisplay-apply] device node already %1")
+                             .arg(enable ? QStringLiteral("enabled") : QStringLiteral("disabled")));
+        } else if (!setEnabled(nodes.set, *ours, enable, &error)) {
+            return failAt(ctx, stage, error);
+        }
         ctx.result.ok = true;
         ctx.result.stage = stage;
-        return kExitOk; // the caller continues with the mode stage
+        return kExitOk; // the caller decides whether a mode stage follows
     }
-
-    // Re-verify the staged files against the constants compiled into THIS exe:
-    // the unprivileged server hashed them, but this is the process that acts
-    // on them, and a re-hash costs nothing next to a driver install.
-    const QString driverDir = ctx.dir + QStringLiteral("/driver");
-    QString infPath, catPath;
-    for (const VirtualDisplay::DriverFile& f : VirtualDisplay::driverFiles()) {
-        const QString path = driverDir + QLatin1Char('/') + QLatin1String(f.name);
-        if (fileSha256(path) != QLatin1String(f.sha256))
-            return failAt(
-                ctx, stage,
-                QStringLiteral("%1 does not match its pinned hash").arg(QLatin1String(f.name)));
-        if (path.endsWith(QLatin1String(".inf"), Qt::CaseInsensitive)) infPath = path;
-        if (path.endsWith(QLatin1String(".cat"), Qt::CaseInsensitive)) catPath = path;
     }
-
-    QString error;
-    PublisherTrust trust;
-    if (!trustCatalogSigner(catPath, trust, &error)) return failAt(ctx, stage, error);
-    if (!createDeviceNode(&error)) return failAt(ctx, stage, error);
-    bool reboot = false;
-    if (!installPackage(infPath, &reboot, &error)) {
-        // Leave no orphan node behind a failed install.
-        QString ignored;
-        removeDeviceNodes(&ignored);
-        return failAt(ctx, stage, error);
-    }
-    ctx.result.ok = true;
-    ctx.result.stage = stage;
-    ctx.result.rebootRequired = reboot;
-    Logger::info(QStringLiteral("[vdisplay-apply] driver installed%1")
-                     .arg(reboot ? QStringLiteral(" (reboot required)") : QString()));
-    return kExitOk;
+    return failAt(ctx, stage, QStringLiteral("unknown action"));
 }
 
-// ── Stage "mode" ────────────────────────────────────────────────────────────
+// ── Stage "mode": the desktop half ──────────────────────────────────────────
 
-struct VirtualTarget
+struct ActivePath
 {
     LUID adapterId{};
     UINT32 targetId = 0;
-    QString gdiName; // "\\.\DISPLAY3"
+    QString gdiName;    // "\\.\DISPLAY3"
+    QString devicePath; // "\\?\DISPLAY#MTT1337#1&15ecd195&0&UID256#{…}"
+    bool primary = false;
 };
 
-/// The virtual display among the active paths: an indirect-virtual output, or
-/// the driver's monitor id in the device path.
-std::optional<VirtualTarget> findVirtualTarget()
+/// Every active display path, with what identifies it on both sides: the
+/// GDI name (mode calls) and the monitor device path (stable identity).
+std::vector<ActivePath> activePaths()
 {
+    std::vector<ActivePath> out;
     UINT32 nPaths = 0, nModes = 0;
     if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &nPaths, &nModes) != ERROR_SUCCESS)
-        return std::nullopt;
+        return out;
     std::vector<DISPLAYCONFIG_PATH_INFO> paths(nPaths);
     std::vector<DISPLAYCONFIG_MODE_INFO> modes(nModes);
     if (QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &nPaths, paths.data(), &nModes, modes.data(),
                            nullptr) != ERROR_SUCCESS)
-        return std::nullopt;
+        return out;
 
     for (UINT32 i = 0; i < nPaths; ++i) {
         const DISPLAYCONFIG_PATH_INFO& p = paths[i];
@@ -446,13 +625,6 @@ std::optional<VirtualTarget> findVirtualTarget()
         tn.header.adapterId = p.targetInfo.adapterId;
         tn.header.id = p.targetInfo.id;
         if (DisplayConfigGetDeviceInfo(&tn.header) != ERROR_SUCCESS) continue;
-
-        const QString devPath = QString::fromWCharArray(tn.monitorDevicePath);
-        const bool indirectVirtual = tn.outputTechnology == 17; // INDIRECT_VIRTUAL
-        const bool mtt = devPath.contains(QLatin1String("MTT1337"), Qt::CaseInsensitive) ||
-                         devPath.contains(QLatin1String("MttVDD"), Qt::CaseInsensitive);
-        if (!indirectVirtual && !mtt) continue;
-
         DISPLAYCONFIG_SOURCE_DEVICE_NAME sn{};
         sn.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
         sn.header.size = sizeof(sn);
@@ -460,19 +632,194 @@ std::optional<VirtualTarget> findVirtualTarget()
         sn.header.id = p.sourceInfo.id;
         if (DisplayConfigGetDeviceInfo(&sn.header) != ERROR_SUCCESS) continue;
 
-        VirtualTarget t;
-        t.adapterId = p.targetInfo.adapterId;
-        t.targetId = p.targetInfo.id;
-        t.gdiName = QString::fromWCharArray(sn.viewGdiDeviceName);
-        return t;
+        ActivePath a;
+        a.adapterId = p.targetInfo.adapterId;
+        a.targetId = p.targetInfo.id;
+        a.gdiName = QString::fromWCharArray(sn.viewGdiDeviceName);
+        a.devicePath = QString::fromWCharArray(tn.monitorDevicePath);
+        const UINT32 srcIdx = p.sourceInfo.modeInfoIdx;
+        if (srcIdx != DISPLAYCONFIG_PATH_MODE_IDX_INVALID && srcIdx < modes.size() &&
+            modes[srcIdx].infoType == DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE) {
+            const POINTL& pos = modes[srcIdx].sourceMode.position;
+            a.primary = pos.x == 0 && pos.y == 0;
+        }
+        out.push_back(a);
+    }
+    return out;
+}
+
+/// The monitor ids hanging off our node, spelled like a device path.
+QStringList ourMonitorIds()
+{
+    QStringList out;
+    DisplayNodes nodes;
+    if (!nodes.valid()) return out;
+    const auto ours = nodes.ours();
+    if (!ours) return out;
+    DEVINST child = 0;
+    if (CM_Get_Child(&child, ours->DevInst, 0) != CR_SUCCESS) return out;
+    for (;;) {
+        wchar_t id[MAX_DEVICE_ID_LEN] = {};
+        if (CM_Get_Device_IDW(child, id, MAX_DEVICE_ID_LEN, 0) == CR_SUCCESS) {
+            QString s = QString::fromWCharArray(id).toLower();
+            s.replace(QLatin1Char('\\'), QLatin1Char('#'));
+            out.append(s);
+        }
+        DEVINST sibling = 0;
+        if (CM_Get_Sibling(&sibling, child, 0) != CR_SUCCESS) break;
+        child = sibling;
+    }
+    return out;
+}
+
+std::optional<ActivePath> findOurTarget()
+{
+    const QStringList ids = ourMonitorIds();
+    if (ids.isEmpty()) return std::nullopt;
+    for (const ActivePath& p : activePaths()) {
+        const QString path = p.devicePath.toLower();
+        for (const QString& id : ids)
+            if (path.contains(id)) return p;
     }
     return std::nullopt;
 }
 
+/// Query the active display configuration, let @p edit change it, apply it.
+/// The CCD API (what Windows Settings uses), not ChangeDisplaySettingsEx:
+/// on the bench an indirect display just brought up took neither a mode nor
+/// a position through GDI — success returned, nothing changed.
+template <typename Edit> bool applyDisplayConfig(Edit edit, QString* error)
+{
+    UINT32 nPaths = 0, nModes = 0;
+    if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &nPaths, &nModes) != ERROR_SUCCESS) {
+        *error = QStringLiteral("GetDisplayConfigBufferSizes failed");
+        return false;
+    }
+    std::vector<DISPLAYCONFIG_PATH_INFO> paths(nPaths);
+    std::vector<DISPLAYCONFIG_MODE_INFO> modes(nModes);
+    if (QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &nPaths, paths.data(), &nModes, modes.data(),
+                           nullptr) != ERROR_SUCCESS) {
+        *error = QStringLiteral("QueryDisplayConfig failed");
+        return false;
+    }
+    paths.resize(nPaths);
+    modes.resize(nModes);
+    if (!edit(paths, modes, error)) return false;
+    const LONG rc = SetDisplayConfig(nPaths, paths.data(), nModes, modes.data(),
+                                     SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG |
+                                         SDC_ALLOW_CHANGES | SDC_SAVE_TO_DATABASE);
+    if (rc != ERROR_SUCCESS) {
+        *error = QStringLiteral("SetDisplayConfig: %1").arg(lastErrorText(DWORD(rc)));
+        return false;
+    }
+    return true;
+}
+
+/// The index of the active path whose monitor device path is @p devicePath.
+int pathIndexFor(const std::vector<DISPLAYCONFIG_PATH_INFO>& paths, const QString& devicePath)
+{
+    for (size_t i = 0; i < paths.size(); ++i) {
+        DISPLAYCONFIG_TARGET_DEVICE_NAME tn{};
+        tn.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
+        tn.header.size = sizeof(tn);
+        tn.header.adapterId = paths[i].targetInfo.adapterId;
+        tn.header.id = paths[i].targetInfo.id;
+        if (DisplayConfigGetDeviceInfo(&tn.header) != ERROR_SUCCESS) continue;
+        if (QString::fromWCharArray(tn.monitorDevicePath)
+                .compare(devicePath, Qt::CaseInsensitive) == 0)
+            return int(i);
+    }
+    return -1;
+}
+
+/// Our mode on the display at @p devicePath: the source (desktop) size, and
+/// the target left to the driver at the wanted refresh.
+bool setMode(const QString& devicePath, QString* error)
+{
+    return applyDisplayConfig(
+        [&](std::vector<DISPLAYCONFIG_PATH_INFO>& paths,
+            std::vector<DISPLAYCONFIG_MODE_INFO>& modes, QString* err) {
+            const int i = pathIndexFor(paths, devicePath);
+            if (i < 0) {
+                *err = QStringLiteral("the display is not in the active configuration");
+                return false;
+            }
+            DISPLAYCONFIG_PATH_INFO& p = paths[size_t(i)];
+            const UINT32 src = p.sourceInfo.modeInfoIdx;
+            if (src == DISPLAYCONFIG_PATH_MODE_IDX_INVALID || src >= modes.size()) {
+                *err = QStringLiteral("the display has no source mode");
+                return false;
+            }
+            modes[src].sourceMode.width = UINT32(VirtualDisplay::kWidth);
+            modes[src].sourceMode.height = UINT32(VirtualDisplay::kHeight);
+            p.targetInfo.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+            p.targetInfo.refreshRate.Numerator = UINT32(VirtualDisplay::kRefreshHz);
+            p.targetInfo.refreshRate.Denominator = 1;
+            p.targetInfo.scanLineOrdering = DISPLAYCONFIG_SCANLINE_ORDERING_PROGRESSIVE;
+            p.targetInfo.scaling = DISPLAYCONFIG_SCALING_IDENTITY;
+            return true;
+        },
+        error);
+}
+
+/// Make the display at @p devicePath the primary one: every desktop origin
+/// shifted so that one lands on (0,0), in one configuration change.
+bool makePrimary(const QString& devicePath, QString* error)
+{
+    return applyDisplayConfig(
+        [&](std::vector<DISPLAYCONFIG_PATH_INFO>& paths,
+            std::vector<DISPLAYCONFIG_MODE_INFO>& modes, QString* err) {
+            const int i = pathIndexFor(paths, devicePath);
+            if (i < 0) {
+                *err = QStringLiteral("the display is not in the active configuration");
+                return false;
+            }
+            const UINT32 src = paths[size_t(i)].sourceInfo.modeInfoIdx;
+            if (src == DISPLAYCONFIG_PATH_MODE_IDX_INVALID || src >= modes.size()) {
+                *err = QStringLiteral("the display has no source mode");
+                return false;
+            }
+            const POINTL origin = modes[src].sourceMode.position;
+            if (origin.x == 0 && origin.y == 0) return true; // already the primary
+            for (DISPLAYCONFIG_MODE_INFO& m : modes) {
+                if (m.infoType != DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE) continue;
+                m.sourceMode.position.x -= origin.x;
+                m.sourceMode.position.y -= origin.y;
+            }
+            return true;
+        },
+        error);
+}
+
 int stageMode(Context& ctx)
 {
+    using Action = VirtualDisplay::Request::Action;
     const QString stage = QStringLiteral("mode");
-    if (ctx.request.action != VirtualDisplay::Request::Action::Add) {
+
+    if (ctx.request.action == Action::Deactivate) {
+        // The previous primary back in its role, while ours still exists —
+        // Windows would otherwise pick one itself when ours goes.
+        if (!ctx.request.restorePrimary.isEmpty()) {
+            bool found = false;
+            for (const ActivePath& p : activePaths()) {
+                if (p.devicePath.compare(ctx.request.restorePrimary, Qt::CaseInsensitive) != 0)
+                    continue;
+                found = true;
+                QString error;
+                if (!p.primary && !makePrimary(p.devicePath, &error))
+                    Logger::warning(
+                        QStringLiteral("[vdisplay-apply] previous primary not restored: %1")
+                            .arg(error));
+            }
+            if (!found)
+                Logger::info(QStringLiteral(
+                    "[vdisplay-apply] the previous primary display is gone — Windows picks"));
+        }
+        ctx.result.ok = true;
+        ctx.result.stage = stage;
+        return kExitOk; // the driver stage (disable) follows
+    }
+    if (ctx.request.action != Action::Activate) {
         ctx.result.ok = true;
         ctx.result.stage = QStringLiteral("done");
         return finish(ctx);
@@ -480,10 +827,10 @@ int stageMode(Context& ctx)
 
     // The display appears a moment after the driver starts; ten seconds is
     // generous for a UMDF driver and a single monitor.
-    std::optional<VirtualTarget> target;
+    std::optional<ActivePath> target;
     QElapsedTimer wait;
     wait.start();
-    while (!(target = findVirtualTarget()) && wait.elapsed() < 10 * 1000)
+    while (!(target = findOurTarget()) && wait.elapsed() < 10 * 1000)
         QThread::msleep(250);
     if (!target) {
         if (ctx.result.rebootRequired) {
@@ -495,45 +842,43 @@ int stageMode(Context& ctx)
     }
     ctx.result.display = target->gdiName;
 
-    DEVMODEW dm{};
-    dm.dmSize = sizeof(dm);
-    dm.dmPelsWidth = DWORD(ctx.request.width);
-    dm.dmPelsHeight = DWORD(ctx.request.height);
-    dm.dmDisplayFrequency = DWORD(ctx.request.refresh);
-    dm.dmFields = DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFREQUENCY;
-    const std::wstring gdi = target->gdiName.toStdWString();
-    const LONG rc =
-        ChangeDisplaySettingsExW(gdi.c_str(), &dm, nullptr, CDS_UPDATEREGISTRY, nullptr);
-    if (rc != DISP_CHANGE_SUCCESSFUL) {
-        // Not fatal: the display exists and streams at whatever mode it has.
-        Logger::warning(QStringLiteral("[vdisplay-apply] mode %1x%2@%3 refused (%4) on %5")
-                            .arg(ctx.request.width)
-                            .arg(ctx.request.height)
-                            .arg(ctx.request.refresh)
-                            .arg(rc)
-                            .arg(target->gdiName));
-    } else {
+    // Who holds the primary role right now, for the way back.
+    for (const ActivePath& p : activePaths())
+        if (p.primary && p.devicePath.compare(target->devicePath, Qt::CaseInsensitive) != 0)
+            ctx.result.previousPrimary = p.devicePath;
+
+    QString error;
+    if (setMode(target->devicePath, &error)) {
         Logger::info(QStringLiteral("[vdisplay-apply] %1 set to %2x%3@%4")
                          .arg(target->gdiName)
-                         .arg(ctx.request.width)
-                         .arg(ctx.request.height)
-                         .arg(ctx.request.refresh));
+                         .arg(VirtualDisplay::kWidth)
+                         .arg(VirtualDisplay::kHeight)
+                         .arg(VirtualDisplay::kRefreshHz));
+    } else {
+        // Not fatal: the display exists and streams at whatever mode it has.
+        Logger::warning(QStringLiteral("[vdisplay-apply] mode %1x%2@%3 refused on %4: %5")
+                            .arg(VirtualDisplay::kWidth)
+                            .arg(VirtualDisplay::kHeight)
+                            .arg(VirtualDisplay::kRefreshHz)
+                            .arg(target->gdiName, error));
     }
 
-    // HDR: the same call scripts/Set-DisplayHdr.ps1 makes. The target ids may
+    // SDR: the same call scripts/Set-DisplayHdr.ps1 makes. The target ids may
     // have moved with the mode change, so look the display up again.
-    if (auto again = findVirtualTarget()) target = again;
+    if (auto again = findOurTarget()) target = again;
     DISPLAYCONFIG_SET_ADVANCED_COLOR_STATE ac{};
     ac.header.type = DISPLAYCONFIG_DEVICE_INFO_SET_ADVANCED_COLOR_STATE;
     ac.header.size = sizeof(ac);
     ac.header.adapterId = target->adapterId;
     ac.header.id = target->targetId;
-    ac.enableAdvancedColor = ctx.request.hdr ? 1 : 0;
+    ac.enableAdvancedColor = 0;
     const LONG hr = DisplayConfigSetDeviceInfo(&ac.header);
-    if (hr != ERROR_SUCCESS)
-        Logger::warning(QStringLiteral("[vdisplay-apply] HDR %1 refused: %2")
-                            .arg(ctx.request.hdr ? QStringLiteral("on") : QStringLiteral("off"))
-                            .arg(lastErrorText(DWORD(hr))));
+    if (hr != ERROR_SUCCESS && hr != ERROR_NOT_SUPPORTED)
+        Logger::warning(
+            QStringLiteral("[vdisplay-apply] SDR refused: %1").arg(lastErrorText(DWORD(hr))));
+
+    if (!makePrimary(target->devicePath, &error))
+        Logger::warning(QStringLiteral("[vdisplay-apply] not made primary: %1").arg(error));
 
     ctx.result.ok = true;
     ctx.result.stage = QStringLiteral("done");
@@ -560,15 +905,35 @@ int run(const QString& stageArg, const QString& dirArg)
     ctx.request = *parsed;
 
 #ifdef Q_OS_WIN
-    if (stage == QLatin1String("driver") || stage == QLatin1String("all")) {
-        const int rc = stageDriver(ctx);
-        // stageDriver finishes itself on failure and on "remove"; on a
-        // successful "add" it returns without writing so "all" can go on.
+    using Action = VirtualDisplay::Request::Action;
+    const bool wantDriver = stage == QLatin1String("driver") || stage == QLatin1String("all");
+    const bool wantMode = stage == QLatin1String("mode") || stage == QLatin1String("all");
+    if (!wantDriver && !wantMode)
+        return failAt(ctx, QStringLiteral("request"),
+                      QStringLiteral("unknown stage %1").arg(stage));
+
+    // Deactivate runs the desktop half first (restore the primary while our
+    // display still exists), every other verb the elevated half first.
+    const bool modeFirst = ctx.request.action == Action::Deactivate;
+    const auto first =
+        modeFirst ? (wantMode ? &stageMode : nullptr) : (wantDriver ? &stageDriver : nullptr);
+    const auto second =
+        modeFirst ? (wantDriver ? &stageDriver : nullptr) : (wantMode ? &stageMode : nullptr);
+
+    if (first) {
+        const int rc = first(ctx);
+        // A stage finishes itself on failure and when the verb is complete;
+        // otherwise it returns without writing so the other half can go on.
         if (!ctx.result.ok || ctx.result.stage == QLatin1String("done")) return rc;
-        if (stage == QLatin1String("driver")) return finish(ctx);
+        if (!second) return finish(ctx);
     }
-    if (stage == QLatin1String("mode") || stage == QLatin1String("all")) return stageMode(ctx);
-    return failAt(ctx, QStringLiteral("request"), QStringLiteral("unknown stage %1").arg(stage));
+    if (second) {
+        const int rc = second(ctx);
+        if (!ctx.result.ok || ctx.result.stage == QLatin1String("done")) return rc;
+        // Deactivate ends on the driver stage, which does not finish itself.
+        ctx.result.stage = QStringLiteral("done");
+    }
+    return finish(ctx);
 #else
     Q_UNUSED(stage);
     return failAt(ctx, QStringLiteral("request"),

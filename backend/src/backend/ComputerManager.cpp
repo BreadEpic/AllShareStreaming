@@ -279,8 +279,9 @@ void ComputerManager::refreshNativeHost()
 
     // Headless: the engine is here and enabled, there is simply nothing
     // attached to capture. That machine is exactly the one that needs its
-    // card to stay — with the "Add Virtual Display" offer in it — rather
-    // than vanish and leave the owner wondering where the host went.
+    // card to stay — with "MoonlightWeb Virtual Display" as its one app, or
+    // a word on what is missing — rather than vanish and leave the owner
+    // wondering where the host went.
     const bool noDisplay =
         !available && NativeHostBackend::isEnabled() &&
         NativeProbeService::instance().snapshot().reason == mw::native::Unavailability::NoDisplay;
@@ -320,8 +321,7 @@ void ComputerManager::refreshNativeHost()
     host->serverCodecModeSupport = NativeHostBackend::codecModeSupport();
 
     if (noDisplay)
-        Logger::info(QString("Native host has no display: %1 — card kept with the virtual "
-                             "display offer")
+        Logger::info(QString("Native host has no display: %1 — card kept for the virtual display")
                          .arg(host->name));
     else
         Logger::info(QString("Native host available: %1").arg(host->name));
@@ -330,21 +330,17 @@ void ComputerManager::refreshNativeHost()
 
 QJsonObject ComputerManager::nativeDisplayJson()
 {
-    // The empty-state verdict and the virtual display capability, computed
-    // here so the hosts page never derives them: `state` says whether the
-    // card has displays to show or an offer to make, `virtual_display` what
-    // the kebab may propose (availability only; the admin-level detail is
-    // behind GET /api/native/virtual-display).
+    // The empty-state verdict and the virtual display's state, computed here
+    // so the hosts page never derives them: `state` says whether the card
+    // has displays to show, `virtual_display` whether "MoonlightWeb Virtual
+    // Display" is installed here (then it is a card of its own, on or off).
     QJsonObject obj;
     const mw::native::Capabilities caps = NativeProbeService::instance().snapshot();
     obj["state"] = caps.available ? QStringLiteral("ok")
                    : caps.reason == mw::native::Unavailability::NoDisplay
                        ? QStringLiteral("no_display")
                        : QStringLiteral("unavailable");
-    const VirtualDisplay::Status vd = VirtualDisplay::probe();
-    QJsonObject v = VirtualDisplay::toJson(vd, /*admin=*/false);
-    v["can_install"] = vd.canInstall;
-    obj["virtual_display"] = v;
+    obj["virtual_display"] = VirtualDisplay::toJson(VirtualDisplay::probe());
     return obj;
 }
 

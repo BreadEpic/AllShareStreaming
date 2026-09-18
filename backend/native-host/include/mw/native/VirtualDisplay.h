@@ -79,4 +79,13 @@ bool isOnline();
 /// 0 when none. For logs and for matching the probe's list.
 uint32_t displayId();
 
+/// The OS' current main display (the one the menu bar is on), 0 when unknown.
+/// Read before the created display takes the role, so it can be given back.
+uint32_t mainDisplay();
+
+/// Make a display the main one — ours once it is online, or the previous
+/// main again before ours is released. Returns false with @p error filled
+/// when the OS refused (a display that is not online, for one).
+bool setMain(uint32_t displayId, std::string* error);
+
 } // namespace mw::native::vdisplay

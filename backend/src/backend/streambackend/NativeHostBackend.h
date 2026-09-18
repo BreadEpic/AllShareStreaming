@@ -101,6 +101,12 @@ public:
     /// "<hostname> — MoonlightWeb Host".
     static QString hostDisplayName();
 
+    /// The app id of "MoonlightWeb Virtual Display" — the one card that is
+    /// there whether or not its display exists at the moment. A /start on it
+    /// turns the display on first (VirtualDisplayJob); the last stream's end
+    /// turns it off.
+    static int virtualDisplayAppId();
+
     NativeHostBackend() = default;
 
     QString type() const override { return typeName(); }

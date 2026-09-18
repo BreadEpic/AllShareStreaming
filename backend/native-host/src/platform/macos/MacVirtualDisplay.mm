@@ -232,4 +232,37 @@ uint32_t displayId()
     return g_displayId;
 }
 
+uint32_t mainDisplay()
+{
+    return CGMainDisplayID();
+}
+
+bool setMain(uint32_t displayId, std::string* error)
+{
+    // The main display is the one whose origin is (0,0): moving a display
+    // there is how BetterDisplay's "set as main" works too. A configuration
+    // scoped to the session, so a crash leaves nothing behind in the OS'
+    // preferences — the caller restores the previous main itself.
+    if (CGDisplayIsMain(displayId)) return true;
+    CGDisplayConfigRef config = nullptr;
+    CGError err = CGBeginDisplayConfiguration(&config);
+    if (err != kCGErrorSuccess) {
+        if (error) *error = "CGBeginDisplayConfiguration failed: " + std::to_string(err);
+        return false;
+    }
+    err = CGConfigureDisplayOrigin(config, displayId, 0, 0);
+    if (err != kCGErrorSuccess) {
+        CGCancelDisplayConfiguration(config);
+        if (error) *error = "CGConfigureDisplayOrigin failed: " + std::to_string(err);
+        return false;
+    }
+    err = CGCompleteDisplayConfiguration(config, kCGConfigureForSession);
+    if (err != kCGErrorSuccess) {
+        if (error) *error = "CGCompleteDisplayConfiguration failed: " + std::to_string(err);
+        return false;
+    }
+    log::info("[native] display " + std::to_string(displayId) + " is now the main display");
+    return true;
+}
+
 } // namespace mw::native::vdisplay

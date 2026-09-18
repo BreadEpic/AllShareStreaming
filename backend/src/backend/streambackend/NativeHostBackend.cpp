@@ -17,6 +17,7 @@
 
 #include "NativeHostBackend.h"
 
+#include "../../backend/VirtualDisplay.h"
 #include "../../common/Logger.h"
 #include "../../server/AppSettings.h"
 
@@ -62,7 +63,35 @@ int appIdToDisplayId(int appId)
     return appId - kAppIdBase;
 }
 
+/// "MoonlightWeb Virtual Display" is a card whether or not the display exists
+/// right now — it is off between streams — so it cannot be numbered after a
+/// display index. A fixed id far above any display's: a machine has a handful
+/// of monitors, never a thousand.
+constexpr int kVirtualDisplayAppId = 1000;
+
+NvApp virtualDisplayApp(const mw::native::Capabilities& caps)
+{
+    NvApp app(kVirtualDisplayAppId, VirtualDisplay::displayName(), /*hdr=*/false);
+    app.setHasBoxArt(false);
+    app.setDevice(QJsonObject{
+        {QStringLiteral("os"), HostOsProbe::toString(HostOsProbe::thisMachine())},
+        {QStringLiteral("display"), QStringLiteral("virtual")},
+        {QStringLiteral("model"), VirtualDisplay::displayName()},
+        {QStringLiteral("key"), QStringLiteral("moonlightweb-virtual-display")},
+        {QStringLiteral("battery"), caps.hasBattery},
+        // What the card says about itself: MoonlightWeb's own display, not a
+        // monitor somebody plugged in.
+        {QStringLiteral("owned"), true},
+    });
+    return app;
+}
+
 } // namespace
+
+int NativeHostBackend::virtualDisplayAppId()
+{
+    return kVirtualDisplayAppId;
+}
 
 bool NativeHostBackend::isEnabled()
 {
@@ -210,7 +239,16 @@ void NativeHostBackend::getAppList(const QString& seatId, BackendAppListCallback
     if (!cb) return;
 
     const mw::native::Capabilities caps = probeEngine();
+    // Our own virtual display is a card as long as it is installed, on and
+    // off alike: opening it is what turns it on.
+    const bool virtualInstalled = VirtualDisplay::probe().installed;
     if (!caps.available) {
+        // A machine with nothing attached and our display to offer has one
+        // card; any other reason to be unavailable has none.
+        if (virtualInstalled && caps.reason == mw::native::Unavailability::NoDisplay) {
+            cb(true, BackendError{}, QVector<NvApp>{virtualDisplayApp(caps)});
+            return;
+        }
         cb(false,
            BackendError::make(BackendError::Unsupported,
                               QStringLiteral("Native streaming is not available on this machine")),
@@ -243,9 +281,17 @@ void NativeHostBackend::getAppList(const QString& seatId, BackendAppListCallback
                      });
 
     QVector<NvApp> apps;
-    apps.reserve(caps.displays.size());
+    apps.reserve(caps.displays.size() + 1);
+    bool virtualListed = false;
     for (const mw::native::DisplayInfo* entry : ordered) {
         const mw::native::DisplayInfo& display = *entry;
+        if (VirtualDisplay::isOurs(display)) {
+            // On right now (a stream is running on it): the same card as
+            // when it is off, under its own name and its fixed id.
+            virtualListed = true;
+            apps.append(virtualDisplayApp(caps));
+            continue;
+        }
         const bool hdrCapable = display.hdrActive && [&] {
             const mw::native::GpuInfo* gpu = caps.gpuFor(display);
             return gpu && gpu->supports10Bit;
@@ -266,6 +312,7 @@ void NativeHostBackend::getAppList(const QString& seatId, BackendAppListCallback
         });
         apps.append(app);
     }
+    if (virtualInstalled && !virtualListed) apps.append(virtualDisplayApp(caps));
     cb(true, BackendError{}, apps);
 }
 
@@ -288,8 +335,26 @@ void NativeHostBackend::launch(const QString& seatId, const LaunchRequest& req,
         return;
     }
 
-    const int displayId = appIdToDisplayId(req.appId);
+    int displayId = appIdToDisplayId(req.appId);
     bool known = false;
+    if (req.appId == kVirtualDisplayAppId) {
+        // Our virtual display, turned on by the server before this launch
+        // (main.cpp's /start): whichever display index it came up under.
+        for (const mw::native::DisplayInfo& display : caps.displays) {
+            if (VirtualDisplay::isOurs(display)) {
+                displayId = display.id;
+                known = true;
+                break;
+            }
+        }
+        if (!known) {
+            cb(false,
+               BackendError::make(BackendError::NotFound,
+                                  QStringLiteral("The virtual display is not on")),
+               MediaDescriptor{});
+            return;
+        }
+    }
     for (const mw::native::DisplayInfo& display : caps.displays) {
         if (display.id == displayId) {
             known = true;

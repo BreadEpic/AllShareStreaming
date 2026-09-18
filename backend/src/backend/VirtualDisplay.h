@@ -19,111 +19,132 @@
 
 #include <QByteArray>
 #include <QJsonObject>
-#include <QList>
 #include <QString>
-#include <QStringList>
 
 #include <array>
 #include <optional>
 
+namespace mw::native {
+struct DisplayInfo;
+}
+
 /**
- * @brief A virtual display for a headless native host: the facts, the pinned
- * constants and the pure rules.
+ * @brief "MoonlightWeb Virtual Display": the screen this machine streams when
+ * it has none, or when the one it has is not the one to stream.
  *
- * ── Why this exists ─────────────────────────────────────────────────────────
+ * ── What it is ──────────────────────────────────────────────────────────────
  *
- * A PC installed through a TV and then left without a screen has nothing to
- * stream: the native host card used to vanish (ComputerManager) and the wizard
- * sent the owner to install Sunshine. The fix is a virtual display the admin
- * adds from the browser — on a machine that, by definition, nobody is sitting
- * at.
+ * A virtual display that belongs to MoonlightWeb, shown on the native host's
+ * card as one more app, named after itself. It is OFF by default: opening
+ * that card turns it on, makes it the primary display, streams it, and when
+ * the last stream on it ends it is turned off again and the previous primary
+ * display gets its role back. A PC with monitors keeps them; a headless PC —
+ * installed through a TV, then left without a screen — has exactly this one
+ * card to stream.
  *
- * ── Windows: a third-party signed driver, fetched on demand ────────────────
+ * ── Windows: a bundled, signed, third-party driver ─────────────────────────
  *
  * Windows has no virtual display of its own; an Indirect Display (IddCx)
  * driver is the only way, and one we write ourselves could not be signed by
  * this project's CI (Microsoft attestation needs an EV certificate). So the
  * driver is VirtualDrivers/Virtual-Display-Driver — MIT, SignPath-signed,
- * maintained — and it is NEVER bundled: the exact release asset is pinned by
- * URL and SHA-256 here, downloaded when the admin clicks, verified before a
- * byte touches the disk, and verified again by the elevated helper before
- * SetupAPI sees it. The same contract as the ViGEmBus install (GamepadDriver).
+ * maintained — shipped INSIDE the installer (backend/installer/drivers/vdd,
+ * three files, 270 KB) and pinned by SHA-256 here: the elevated helper
+ * re-hashes every file before SetupAPI sees it, and trusts the catalog's
+ * signer only for the duration of the install.
+ *
+ * The installer asks once (Skip / Accept, like the Internet page), creates a
+ * root-enumerated device node for the driver with the friendly name
+ * "MoonlightWeb Virtual Display", and disables it. That friendly name is what
+ * makes the node OURS: a "VDD by MTT" the owner installed before keeps its
+ * node, its settings and its monitor, we never touch them, and an update or a
+ * reinstall finds our node and creates no second one. Nothing in the app
+ * uninstalls it: only the MoonlightWeb uninstaller (or Device Manager) does.
  *
  * ── Elevation without anyone at the desk ───────────────────────────────────
  *
- * The production server runs unprivileged (logon task, LeastPrivilege). A UAC
- * prompt would appear on a desktop with no monitor attached, so the installer
+ * Enabling and disabling a device node needs administrator rights, and the
+ * production server runs unprivileged (logon task, LeastPrivilege). A UAC
+ * prompt would appear on a desktop nobody may be sitting at, so the installer
  * (which is elevated) registers a trigger-less task, RunLevel=HighestAvailable,
  * whose fixed action is OUR exe with `--vdisplay-apply`. The server writes a
  * request file holding parameters only — never a path to run — starts the
- * task, and reads the result file. This is the pattern of the "Update" task,
- * with one improvement: the command is the signed exe under Program Files,
- * not a file that was downloaded.
+ * task, and reads the result file. The pattern of the "Update" task, with one
+ * improvement: the command is the signed exe under Program Files.
  *
  * ── macOS: no driver at all ────────────────────────────────────────────────
  *
  * CoreGraphics can register a display from a process (the private
- * CGVirtualDisplay classes BetterDisplay and DeskPad are built on). The
- * server creates it itself, in-process, at the click — nothing downloaded,
- * nothing elevated — and again at every startup from the `virtual_display`
- * record, since the display lives only as long as the process holding it.
- * The seam is mw::native::vdisplay (native-host/include/mw/native/
- * VirtualDisplay.h); Linux Wayland will join it through the portal's VIRTUAL
- * source.
+ * CGVirtualDisplay classes BetterDisplay and DeskPad are built on). The card
+ * is always there; opening it creates the display in this process, makes it
+ * the main display, and the display goes away with the last stream. The seam
+ * is mw::native::vdisplay (native-host/include/mw/native/VirtualDisplay.h);
+ * Linux Wayland will join it through the portal's VIRTUAL source.
  *
- * ── Access ──────────────────────────────────────────────────────────────────
+ * ── The mode ────────────────────────────────────────────────────────────────
  *
- * Deliberately NOT the loopback-only rule of GamepadDriver::mayOffer: a
- * headless server is managed from another machine or there is no point. The
- * gate is the admin privilege (HttpRequest::isLocal — host machine, or a
- * session that unlocked the remote admin password, LAN or tunnel), one notch
- * stricter than /api/update/start which is merely session-authenticated.
+ * 1920×1080 at 120 Hz, SDR, on every platform: 120 Hz because the capture
+ * cadence is what bounds the latency, 1080p because every encoder on every
+ * bench carries it at that rate. A mode per client is a later strategy.
  *
- * Everything in this header that has no OS dependency (mayManage, the request
- * parser, the settings XML, the task name) is pure and covered by
+ * Everything in this header that has no OS dependency (the request parser,
+ * the settings XML, the names) is pure and covered by
  * tests/test_virtual_display.cpp on every platform.
  */
 namespace VirtualDisplay {
 
-// ── Pinned upstream asset (Windows x64) ────────────────────────────────────
+// ── Names ───────────────────────────────────────────────────────────────────
+
+/// What the display is called everywhere: the app card, the device node's
+/// friendly name in Device Manager, the macOS descriptor. Per edition, so a
+/// DEV install beside a PROD one has a node of its own: "MoonlightWeb Virtual
+/// Display", "MoonlightWebDev Virtual Display".
+QString displayNameFor(const QString& productName);
+QString displayName();
+
+/// The elevated task's name for an edition: "MoonlightWeb Virtual Display",
+/// "MoonlightWebDev Virtual Display", "MoonlightWeb-dev Virtual Display" for a
+/// --dev instance (which the installer never registers: --dev is a scratch
+/// instance and gets the manual path).
+QString taskNameFor(const QString& productName, bool devFlag);
+
+/// taskNameFor() for this process.
+QString taskName();
+
+/// The fixed argument the task runs our exe with.
+inline QString applyArgument()
+{
+    return QStringLiteral("--vdisplay-apply");
+}
+
+// ── The mode ────────────────────────────────────────────────────────────────
+
+constexpr int kWidth = 1920;
+constexpr int kHeight = 1080;
+constexpr int kRefreshHz = 120;
+
+// ── The bundled driver (Windows x64) ───────────────────────────────────────
 //
 // VirtualDrivers/Virtual-Display-Driver release 25.7.23, the bare driver
-// package (inf + cat + dll + a sample settings file), 132 KB. The "x86" in the
-// asset name is upstream's label for the x64 build (its INF is NTamd64).
-// Bumping the version means recomputing every hash below from the published
-// file; a URL bumped alone fails every install rather than trusting new bytes.
+// package (inf + cat + dll), as committed under backend/installer/drivers/vdd
+// and installed to {app}\drivers\vdd. Bumping the version means recomputing
+// every hash below from the published file; a file that does not match is
+// never handed to SetupAPI.
 
-inline QString downloadUrl()
-{
-    return QStringLiteral("https://github.com/VirtualDrivers/Virtual-Display-Driver/releases/"
-                          "download/25.7.23/VirtualDisplayDriver-x86.Driver.Only.zip");
-}
-
-/// SHA-256 of the zip, lowercase hex — matches GitHub's published digest.
-inline QString downloadSha256()
-{
-    return QStringLiteral("e24210692b442b39af763536330ce78b423f19342b7a7792c26de3944e418b3a");
-}
-
-/// One file of the package as it must be found after extraction.
+/// One file of the package as it must be found next to the exe.
 struct DriverFile
 {
-    const char* name;   ///< path inside the zip
+    const char* name;   ///< file name under bundledDriverDir()
     const char* sha256; ///< lowercase hex
-    bool required;      ///< the install refuses without it
 };
 
-/// The three files SetupAPI consumes. The sample vdd_settings.xml in the zip is
-/// not listed: it is replaced by ours (settingsXml) and never trusted.
+/// The three files SetupAPI consumes.
 inline const std::array<DriverFile, 3>& driverFiles()
 {
     static const std::array<DriverFile, 3> files = {{
-        {"VirtualDisplayDriver/MttVDD.inf",
-         "550d211fe481e74dfe3f9d724ed78be48b3a9113405965d683d9373e8d672f5d", true},
-        {"VirtualDisplayDriver/mttvdd.cat",
-         "08a0093fc9b2e32b287a6f8a77ca4de0a31830d29fc33d2b13a918dc859468f6", true},
-        {"VirtualDisplayDriver/MttVDD.dll",
-         "c9ca837f57a98fbd43bc416a7f535a95843626e7759eaf85cf0cd7ce334dbb05", true},
+        {"MttVDD.inf", "550d211fe481e74dfe3f9d724ed78be48b3a9113405965d683d9373e8d672f5d"},
+        {"mttvdd.cat", "08a0093fc9b2e32b287a6f8a77ca4de0a31830d29fc33d2b13a918dc859468f6"},
+        {"MttVDD.dll", "c9ca837f57a98fbd43bc416a7f535a95843626e7759eaf85cf0cd7ce334dbb05"},
     }};
     return files;
 }
@@ -147,48 +168,16 @@ inline QString catalogSignerThumbprint()
 }
 
 /// Where the driver reads its configuration (fixed by the driver, not by us).
+/// Shared by every instance of the driver on the machine — which is why a
+/// file already there (the owner's own VDD) is left exactly as it is.
 inline QString settingsXmlPath()
 {
     return QStringLiteral("C:/VirtualDisplayDriver/vdd_settings.xml");
 }
 
-// ── Presets ─────────────────────────────────────────────────────────────────
-
-struct Preset
-{
-    int width;
-    int height;
-};
-
-inline const std::array<Preset, 4>& resolutionPresets()
-{
-    static const std::array<Preset, 4> p = {
-        {{1280, 720}, {1920, 1080}, {2560, 1440}, {3840, 2160}}};
-    return p;
-}
-
-inline const std::array<int, 3>& refreshPresets()
-{
-    static const std::array<int, 3> r = {{60, 90, 120}};
-    return r;
-}
-
-// ── Task naming ─────────────────────────────────────────────────────────────
-
-/// The elevated task's name for an edition: "MoonlightWeb Virtual Display",
-/// "MoonlightWebDev Virtual Display", "MoonlightWeb-dev Virtual Display" for a
-/// --dev instance (which the installer never registers: --dev is a scratch
-/// instance and gets the manual path).
-QString taskNameFor(const QString& productName, bool devFlag);
-
-/// taskNameFor() for this process.
-QString taskName();
-
-/// The fixed argument the task runs our exe with.
-inline QString applyArgument()
-{
-    return QStringLiteral("--vdisplay-apply");
-}
+/// The driver files as the installer laid them out: {app}\drivers\vdd. Derived
+/// from the exe's own location, never from a request.
+QString bundledDriverDir();
 
 // ── Request / result files ──────────────────────────────────────────────────
 
@@ -196,22 +185,23 @@ struct Request
 {
     enum class Action
     {
-        Add,
-        Remove
+        Install,    ///< installer: create our node, disabled (no-op if there)
+        Uninstall,  ///< uninstaller: remove our node, the package if unused
+        Activate,   ///< a stream starts: enable, set the mode, make primary
+        Deactivate, ///< the last stream ended: restore the primary, disable
     };
-    Action action = Action::Add;
-    int width = 1920;
-    int height = 1080;
-    int refresh = 60;
-    bool hdr = false;
-    QString gpu; ///< adapter friendly name, empty = the driver's default
+    Action action = Action::Activate;
+    /// Deactivate: the display to make primary again, as Activate reported
+    /// it (Result::previousPrimary). Empty: leave the choice to the OS.
+    QString restorePrimary;
 };
 
-/// Parse and validate a request. Only the presets are accepted: the file is
-/// read by an elevated process, so its contents are a set of choices, not
+/// Parse and validate a request. The file is read by an elevated process, so
+/// its contents are a choice among four verbs and one display key, never
 /// free-form input. Returns nullopt with @p error filled on any deviation.
 std::optional<Request> parseRequest(const QByteArray& json, QString* error);
 QByteArray toJson(const Request& req);
+QString toString(Request::Action action);
 
 struct Result
 {
@@ -220,6 +210,10 @@ struct Result
     QString error; ///< English, for the log and the dialog
     bool rebootRequired = false;
     QString display; ///< GDI name of the display that came up ("\\.\DISPLAY3")
+    /// Activate: the display that was primary before ours took the role — the
+    /// monitor device path on Windows, the CG display id on macOS. Handed
+    /// back on Deactivate as Request::restorePrimary.
+    QString previousPrimary;
 };
 
 /// Tolerant of an empty or partial file: the server polls while the helper is
@@ -227,10 +221,10 @@ struct Result
 std::optional<Result> parseResult(const QByteArray& json);
 QByteArray toJson(const Result& res);
 
-/// The driver's vdd_settings.xml for one request: a single monitor, the chosen
-/// mode first (the driver picks the first as default), every preset after it
-/// so a later mode change never needs the driver reloaded, HDR on request.
-QString settingsXml(const Request& req);
+/// The driver's vdd_settings.xml, written only when none exists: a single
+/// monitor, our mode first (the driver picks the first as default), the
+/// common sizes after it, SDR.
+QString settingsXml();
 
 // ── Paths ───────────────────────────────────────────────────────────────────
 
@@ -239,56 +233,37 @@ QString settingsXml(const Request& req);
 QString stagingDir();
 QString requestPath();
 QString resultPath();
-QString driverDir();
-QString archivePath();
 
 // ── Status ──────────────────────────────────────────────────────────────────
 
-struct Gpu
-{
-    int id = -1;
-    QString name;
-};
-
-struct ActiveDisplay
-{
-    int id = -1;
-    QString label;
-    int width = 0;
-    int height = 0;
-    int refreshMilliHz = 0;
-    bool hdrActive = false;
-};
-
 struct Status
 {
-    bool supported = false;  ///< this platform can have a virtual display added
-    bool installed = false;  ///< the driver's device node exists
-    bool active = false;     ///< a virtual display is in the probe's list
-    bool canInstall = false; ///< an elevation path exists (see method)
-    QString method;          ///< "task" | "elevated" | "inprocess" (macOS) | ""
-    bool osHdrCapable = false;
-    QList<ActiveDisplay> activeDisplays;
-    QList<Gpu> gpus;
+    bool supported = false; ///< this platform can have our virtual display
+    bool installed = false; ///< Windows: our device node exists; macOS: always
+    bool enabled = false;   ///< Windows: the node is enabled; macOS: created
+    bool active = false;    ///< our display is in the probe's list right now
+    bool canManage = false; ///< an elevation path exists (see method)
+    QString method;         ///< "task" | "elevated" | "inprocess" (macOS) | ""
 };
-
-/// The one access rule, pure so it is tested without a driver or a socket:
-/// the caller holds the admin privilege and the platform supports the feature.
-inline bool mayManage(bool adminPrivilege, const Status& status)
-{
-    return adminPrivilege && status.supported;
-}
 
 /// Probe everything. Cheap except for the Task Scheduler lookup, which is
 /// cached for a while — nothing there changes without an install.
 Status probe();
 
-/// Serialise for the REST API. @p admin adds the parts that describe the
-/// machine (paths, GPUs, elevation) — a remote viewer gets availability only.
-QJsonObject toJson(const Status& st, bool admin);
+/// Serialise for the REST API and the host card.
+QJsonObject toJson(const Status& st);
 
-/// Windows: does the driver's device node exist right now?
-bool driverPresent();
+/// Is this display, as the engine enumerated it, OUR virtual display? Windows:
+/// the monitor hanging off our device node; macOS: the display this process
+/// created. Never true for another virtual display (the owner's own VDD, a
+/// dummy plug), which stays an ordinary "Display N".
+bool isOurs(const mw::native::DisplayInfo& display);
+
+/// Windows: does our device node exist right now? (disabled counts)
+bool nodePresent();
+
+/// Windows: is our device node enabled?
+bool nodeEnabled();
 
 /// Windows: is the process token elevated?
 bool processElevated();
@@ -296,17 +271,19 @@ bool processElevated();
 // ── The in-process display (macOS) ─────────────────────────────────────────
 //
 // On macOS the display is not a driver but an object this process holds
-// (mw::native::vdisplay, CoreGraphics' virtual display): no download, no
-// elevation, no helper — Status::method is "inprocess" and the job applies
-// the request right here. The display vanishes with the process, which is
-// why it is re-created at startup from the `virtual_display` record.
+// (mw::native::vdisplay, CoreGraphics' virtual display): no elevation, no
+// helper — Status::method is "inprocess" and the job applies the request
+// right here.
 
-/// Create (Add) or release (Remove) the process' display. Synchronous; the
-/// display may still be coming online when this returns (the job polls).
+/// Activate (create + make main) or Deactivate (restore main + release).
+/// Synchronous; the display may still be coming online when this returns
+/// (the job polls).
 bool applyInProcess(const Request& req, Result* result);
 
-/// At startup: re-create the display the admin added, from AppSettings.
-/// No-op where the display is a driver (Windows) or unsupported.
-void restoreAtStartup();
+/// At startup: put the display back in its off state if the previous process
+/// left it on (killed mid-stream). Windows: disable the node and restore the
+/// remembered primary. macOS: nothing to do — the display died with the
+/// process — beyond forgetting the record.
+void resetAtStartup();
 
 } // namespace VirtualDisplay

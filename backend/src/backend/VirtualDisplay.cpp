@@ -17,6 +17,7 @@
 
 #include "backend/VirtualDisplay.h"
 
+#include "backend/VirtualDisplayJob.h"
 #include "backend/streambackend/NativeProbeService.h"
 #include "common/Edition.h"
 #include "common/Logger.h"
@@ -71,87 +72,36 @@ QString resultPath()
     return stagingDir() + QStringLiteral("/result.json");
 }
 
-QString driverDir()
+QString bundledDriverDir()
 {
-    return stagingDir() + QStringLiteral("/driver");
-}
-
-QString archivePath()
-{
-    return stagingDir() + QStringLiteral("/driver.zip");
+    return QCoreApplication::applicationDirPath() + QStringLiteral("/drivers/vdd");
 }
 
 // ── Status ──────────────────────────────────────────────────────────────────
 
-namespace {
-
-/// The virtual displays the engine sees right now, whatever made them: the
-/// Windows driver's monitor, this process' CoreGraphics display, a dummy plug.
-void collectActiveDisplays(Status& st, const mw::native::Capabilities& caps)
-{
-    for (const mw::native::DisplayInfo& d : caps.displays) {
-        if (d.kind != mw::native::DisplayKind::Virtual) continue;
-        ActiveDisplay a;
-        a.id = d.id;
-        a.label = QString::fromStdString(d.label);
-        a.width = d.width;
-        a.height = d.height;
-        a.refreshMilliHz = d.refreshMilliHz;
-        a.hdrActive = d.hdrActive;
-        st.activeDisplays.append(a);
-    }
-    st.active = !st.activeDisplays.isEmpty();
-}
-
-} // namespace
-
-QJsonObject toJson(const Status& st, bool admin)
+QJsonObject toJson(const Status& st)
 {
     QJsonObject obj;
     obj["supported"] = st.supported;
     obj["installed"] = st.installed;
+    obj["enabled"] = st.enabled;
     obj["active"] = st.active;
-    if (!admin) return obj;
-
-    obj["can_install"] = st.canInstall;
+    obj["can_manage"] = st.canManage;
     obj["method"] = st.method;
-    obj["download_url"] = downloadUrl();
-    obj["os_hdr_capable"] = st.osHdrCapable;
-
-    QJsonArray displays;
-    for (const ActiveDisplay& d : st.activeDisplays) {
-        QJsonObject o;
-        o["id"] = d.id;
-        o["label"] = d.label;
-        o["width"] = d.width;
-        o["height"] = d.height;
-        o["refresh_mhz"] = d.refreshMilliHz;
-        o["hdr_active"] = d.hdrActive;
-        displays.append(o);
-    }
-    obj["active_displays"] = displays;
-
-    QJsonArray gpus;
-    for (const Gpu& g : st.gpus) {
-        QJsonObject o;
-        o["id"] = g.id;
-        o["name"] = g.name;
-        gpus.append(o);
-    }
-    obj["gpus"] = gpus;
-
-    QJsonObject presets;
-    QJsonArray res;
-    for (const Preset& p : resolutionPresets())
-        res.append(QJsonArray{p.width, p.height});
-    QJsonArray hz;
-    for (int r : refreshPresets())
-        hz.append(r);
-    presets["resolutions"] = res;
-    presets["refresh"] = hz;
-    obj["presets"] = presets;
+    obj["name"] = displayName();
     return obj;
 }
+
+namespace {
+
+bool anyOurs(const mw::native::Capabilities& caps)
+{
+    for (const mw::native::DisplayInfo& d : caps.displays)
+        if (isOurs(d)) return true;
+    return false;
+}
+
+} // namespace
 
 #ifdef Q_OS_WIN
 
@@ -274,56 +224,119 @@ QString installMethod()
     return cached;
 }
 
-bool osHdrCapable()
+/// A registry property of a devnode, as a string (REG_SZ; the first string
+/// of a REG_MULTI_SZ). Empty when absent.
+QString devnodeProperty(DEVINST inst, ULONG property)
 {
-    // HDR on a virtual display needs IddCx 1.10 (Windows 11 23H2, build 22631).
-    using RtlGetVersionFn = LONG(WINAPI*)(PRTL_OSVERSIONINFOW);
-    const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
-    if (!ntdll) return false;
-    const auto fn = reinterpret_cast<RtlGetVersionFn>(GetProcAddress(ntdll, "RtlGetVersion"));
-    if (!fn) return false;
-    RTL_OSVERSIONINFOW v{};
-    v.dwOSVersionInfoSize = sizeof(v);
-    if (fn(&v) != 0) return false;
-    return v.dwBuildNumber >= 22631;
+    ULONG size = 0;
+    if (CM_Get_DevNode_Registry_PropertyW(inst, property, nullptr, nullptr, &size, 0) !=
+            CR_BUFFER_SMALL ||
+        size == 0)
+        return QString();
+    std::vector<wchar_t> buf(size / sizeof(wchar_t) + 1, 0);
+    if (CM_Get_DevNode_Registry_PropertyW(inst, property, nullptr, buf.data(), &size, 0) !=
+        CR_SUCCESS)
+        return QString();
+    return QString::fromWCharArray(buf.data());
+}
+
+bool hasHardwareId(DEVINST inst, const QString& wanted)
+{
+    ULONG size = 0;
+    if (CM_Get_DevNode_Registry_PropertyW(inst, CM_DRP_HARDWAREID, nullptr, nullptr, &size, 0) !=
+            CR_BUFFER_SMALL ||
+        size == 0)
+        return false;
+    std::vector<wchar_t> ids(size / sizeof(wchar_t) + 1, 0);
+    if (CM_Get_DevNode_Registry_PropertyW(inst, CM_DRP_HARDWAREID, nullptr, ids.data(), &size,
+                                          0) != CR_SUCCESS)
+        return false;
+    for (const wchar_t* h = ids.data(); *h; h += wcslen(h) + 1)
+        if (QString::fromWCharArray(h).compare(wanted, Qt::CaseInsensitive) == 0) return true;
+    return false;
+}
+
+/// Our device node, asked of the configuration manager: a root-enumerated
+/// node with the driver's hardware id AND our friendly name. The owner's own
+/// VDD has the first and not the second. Disabled nodes count (the normal
+/// state of ours); a driver package left in the store without a node (after
+/// an uninstall) does not.
+std::optional<DEVINST> ourNode()
+{
+    ULONG len = 0;
+    if (CM_Get_Device_ID_List_SizeW(&len, L"ROOT", CM_GETIDLIST_FILTER_ENUMERATOR) != CR_SUCCESS ||
+        len == 0)
+        return std::nullopt;
+    std::vector<wchar_t> buf(len);
+    if (CM_Get_Device_ID_ListW(L"ROOT", buf.data(), len, CM_GETIDLIST_FILTER_ENUMERATOR) !=
+        CR_SUCCESS)
+        return std::nullopt;
+
+    const QString wantedName = displayName();
+    for (const wchar_t* id = buf.data(); *id; id += wcslen(id) + 1) {
+        DEVINST inst = 0;
+        // Phantom devnodes too: a disabled node is still present, but the
+        // flag costs nothing and a node Windows has not started yet is ours
+        // just the same.
+        if (CM_Locate_DevNodeW(&inst, const_cast<DEVINSTID_W>(id), CM_LOCATE_DEVNODE_PHANTOM) !=
+            CR_SUCCESS)
+            continue;
+        if (!hasHardwareId(inst, hardwareId())) continue;
+        if (devnodeProperty(inst, CM_DRP_FRIENDLYNAME).compare(wantedName, Qt::CaseInsensitive) ==
+            0)
+            return inst;
+    }
+    return std::nullopt;
+}
+
+/// The monitor device ids hanging off our node ("DISPLAY\MTT1337\1&15ecd195&0&
+/// UID256"), spelled the way a monitor device PATH spells them: '\' → '#',
+/// lower case — so a probe key ("\\?\DISPLAY#MTT1337#1&15ecd195&0&UID256#{…}")
+/// can be matched by substring. Empty while the node is disabled: a stopped
+/// driver has no children.
+QStringList ourMonitorIds()
+{
+    QStringList out;
+    const auto node = ourNode();
+    if (!node) return out;
+    DEVINST child = 0;
+    if (CM_Get_Child(&child, *node, 0) != CR_SUCCESS) return out;
+    for (;;) {
+        wchar_t id[MAX_DEVICE_ID_LEN] = {};
+        if (CM_Get_Device_IDW(child, id, MAX_DEVICE_ID_LEN, 0) == CR_SUCCESS) {
+            QString s = QString::fromWCharArray(id).toLower();
+            s.replace(QLatin1Char('\\'), QLatin1Char('#'));
+            out.append(s);
+        }
+        DEVINST sibling = 0;
+        if (CM_Get_Sibling(&sibling, child, 0) != CR_SUCCESS) break;
+        child = sibling;
+    }
+    return out;
 }
 
 } // namespace
 
-bool driverPresent()
+bool nodePresent()
 {
-    // The device node, asked of the configuration manager: a driver package
-    // left in the store without its node (the state after "remove") does not
-    // count, and neither does a registry key that outlived an uninstall.
-    const std::wstring filter = hardwareId().toStdWString();
-    ULONG len = 0;
-    // Enumerate the root-enumerated devices, then match the hardware id
-    // ourselves: the configuration manager filters by enumerator, not by id.
-    if (CM_Get_Device_ID_List_SizeW(&len, L"ROOT", CM_GETIDLIST_FILTER_ENUMERATOR) != CR_SUCCESS ||
-        len == 0)
-        return false;
-    std::vector<wchar_t> buf(len);
-    if (CM_Get_Device_ID_ListW(L"ROOT", buf.data(), len, CM_GETIDLIST_FILTER_ENUMERATOR) !=
-        CR_SUCCESS)
-        return false;
+    return ourNode().has_value();
+}
 
-    for (const wchar_t* id = buf.data(); *id; id += wcslen(id) + 1) {
-        DEVINST inst = 0;
-        if (CM_Locate_DevNodeW(&inst, const_cast<DEVINSTID_W>(id), CM_LOCATE_DEVNODE_NORMAL) !=
-            CR_SUCCESS)
-            continue;
-        ULONG size = 0;
-        if (CM_Get_DevNode_Registry_PropertyW(inst, CM_DRP_HARDWAREID, nullptr, nullptr, &size,
-                                              0) != CR_BUFFER_SMALL ||
-            size == 0)
-            continue;
-        std::vector<wchar_t> ids(size / sizeof(wchar_t) + 1, 0);
-        if (CM_Get_DevNode_Registry_PropertyW(inst, CM_DRP_HARDWAREID, nullptr, ids.data(), &size,
-                                              0) != CR_SUCCESS)
-            continue;
-        for (const wchar_t* h = ids.data(); *h; h += wcslen(h) + 1)
-            if (_wcsicmp(h, filter.c_str()) == 0) return true;
-    }
+bool nodeEnabled()
+{
+    const auto node = ourNode();
+    if (!node) return false;
+    ULONG status = 0, problem = 0;
+    if (CM_Get_DevNode_Status(&status, &problem, *node, 0) != CR_SUCCESS) return false;
+    return !((status & DN_HAS_PROBLEM) && problem == CM_PROB_DISABLED);
+}
+
+bool isOurs(const mw::native::DisplayInfo& display)
+{
+    if (display.kind != mw::native::DisplayKind::Virtual) return false;
+    const QString key = QString::fromStdString(display.key).toLower();
+    for (const QString& id : ourMonitorIds())
+        if (key.contains(id)) return true;
     return false;
 }
 
@@ -348,34 +361,47 @@ Status probe()
     return st;
 #else
     st.supported = true;
-    st.installed = driverPresent();
+    st.installed = nodePresent();
+    st.enabled = st.installed && nodeEnabled();
     st.method = installMethod();
-    st.canInstall = !st.method.isEmpty();
-    st.osHdrCapable = osHdrCapable();
-    const mw::native::Capabilities caps = NativeProbeService::instance().snapshot();
-    collectActiveDisplays(st, caps);
-    for (const mw::native::GpuInfo& g : caps.gpus) {
-        Gpu gpu;
-        gpu.id = g.id;
-        gpu.name = QString::fromStdString(g.name);
-        // Every indirect display driver present (Parsec, this one) makes DXGI
-        // list each real adapter once more under the same name. The driver
-        // picks its GPU by name, so one entry per name is the honest list.
-        bool seen = false;
-        for (const Gpu& have : st.gpus)
-            if (have.name == gpu.name) seen = true;
-        if (!seen) st.gpus.append(gpu);
-    }
+    st.canManage = !st.method.isEmpty();
+    st.active = st.enabled && anyOurs(NativeProbeService::instance().snapshot());
     return st;
 #endif
 }
 
+bool applyInProcess(const Request& req, Result* result)
+{
+    Q_UNUSED(req);
+    Result res;
+    res.stage = QStringLiteral("driver");
+    res.error = QStringLiteral("the virtual display is a driver on Windows, not an object");
+    if (result) *result = res;
+    return false;
+}
+
+void resetAtStartup()
+{
+    // Killed mid-stream, the previous process left the node enabled and the
+    // desktop on our display. Put both back — through the same elevated path
+    // a stream's end takes, with the primary the record remembers.
+    if (!nodePresent() || !nodeEnabled()) {
+        AppSettings().clearVirtualDisplay();
+        return;
+    }
+    Logger::info(QStringLiteral("[vdisplay] the virtual display was left on — turning it off"));
+    VirtualDisplayJob::instance().deactivate(nullptr);
+}
+
 #else // macOS: the engine's own display (mw::native::vdisplay); Linux: step 3
 
-bool driverPresent()
+bool nodePresent()
 {
-    // No driver anywhere but Windows. "Installed" here means "this process
-    // holds a virtual display": that is what the kebab's Add/Remove follows.
+    return mw::native::vdisplay::isSupported();
+}
+
+bool nodeEnabled()
+{
     return mw::native::vdisplay::isActive();
 }
 
@@ -384,75 +410,86 @@ bool processElevated()
     return false;
 }
 
+bool isOurs(const mw::native::DisplayInfo& display)
+{
+    // The display this process created carries the name it was created
+    // with, and AppKit hands that name back as the screen's own.
+    if (display.kind != mw::native::DisplayKind::Virtual) return false;
+    if (!mw::native::vdisplay::isActive()) return false;
+    return QString::fromStdString(display.model).compare(displayName(), Qt::CaseInsensitive) == 0;
+}
+
 Status probe()
 {
     Status st;
     st.supported = mw::native::vdisplay::isSupported();
     if (!st.supported) return st;
-    st.installed = mw::native::vdisplay::isActive();
+    st.installed = true;
+    st.enabled = mw::native::vdisplay::isActive();
     st.method = QStringLiteral("inprocess");
-    st.canInstall = true;
-    // No HDR on the in-process display yet: CoreGraphics exposes no switch
-    // for it that this code trusts, and an HDR that is not measured on a
-    // real Mac is not offered (the dialog hides the box).
-    st.osHdrCapable = false;
-    collectActiveDisplays(st, NativeProbeService::instance().snapshot());
+    st.canManage = true;
+    st.active = st.enabled && anyOurs(NativeProbeService::instance().snapshot());
     return st;
 }
-
-#endif
-
-// ── The in-process display (macOS) ─────────────────────────────────────────
 
 bool applyInProcess(const Request& req, Result* result)
 {
     Result res;
     res.stage = QStringLiteral("mode");
-    if (req.action == Request::Action::Remove) {
+    switch (req.action) {
+    case Request::Action::Install:
+    case Request::Action::Uninstall:
+        // Nothing to install: the display is conjured at activation.
+        res.ok = true;
+        res.stage = QStringLiteral("done");
+        break;
+    case Request::Action::Deactivate: {
+        // The previous main display first, while ours still exists — the OS
+        // would otherwise pick one itself — then the release.
+        bool okRestore = true;
+        const uint32_t previous = req.restorePrimary.toUInt(&okRestore);
+        if (okRestore && previous != 0 && mw::native::vdisplay::isActive()) {
+            std::string error;
+            if (!mw::native::vdisplay::setMain(previous, &error))
+                Logger::warning(QStringLiteral("[vdisplay] could not restore the main display: %1")
+                                    .arg(QString::fromStdString(error)));
+        }
         mw::native::vdisplay::destroy();
         res.ok = true;
         res.stage = QStringLiteral("done");
-    } else {
+        break;
+    }
+    case Request::Action::Activate: {
+        if (mw::native::vdisplay::isActive()) {
+            res.ok = true;
+            res.display = QStringLiteral("display %1").arg(mw::native::vdisplay::displayId());
+            break;
+        }
         mw::native::vdisplay::Spec spec;
-        spec.width = req.width;
-        spec.height = req.height;
-        spec.refreshHz = req.refresh;
+        spec.width = kWidth;
+        spec.height = kHeight;
+        spec.refreshHz = kRefreshHz;
+        spec.name = displayName().toStdString();
+        res.previousPrimary = QString::number(mw::native::vdisplay::mainDisplay());
         std::string error;
         res.ok = mw::native::vdisplay::create(spec, &error);
-        if (res.ok) {
-            res.stage = QStringLiteral("done");
+        if (res.ok)
             res.display = QStringLiteral("display %1").arg(mw::native::vdisplay::displayId());
-            if (req.hdr)
-                Logger::info(QStringLiteral(
-                    "[vdisplay] HDR requested on the in-process display: not supported, ignored"));
-        } else {
+        else
             res.error = QString::fromStdString(error);
-        }
+        break;
+    }
     }
     if (result) *result = res;
     return res.ok;
 }
 
-void restoreAtStartup()
+void resetAtStartup()
 {
-    // The display went away with the last process; the admin's choice did
-    // not. Windows needs nothing here: its driver's device node persists.
-    if (!mw::native::vdisplay::isSupported()) return;
-    const QJsonObject rec = AppSettings().virtualDisplay();
-    if (!rec.value(QLatin1String("added")).toBool()) return;
-    Request req;
-    req.width = rec.value(QLatin1String("width")).toInt(req.width);
-    req.height = rec.value(QLatin1String("height")).toInt(req.height);
-    req.refresh = rec.value(QLatin1String("refresh")).toInt(req.refresh);
-    Result res;
-    if (applyInProcess(req, &res))
-        Logger::info(QStringLiteral("[vdisplay] restored the virtual display: %1x%2 @ %3 Hz")
-                         .arg(req.width)
-                         .arg(req.height)
-                         .arg(req.refresh));
-    else
-        Logger::warning(
-            QStringLiteral("[vdisplay] could not restore the virtual display: %1").arg(res.error));
+    // The display died with the previous process; only its record is left.
+    AppSettings().clearVirtualDisplay();
 }
+
+#endif
 
 } // namespace VirtualDisplay

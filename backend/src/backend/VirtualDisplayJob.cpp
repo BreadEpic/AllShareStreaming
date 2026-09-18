@@ -24,33 +24,29 @@
 #include "streaming/ConsoleSession.h"
 
 #include <QCoreApplication>
-#include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
-#include <QNetworkAccessManager>
-#include <QNetworkReply>
-#include <QNetworkRequest>
 #include <QProcess>
-#include <QUrl>
 
 namespace {
 
-constexpr int kTransferTimeoutMs = 60 * 1000;
-constexpr int kExtractTimeoutMs = 60 * 1000;
-constexpr int kHelperTimeoutMs = 5 * 60 * 1000;
-constexpr int kPollIntervalMs = 500;
+constexpr int kHelperTimeoutMs = 2 * 60 * 1000;
+constexpr int kPollIntervalMs = 250;
 /// How long the OS may take to bring an in-process display online.
 constexpr int kOnlineTimeoutMs = 15 * 1000;
+/// The grace between the last stream's end and the display going off: long
+/// enough for a reload or a quality switch to come back, short enough that
+/// the desktop is not left on a screen nobody looks at.
+constexpr int kReleaseGraceMs = 4 * 1000;
+
+using Action = VirtualDisplay::Request::Action;
 
 const char* stateName(VirtualDisplayJob::State s)
 {
     switch (s) {
     case VirtualDisplayJob::State::Idle: return "idle";
-    case VirtualDisplayJob::State::Downloading: return "downloading";
-    case VirtualDisplayJob::State::Verifying: return "verifying";
-    case VirtualDisplayJob::State::Staging: return "staging";
     case VirtualDisplayJob::State::Elevating: return "elevating";
-    case VirtualDisplayJob::State::Installing: return "installing";
+    case VirtualDisplayJob::State::Applying: return "applying";
     case VirtualDisplayJob::State::Configuring: return "configuring";
     case VirtualDisplayJob::State::Refreshing: return "refreshing";
     case VirtualDisplayJob::State::Done: return "done";
@@ -59,37 +55,11 @@ const char* stateName(VirtualDisplayJob::State s)
     return "idle";
 }
 
-/// The pinned URL is a constant, but the rule that a driver only ever comes
-/// from GitHub is worth stating where the download happens (UpdateChecker
-/// keeps the same rule for the update relay).
-bool isGitHubUrl(const QUrl& u)
-{
-    if (u.scheme() != QLatin1String("https")) return false;
-    const QString host = u.host().toLower();
-    return host == QLatin1String("github.com") || host.endsWith(QLatin1String(".github.com")) ||
-           host == QLatin1String("objects.githubusercontent.com") ||
-           host.endsWith(QLatin1String(".githubusercontent.com"));
-}
-
-QString sha256Hex(const QByteArray& data)
-{
-    return QString::fromLatin1(QCryptographicHash::hash(data, QCryptographicHash::Sha256).toHex());
-}
-
 /// The helper's verdict is its last stdout line; anything before it is noise.
 QByteArray lastLine(const QByteArray& out)
 {
     const QList<QByteArray> lines = out.trimmed().split('\n');
     return lines.isEmpty() ? QByteArray() : lines.last().trimmed();
-}
-
-QString fileSha256(const QString& path)
-{
-    QFile f(path);
-    if (!f.open(QIODevice::ReadOnly)) return QString();
-    QCryptographicHash h(QCryptographicHash::Sha256);
-    if (!h.addData(&f)) return QString();
-    return QString::fromLatin1(h.result().toHex());
 }
 
 } // namespace
@@ -116,6 +86,12 @@ VirtualDisplayJob::VirtualDisplayJob(QObject* parent)
         }
         fail(QStringLiteral("The elevated helper did not answer in time"));
     });
+    m_Release.setSingleShot(true);
+    m_Release.setInterval(kReleaseGraceMs);
+    connect(&m_Release, &QTimer::timeout, this, [this]() {
+        Logger::info(QStringLiteral("[vdisplay] no stream left on the virtual display"));
+        deactivate(nullptr);
+    });
 }
 
 bool VirtualDisplayJob::running() const
@@ -133,60 +109,128 @@ QJsonObject VirtualDisplayJob::statusJson() const
 {
     QJsonObject obj;
     obj["state"] = QLatin1String(stateName(m_State));
-    obj["action"] = m_Request.action == VirtualDisplay::Request::Action::Add
-                        ? QStringLiteral("add")
-                        : QStringLiteral("remove");
+    obj["action"] = VirtualDisplay::toString(m_Request.action);
     if (m_StartedAt.isValid()) obj["started_at"] = m_StartedAt.toString(Qt::ISODate);
     if (m_FinishedAt.isValid()) obj["finished_at"] = m_FinishedAt.toString(Qt::ISODate);
     if (m_State == State::Failed) obj["error"] = m_Error;
-    if (m_State == State::Done) {
-        obj["reboot_required"] = m_RebootRequired;
-        if (!m_Display.isEmpty()) obj["display"] = m_Display;
-    }
+    if (m_State == State::Done && !m_Display.isEmpty()) obj["display"] = m_Display;
     return obj;
 }
 
-QString VirtualDisplayJob::start(const VirtualDisplay::Request& req)
+// ── Entry points ────────────────────────────────────────────────────────────
+
+void VirtualDisplayJob::activate(Callback cb)
 {
-    if (running()) return QStringLiteral("A virtual display operation is already running");
+    m_Release.stop();
+    // Already on and seen by the engine: nothing to wait for. (A running
+    // operation is asked first — its outcome is what the caller wants.)
+    if (!running() && m_Queue.isEmpty()) {
+        const VirtualDisplay::Status st = VirtualDisplay::probe();
+        if (!st.supported) {
+            if (cb) cb(false, QStringLiteral("Virtual displays are not supported on this platform"));
+            return;
+        }
+        if (!st.installed) {
+            if (cb)
+                cb(false, QStringLiteral("\"%1\" is not installed on this machine")
+                              .arg(VirtualDisplay::displayName()));
+            return;
+        }
+        if (st.active) {
+            if (cb) cb(true, QString());
+            return;
+        }
+    }
+    enqueue(Action::Activate, std::move(cb));
+}
 
-    const VirtualDisplay::Status st = VirtualDisplay::probe();
-    if (!st.supported) return QStringLiteral("Virtual displays are not supported on this platform");
-    if (!st.canInstall)
-        return QStringLiteral("No way to elevate on this install — add the driver by hand from %1")
-            .arg(VirtualDisplay::downloadUrl());
-    if (req.action == VirtualDisplay::Request::Action::Remove && !st.installed)
-        return QStringLiteral("No virtual display driver is installed");
+void VirtualDisplayJob::deactivate(Callback cb)
+{
+    m_Release.stop();
+    if (!running() && m_Queue.isEmpty()) {
+        const VirtualDisplay::Status st = VirtualDisplay::probe();
+        if (!st.supported || !st.installed || !st.enabled) {
+            AppSettings().clearVirtualDisplay();
+            if (cb) cb(true, QString());
+            return;
+        }
+    }
+    enqueue(Action::Deactivate, std::move(cb));
+}
 
-    m_Request = req;
+void VirtualDisplayJob::releaseSoon()
+{
+    m_Release.start();
+}
+
+void VirtualDisplayJob::enqueue(Action action, Callback cb)
+{
+    // The same verb as the running or last queued operation: join it.
+    if (running() && m_Request.action == action && m_Queue.isEmpty()) {
+        if (cb) m_Callbacks.append(std::move(cb));
+        return;
+    }
+    if (!m_Queue.isEmpty() && m_Queue.last().action == action) {
+        if (cb) {
+            Callback prev = m_Queue.last().cb;
+            m_Queue.last().cb = [prev, cb](bool ok, const QString& err) {
+                if (prev) prev(ok, err);
+                cb(ok, err);
+            };
+        }
+        return;
+    }
+    m_Queue.append(Pending{action, std::move(cb)});
+    if (!running()) startNext();
+}
+
+void VirtualDisplayJob::startNext()
+{
+    if (m_Queue.isEmpty()) return;
+    Pending next = m_Queue.takeFirst();
+    m_Request = VirtualDisplay::Request{};
+    m_Request.action = next.action;
+    m_Callbacks.clear();
+    if (next.cb) m_Callbacks.append(std::move(next.cb));
     m_Error.clear();
-    m_RebootRequired = false;
     m_Display.clear();
     m_StartedAt = QDateTime::currentDateTimeUtc();
     m_FinishedAt = QDateTime();
     m_HelperOut.clear();
-    m_ModeStagePending = false;
+    m_NextStage.reset();
     m_InProcessResult.reset();
 
+    const VirtualDisplay::Status st = VirtualDisplay::probe();
+    if (!st.supported) {
+        fail(QStringLiteral("Virtual displays are not supported on this platform"));
+        return;
+    }
+    if (!st.canManage) {
+        fail(QStringLiteral("No way to elevate on this install — the installer's task is missing"));
+        return;
+    }
+    if (m_Request.action == Action::Deactivate) {
+        // The display to give the primary role back to, as Activate saw it.
+        m_Request.restorePrimary =
+            AppSettings().virtualDisplay().value(QLatin1String("previous_primary")).toString();
+    }
     if (!QDir().mkpath(VirtualDisplay::stagingDir())) {
-        setState(State::Failed);
-        m_Error = QStringLiteral("Cannot create the staging directory");
-        return m_Error;
+        fail(QStringLiteral("Cannot create the staging directory"));
+        return;
     }
     // Leftovers of an interrupted attempt would be acted on as-is otherwise.
     QFile::remove(VirtualDisplay::resultPath());
     QFile::remove(VirtualDisplay::requestPath());
+    dispatch();
+}
 
-    if (req.action == VirtualDisplay::Request::Action::Remove || st.installed ||
-        st.method == QLatin1String("inprocess")) {
-        // Removing needs no download; a driver already present (installed by
-        // hand, or by us earlier) is never re-fetched: the helper only
-        // configures what is there; and macOS has no driver to fetch at all.
-        dispatch();
-    } else {
-        download();
-    }
-    return QString();
+void VirtualDisplayJob::settle(bool ok, const QString& error)
+{
+    const QList<Callback> callbacks = m_Callbacks;
+    m_Callbacks.clear();
+    for (const Callback& cb : callbacks)
+        if (cb) cb(ok, error);
+    startNext();
 }
 
 void VirtualDisplayJob::fail(const QString& error)
@@ -196,140 +240,29 @@ void VirtualDisplayJob::fail(const QString& error)
     m_Poll.stop();
     m_Deadline.stop();
     QFile::remove(VirtualDisplay::requestPath());
-    QDir(VirtualDisplay::driverDir()).removeRecursively();
-    QFile::remove(VirtualDisplay::archivePath());
-    if (m_Nam) {
-        m_Nam->deleteLater();
-        m_Nam = nullptr;
-    }
-    Logger::warning(QStringLiteral("[vdisplay] failed: %1").arg(error));
+    Logger::warning(QStringLiteral("[vdisplay] %1 failed: %2")
+                        .arg(VirtualDisplay::toString(m_Request.action), error));
     setState(State::Failed);
+    settle(false, error);
 }
 
 void VirtualDisplayJob::succeed(const VirtualDisplay::Result& res)
 {
-    m_RebootRequired = res.rebootRequired;
     m_Display = res.display;
     m_FinishedAt = QDateTime::currentDateTimeUtc();
     QFile::remove(VirtualDisplay::requestPath());
-    QDir(VirtualDisplay::driverDir()).removeRecursively();
-    QFile::remove(VirtualDisplay::archivePath());
-
     AppSettings settings;
-    if (m_Request.action == VirtualDisplay::Request::Action::Add) {
+    if (m_Request.action == Action::Activate) {
         QJsonObject rec;
-        rec["added"] = true;
-        rec["width"] = m_Request.width;
-        rec["height"] = m_Request.height;
-        rec["refresh"] = m_Request.refresh;
-        rec["hdr"] = m_Request.hdr;
-        rec["gpu"] = m_Request.gpu;
-        rec["added_at"] = m_FinishedAt.toString(Qt::ISODate);
+        rec["active"] = true;
+        rec["previous_primary"] = res.previousPrimary;
+        rec["activated_at"] = m_FinishedAt.toString(Qt::ISODate);
         settings.setVirtualDisplay(rec);
-    } else {
+    } else if (m_Request.action == Action::Deactivate) {
         settings.clearVirtualDisplay();
     }
     setState(State::Done);
-}
-
-// ── Download ────────────────────────────────────────────────────────────────
-
-void VirtualDisplayJob::download()
-{
-    setState(State::Downloading);
-    const QUrl url(VirtualDisplay::downloadUrl());
-    if (!isGitHubUrl(url)) {
-        fail(QStringLiteral("The driver URL is not a GitHub address"));
-        return;
-    }
-
-    m_Nam = new QNetworkAccessManager(this);
-    QNetworkRequest req{url};
-    req.setRawHeader("User-Agent", "MoonlightWeb");
-    req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
-                     QNetworkRequest::NoLessSafeRedirectPolicy);
-    req.setTransferTimeout(kTransferTimeoutMs);
-
-    Logger::info(QStringLiteral("[vdisplay] downloading %1").arg(url.toString()));
-    QNetworkReply* reply = m_Nam->get(req);
-    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
-        reply->deleteLater();
-        if (reply->error() != QNetworkReply::NoError) {
-            fail(QStringLiteral("Download failed: %1").arg(reply->errorString()));
-            return;
-        }
-        const QByteArray payload = reply->readAll();
-        setState(State::Verifying);
-        // Verified BEFORE it is written anywhere: an elevated process will act
-        // on these bytes. A mismatch is a mismatch — a replaced asset, a proxy
-        // that rewrote the download, an HTML error page — none is "try anyway".
-        const QString digest = sha256Hex(payload);
-        if (digest != VirtualDisplay::downloadSha256()) {
-            fail(QStringLiteral("The downloaded driver package does not match the published one "
-                                "(%1 bytes, sha256 %2…)")
-                     .arg(payload.size())
-                     .arg(digest.left(12)));
-            return;
-        }
-        QFile file(VirtualDisplay::archivePath());
-        if (!file.open(QIODevice::WriteOnly) || file.write(payload) != payload.size()) {
-            fail(QStringLiteral("Cannot write to the staging directory"));
-            return;
-        }
-        file.close();
-        m_Nam->deleteLater();
-        m_Nam = nullptr;
-        extract();
-    });
-}
-
-// ── Extract + per-file verification ─────────────────────────────────────────
-
-void VirtualDisplayJob::extract()
-{
-    setState(State::Staging);
-    QDir(VirtualDisplay::driverDir()).removeRecursively();
-    if (!QDir().mkpath(VirtualDisplay::driverDir())) {
-        fail(QStringLiteral("Cannot create the driver directory"));
-        return;
-    }
-
-    // Qt has no zip reader; Windows has shipped bsdtar as tar.exe since 1803,
-    // well below the engine's own floor. Called by its full path: the staging
-    // directory is not on PATH and nothing here searches one.
-    const QString tar = qEnvironmentVariable("SystemRoot", QStringLiteral("C:/Windows")) +
-                        QStringLiteral("/System32/tar.exe");
-    QProcess* proc = new QProcess(this);
-    QTimer* deadline = new QTimer(proc);
-    deadline->setSingleShot(true);
-    connect(deadline, &QTimer::timeout, proc, [proc]() { proc->kill(); });
-    connect(proc, &QProcess::finished, this, [this, proc](int code, QProcess::ExitStatus status) {
-        proc->deleteLater();
-        if (status != QProcess::NormalExit || code != 0) {
-            fail(QStringLiteral("Could not extract the driver package (tar exit %1)").arg(code));
-            return;
-        }
-        for (const VirtualDisplay::DriverFile& f : VirtualDisplay::driverFiles()) {
-            const QString path =
-                VirtualDisplay::driverDir() + QLatin1Char('/') + QLatin1String(f.name);
-            const QString got = fileSha256(path);
-            if (got != QLatin1String(f.sha256)) {
-                fail(
-                    QStringLiteral("%1 does not match its pinned hash").arg(QLatin1String(f.name)));
-                return;
-            }
-        }
-        dispatch();
-    });
-    connect(proc, &QProcess::errorOccurred, this, [this, proc](QProcess::ProcessError err) {
-        if (err != QProcess::FailedToStart) return;
-        proc->deleteLater();
-        fail(QStringLiteral("tar.exe could not be started"));
-    });
-    deadline->start(kExtractTimeoutMs);
-    proc->start(tar,
-                {QStringLiteral("-xf"), QDir::toNativeSeparators(VirtualDisplay::archivePath()),
-                 QStringLiteral("-C"), QDir::toNativeSeparators(VirtualDisplay::driverDir())});
+    settle(true, QString());
 }
 
 // ── Reaching the helper ─────────────────────────────────────────────────────
@@ -357,14 +290,17 @@ void VirtualDisplayJob::dispatch()
     if (method == QLatin1String("task")) {
         runTask();
     } else if (method == QLatin1String("elevated")) {
-        if (!qEnvironmentVariableIsEmpty("MW_SERVICE") &&
-            m_Request.action == VirtualDisplay::Request::Action::Add) {
-            // Session 0 can install the driver but has no desktop to set a
-            // mode on: the mode stage follows in the console session.
-            m_ModeStagePending = true;
-            runHelper(QStringList{VirtualDisplay::applyArgument(), QStringLiteral("--stage=driver")}
+        if (!qEnvironmentVariableIsEmpty("MW_SERVICE")) {
+            // Session 0 can switch the device node but has no desktop to set
+            // a mode or a primary on: that half runs in the console session.
+            // Activate: node first, then desktop. Deactivate: the reverse.
+            const bool activate = m_Request.action == Action::Activate;
+            m_NextStage = activate ? QStringLiteral("mode") : QStringLiteral("driver");
+            const QString firstStage = activate ? QStringLiteral("driver") : QStringLiteral("mode");
+            runHelper(QStringList{VirtualDisplay::applyArgument(),
+                                  QStringLiteral("--stage=") + firstStage}
                           << dirArg,
-                      false);
+                      !activate);
         } else {
             runHelper(QStringList{VirtualDisplay::applyArgument(), QStringLiteral("--stage=all")}
                           << dirArg,
@@ -379,14 +315,21 @@ void VirtualDisplayJob::applyInProcess()
 {
     // macOS: the display is an object of this process (mw::native::vdisplay).
     // No helper, no file: the request is applied here and now, and the only
-    // wait is for the OS to bring the display online — polled, not slept.
+    // wait is for the OS to bring the display online — polled, not slept —
+    // after which it takes the main display's role.
     setState(State::Configuring);
     VirtualDisplay::Result res;
     if (!VirtualDisplay::applyInProcess(m_Request, &res)) {
         handleResult(res);
         return;
     }
-    if (m_Request.action == VirtualDisplay::Request::Action::Remove) {
+    if (m_Request.action != Action::Activate || mw::native::vdisplay::isOnline()) {
+        if (m_Request.action == Action::Activate) {
+            std::string error;
+            if (!mw::native::vdisplay::setMain(mw::native::vdisplay::displayId(), &error))
+                Logger::warning(QStringLiteral("[vdisplay] not made the main display: %1")
+                                    .arg(QString::fromStdString(error)));
+        }
         handleResult(res);
         return;
     }
@@ -409,7 +352,7 @@ void VirtualDisplayJob::runTask()
                      .arg(code));
             return;
         }
-        setState(State::Installing);
+        setState(State::Applying);
         m_Deadline.start(kHelperTimeoutMs);
         m_Poll.start();
     });
@@ -424,7 +367,7 @@ void VirtualDisplayJob::runTask()
 
 void VirtualDisplayJob::runHelper(const QStringList& args, bool inConsoleSession)
 {
-    setState(m_ModeStagePending && inConsoleSession ? State::Configuring : State::Installing);
+    setState(inConsoleSession ? State::Configuring : State::Applying);
     m_HelperOut.clear();
     const QString exe = QCoreApplication::applicationFilePath();
 
@@ -485,6 +428,10 @@ void VirtualDisplayJob::pollResult()
         m_Deadline.stop();
         const VirtualDisplay::Result res = *m_InProcessResult;
         m_InProcessResult.reset();
+        std::string error;
+        if (!mw::native::vdisplay::setMain(mw::native::vdisplay::displayId(), &error))
+            Logger::warning(QStringLiteral("[vdisplay] not made the main display: %1")
+                                .arg(QString::fromStdString(error)));
         handleResult(res);
         return;
     }
@@ -505,28 +452,22 @@ void VirtualDisplayJob::handleResult(const VirtualDisplay::Result& res)
                                  : res.error);
         return;
     }
-    if (m_ModeStagePending) {
-        // Driver half done as SYSTEM; the desktop half runs as the console user.
-        m_ModeStagePending = false;
-        m_RebootRequired = res.rebootRequired;
-        runHelper({VirtualDisplay::applyArgument(), QStringLiteral("--stage=mode"),
+    if (m_NextStage) {
+        // One half done; the other runs where it can — the desktop half as
+        // the console user, the node half as SYSTEM.
+        const QString stage = *m_NextStage;
+        m_NextStage.reset();
+        runHelper({VirtualDisplay::applyArgument(), QStringLiteral("--stage=") + stage,
                    QStringLiteral("--vdisplay-dir"),
                    QDir::toNativeSeparators(VirtualDisplay::stagingDir())},
-                  true);
+                  stage == QLatin1String("mode"));
         return;
     }
-    VirtualDisplay::Result merged = res;
-    merged.rebootRequired = merged.rebootRequired || m_RebootRequired;
     setState(State::Refreshing);
-    refreshEngine();
-    succeed(merged);
-}
-
-void VirtualDisplayJob::refreshEngine()
-{
     // The display list moved under the engine: ask again. As a service this
     // spawns the console probe; on a desktop it is a direct call. Either way
-    // NativeProbeService::changed() carries the news to ComputerManager, which
-    // rebuilds the native host card.
+    // NativeProbeService::changed() carries the news to ComputerManager,
+    // which rebuilds the native host card.
     NativeProbeService::instance().refresh();
+    succeed(res);
 }

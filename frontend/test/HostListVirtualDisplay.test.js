@@ -2,18 +2,22 @@
  * MoonlightWeb — TNR suite. Copyright (C) 2026 Bruno Martin. GPLv3.
  */
 /*
- * The native host card with nothing plugged in.
+ * The native host card and "MoonlightWeb Virtual Display".
  *
  * A PC installed through a TV and then left without a screen used to lose its
  * card altogether: the engine answered "no display", ComputerManager dropped
  * the host, and the owner was left with a list that no longer mentioned the
- * machine serving it. Now the card stays, says why it is empty, and offers the
- * fix on the spot. What is verified here is the card's side of that contract:
+ * machine serving it. Now the card stays. With "MoonlightWeb Virtual Display"
+ * installed it is an ordinary card whose one app is that display — the server
+ * lists it, on or off, and opening it turns it on. Without it, the card says
+ * what is missing. What is verified here is the card's side of that contract:
  *
- *   - the empty state is painted from the server's `nativeDisplay` verdict,
- *     never from the app list (which is not even asked for);
- *   - the kebab offers Add or Remove according to what the server says is
- *     installed, and nothing at all on any other kind of host;
+ *   - a headless host with the display installed paints its app grid and asks
+ *     for its apps, like any host;
+ *   - a headless host without it paints the empty state, from the server's
+ *     `nativeDisplay` verdict, and asks for no apps;
+ *   - the kebab never offers to add or remove the display: the installer
+ *     owns it, and there is no such button anywhere;
  *   - a display appearing or leaving changes the card's fingerprint, so the
  *     poll repaints it.
  */
@@ -23,8 +27,6 @@ vi.mock('../js/api/BackendClient.js', () => ({
     BackendClient: {
         getAppList: vi.fn(async () => ({ status: 'ok', apps: [] })),
         getVirtualDisplay: vi.fn(),
-        removeVirtualDisplay: vi.fn(),
-        getVirtualDisplayStatus: vi.fn(),
     },
 }));
 vi.mock('../js/i18n/i18n.js', () => ({ t: (key) => key }));
@@ -41,35 +43,27 @@ const NATIVE = {
     backendType: 'native',
 };
 
+const VD = {
+    supported: true,
+    installed: true,
+    enabled: false,
+    active: false,
+    can_manage: true,
+    method: 'task',
+    name: 'MoonlightWeb Virtual Display',
+};
+
 const headless = (vd = {}) => ({
     ...NATIVE,
-    nativeDisplay: {
-        state: 'no_display',
-        virtual_display: {
-            supported: true,
-            installed: false,
-            active: false,
-            can_install: true,
-            ...vd,
-        },
-    },
+    nativeDisplay: { state: 'no_display', virtual_display: { ...VD, ...vd } },
 });
 
 const withDisplay = (vd = {}) => ({
     ...NATIVE,
-    nativeDisplay: {
-        state: 'ok',
-        virtual_display: {
-            supported: true,
-            installed: true,
-            active: true,
-            can_install: true,
-            ...vd,
-        },
-    },
+    nativeDisplay: { state: 'ok', virtual_display: { ...VD, ...vd } },
 });
 
-describe('the native host card without a display', () => {
+describe('the native host card and the virtual display', () => {
     let view;
     let container;
 
@@ -92,87 +86,68 @@ describe('the native host card without a display', () => {
         return container.querySelector('.host-card');
     };
 
-    it('stays on the page, empty, with the offer in it — and asks for no apps', () => {
+    it('headless with the display installed: an ordinary card, grid and all', () => {
         const card = mount(headless());
         expect(card).not.toBeNull();
+        expect(card.querySelector('.host-empty-display')).toBeNull();
+        expect(card.querySelector('.host-apps')).not.toBeNull();
+        expect(card.querySelector('.status-badge').textContent).not.toBe('hosts.statusNoDisplay');
+        expect(BackendClient.getAppList).toHaveBeenCalled();
+    });
+
+    it('headless without it: the empty state, and no apps asked for', () => {
+        const card = mount(headless({ installed: false }));
+        expect(card).not.toBeNull();
         expect(card.querySelector('.host-empty-display')).not.toBeNull();
-        expect(card.querySelector('.host-empty-display .btn-vdisplay-add')).not.toBeNull();
+        expect(card.querySelector('.host-empty-display-text').textContent).toBe(
+            'vdisplay.emptyBody',
+        );
         expect(card.querySelector('.host-apps')).toBeNull();
         expect(card.querySelector('.status-badge').textContent).toBe('hosts.statusNoDisplay');
         expect(BackendClient.getAppList).not.toHaveBeenCalled();
     });
 
-    it('offers Add in the menu while nothing is installed, Remove once something is', () => {
-        let card = mount(headless());
-        expect(card.querySelector('.host-menu .btn-vdisplay-add')).not.toBeNull();
-        expect(card.querySelector('.host-menu .btn-vdisplay-remove')).toBeNull();
-
-        view.destroy();
-        card = mount(withDisplay());
-        expect(card.querySelector('.host-menu .btn-vdisplay-remove')).not.toBeNull();
-        expect(card.querySelector('.host-menu .btn-vdisplay-add')).toBeNull();
-        // A display is there: the card is an ordinary host again, grid and all.
-        expect(card.querySelector('.host-empty-display')).toBeNull();
-        expect(card.querySelector('.host-apps')).not.toBeNull();
+    it('never offers to add or remove the display — the installer owns it', () => {
+        for (const data of [headless(), headless({ installed: false }), withDisplay()]) {
+            const card = mount(data);
+            expect(card.querySelector('.btn-vdisplay-add')).toBeNull();
+            expect(card.querySelector('.btn-vdisplay-remove')).toBeNull();
+            expect(card.querySelector('.host-menu').textContent).not.toContain('vdisplay.');
+            view.destroy();
+            view = null;
+        }
     });
 
-    it('offers Add on a host that has screens, as long as none is ours', () => {
-        // The offer follows the driver/display being there or not, never the
-        // number of monitors: a PC with a screen still gets a virtual one at
-        // the resolution the admin wants to stream. Only the empty-state body
-        // is reserved for the headless case.
-        const card = mount(withDisplay({ installed: false, active: false }));
-        expect(card.querySelector('.host-menu .btn-vdisplay-add')).not.toBeNull();
-        expect(card.querySelector('.host-menu .btn-vdisplay-remove')).toBeNull();
-        expect(card.querySelector('.host-empty-display')).toBeNull();
-        expect(card.querySelector('.host-apps')).not.toBeNull();
-    });
-
-    it('still offers Add when this install cannot elevate — the dialog explains', () => {
-        // The button is not the install; it opens the dialog, which shows the
-        // manual path in that case. Hiding it would leave the empty card mute.
-        const card = mount(headless({ can_install: false }));
-        expect(card.querySelector('.btn-vdisplay-add')).not.toBeNull();
-    });
-
-    it('offers neither on a host that is not the native one', () => {
+    it('is untouched on a host that is not the native one', () => {
         const card = mount({
             uuid: 'sunshine-1',
             name: 'BENCH',
             state: 'online',
             pairState: 'paired',
         });
-        expect(card.querySelector('.btn-vdisplay-add')).toBeNull();
-        expect(card.querySelector('.btn-vdisplay-remove')).toBeNull();
         expect(card.querySelector('.host-empty-display')).toBeNull();
-    });
-
-    it('offers nothing when the server says the platform cannot do it', () => {
-        const card = mount({
-            ...NATIVE,
-            nativeDisplay: {
-                state: 'ok',
-                virtual_display: { supported: false, installed: false, active: false },
-            },
-        });
-        expect(card.querySelector('.btn-vdisplay-add')).toBeNull();
-        expect(card.querySelector('.btn-vdisplay-remove')).toBeNull();
+        expect(card.querySelector('.host-apps')).not.toBeNull();
     });
 
     it('changes fingerprint when the display state moves, so the poll repaints', () => {
         view = new HostListView(container);
-        const before = view._cardFingerprint(new Host(headless()));
+        const before = view._cardFingerprint(new Host(headless({ installed: false })));
         const after = view._cardFingerprint(new Host(withDisplay()));
         expect(before).not.toBe(after);
+        const on = view._cardFingerprint(new Host(headless({ enabled: true, active: true })));
+        expect(on).not.toBe(view._cardFingerprint(new Host(headless())));
     });
 });
 
 describe('the Host model', () => {
-    it('reads needsVirtualDisplay from the server verdict only', () => {
-        expect(new Host(headless()).needsVirtualDisplay).toBe(true);
+    it('needs a virtual display only when headless AND none is installed', () => {
+        expect(new Host(headless({ installed: false })).needsVirtualDisplay).toBe(true);
+        expect(new Host(headless()).needsVirtualDisplay).toBe(false);
         expect(new Host(withDisplay()).needsVirtualDisplay).toBe(false);
         // A Sunshine host carrying the same object by accident is still not native.
-        expect(new Host({ ...headless(), backendType: '' }).needsVirtualDisplay).toBe(false);
+        expect(
+            new Host({ ...headless({ installed: false }), backendType: '' }).needsVirtualDisplay,
+        ).toBe(false);
         expect(new Host(NATIVE).needsVirtualDisplay).toBe(false);
     });
 });

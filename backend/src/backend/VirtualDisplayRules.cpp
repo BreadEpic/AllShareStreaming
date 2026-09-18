@@ -19,7 +19,6 @@
 
 #include "common/Edition.h"
 
-#include <QJsonArray>
 #include <QJsonDocument>
 
 // The platform-free half of VirtualDisplay: names, the request/result files,
@@ -29,6 +28,19 @@
 // and they are verified on every platform (tests/test_virtual_display.cpp).
 
 namespace VirtualDisplay {
+
+QString displayNameFor(const QString& productName)
+{
+    return productName + QStringLiteral(" Virtual Display");
+}
+
+QString displayName()
+{
+    // The installed edition's name, dev flag or not: a --dev instance is a
+    // scratch copy of the same edition and streams the display the installer
+    // of that edition created.
+    return displayNameFor(mw::edition::productName());
+}
 
 QString taskNameFor(const QString& productName, bool devFlag)
 {
@@ -41,32 +53,16 @@ QString taskName()
     return taskNameFor(mw::edition::productName(), mw::edition::devFlag());
 }
 
-namespace {
-
-bool isPresetResolution(int w, int h)
+QString toString(Request::Action action)
 {
-    for (const Preset& p : resolutionPresets())
-        if (p.width == w && p.height == h) return true;
-    return false;
+    switch (action) {
+    case Request::Action::Install: return QStringLiteral("install");
+    case Request::Action::Uninstall: return QStringLiteral("uninstall");
+    case Request::Action::Activate: return QStringLiteral("activate");
+    case Request::Action::Deactivate: return QStringLiteral("deactivate");
+    }
+    return QString();
 }
-
-bool isPresetRefresh(int hz)
-{
-    for (int r : refreshPresets())
-        if (r == hz) return true;
-    return false;
-}
-
-QString xmlEscape(QString s)
-{
-    s.replace(QLatin1Char('&'), QLatin1String("&amp;"));
-    s.replace(QLatin1Char('<'), QLatin1String("&lt;"));
-    s.replace(QLatin1Char('>'), QLatin1String("&gt;"));
-    s.replace(QLatin1Char('"'), QLatin1String("&quot;"));
-    return s;
-}
-
-} // namespace
 
 std::optional<Request> parseRequest(const QByteArray& json, QString* error)
 {
@@ -77,52 +73,35 @@ std::optional<Request> parseRequest(const QByteArray& json, QString* error)
         return std::nullopt;
     }
     const QJsonObject obj = doc.object();
-
     Request req;
     const QString action = obj.value(QLatin1String("action")).toString();
-    if (action == QLatin1String("add"))
-        req.action = Request::Action::Add;
-    else if (action == QLatin1String("remove"))
-        req.action = Request::Action::Remove;
-    else {
+    bool known = false;
+    for (const Request::Action a : {Request::Action::Install, Request::Action::Uninstall,
+                                    Request::Action::Activate, Request::Action::Deactivate}) {
+        if (action == toString(a)) {
+            req.action = a;
+            known = true;
+        }
+    }
+    if (!known) {
         if (error) *error = QStringLiteral("unknown action");
         return std::nullopt;
     }
-    if (req.action == Request::Action::Remove) return req;
-
-    req.width = obj.value(QLatin1String("width")).toInt();
-    req.height = obj.value(QLatin1String("height")).toInt();
-    req.refresh = obj.value(QLatin1String("refresh")).toInt();
-    if (!isPresetResolution(req.width, req.height)) {
-        if (error) *error = QStringLiteral("resolution is not one of the presets");
+    const QJsonValue restore = obj.value(QLatin1String("restore_primary"));
+    if (!restore.isUndefined() && !restore.isNull() && !restore.isString()) {
+        if (error) *error = QStringLiteral("restore_primary must be a string");
         return std::nullopt;
     }
-    if (!isPresetRefresh(req.refresh)) {
-        if (error) *error = QStringLiteral("refresh rate is not one of the presets");
+    req.restorePrimary = restore.toString().trimmed();
+    if (req.restorePrimary.size() > 512) {
+        if (error) *error = QStringLiteral("restore_primary too long");
         return std::nullopt;
     }
-    const QJsonValue hdr = obj.value(QLatin1String("hdr"));
-    if (!hdr.isUndefined() && !hdr.isBool()) {
-        if (error) *error = QStringLiteral("hdr must be a boolean");
-        return std::nullopt;
-    }
-    req.hdr = hdr.toBool(false);
-
-    const QJsonValue gpu = obj.value(QLatin1String("gpu"));
-    if (!gpu.isUndefined() && !gpu.isNull() && !gpu.isString()) {
-        if (error) *error = QStringLiteral("gpu must be a string");
-        return std::nullopt;
-    }
-    req.gpu = gpu.toString().trimmed();
-    if (req.gpu.size() > 128) {
-        if (error) *error = QStringLiteral("gpu name too long");
-        return std::nullopt;
-    }
-    for (const QChar c : req.gpu) {
-        // A name goes into an XML file an elevated helper writes: printable
-        // only. Control characters have no place in an adapter's name.
+    for (const QChar c : req.restorePrimary) {
+        // A display key is compared, never interpreted — but an elevated
+        // process reads it, and a control character has no place in one.
         if (c.category() == QChar::Other_Control) {
-            if (error) *error = QStringLiteral("gpu name contains control characters");
+            if (error) *error = QStringLiteral("restore_primary contains control characters");
             return std::nullopt;
         }
     }
@@ -132,15 +111,8 @@ std::optional<Request> parseRequest(const QByteArray& json, QString* error)
 QByteArray toJson(const Request& req)
 {
     QJsonObject obj;
-    obj["action"] =
-        req.action == Request::Action::Add ? QStringLiteral("add") : QStringLiteral("remove");
-    if (req.action == Request::Action::Add) {
-        obj["width"] = req.width;
-        obj["height"] = req.height;
-        obj["refresh"] = req.refresh;
-        obj["hdr"] = req.hdr;
-        obj["gpu"] = req.gpu;
-    }
+    obj["action"] = toString(req.action);
+    if (!req.restorePrimary.isEmpty()) obj["restore_primary"] = req.restorePrimary;
     return QJsonDocument(obj).toJson(QJsonDocument::Compact);
 }
 
@@ -151,13 +123,13 @@ std::optional<Result> parseResult(const QByteArray& json)
     if (!doc.isObject()) return std::nullopt;
     const QJsonObject obj = doc.object();
     if (!obj.contains(QLatin1String("ok"))) return std::nullopt;
-
     Result res;
     res.ok = obj.value(QLatin1String("ok")).toBool(false);
     res.stage = obj.value(QLatin1String("stage")).toString();
     res.error = obj.value(QLatin1String("error")).toString();
     res.rebootRequired = obj.value(QLatin1String("reboot_required")).toBool(false);
     res.display = obj.value(QLatin1String("display")).toString();
+    res.previousPrimary = obj.value(QLatin1String("previous_primary")).toString();
     return res;
 }
 
@@ -169,46 +141,51 @@ QByteArray toJson(const Result& res)
     if (!res.error.isEmpty()) obj["error"] = res.error;
     obj["reboot_required"] = res.rebootRequired;
     if (!res.display.isEmpty()) obj["display"] = res.display;
+    if (!res.previousPrimary.isEmpty()) obj["previous_primary"] = res.previousPrimary;
     return QJsonDocument(obj).toJson(QJsonDocument::Compact) + '\n';
 }
 
-QString settingsXml(const Request& req)
+QString settingsXml()
 {
     // The layout the driver ships (its own sample, verified on the bench):
     //   <monitors><count>, <gpu><friendlyname>, <global><g_refresh_rate>*,
     //   <resolutions><resolution>{width,height,refresh_rate}*, <options>.
-    // The chosen mode goes first — the driver takes the first as the default —
-    // then every preset, so a later mode change needs no driver reload.
+    // Our mode goes first — the driver takes the first as the default — then
+    // the common sizes, so a later mode change needs no driver reload.
+    struct Size
+    {
+        int w, h;
+    };
+    static const Size sizes[] = {{1280, 720}, {2560, 1440}, {3840, 2160}};
+    static const int rates[] = {60, 90, 144};
+
     QString xml;
     xml += QStringLiteral("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<vdd_settings>\n");
     xml += QStringLiteral("  <monitors>\n    <count>1</count>\n  </monitors>\n");
-    xml += QStringLiteral("  <gpu>\n    <friendlyname>%1</friendlyname>\n  </gpu>\n")
-               .arg(req.gpu.isEmpty() ? QStringLiteral("default") : xmlEscape(req.gpu));
+    xml += QStringLiteral("  <gpu>\n    <friendlyname>default</friendlyname>\n  </gpu>\n");
     xml += QStringLiteral("  <global>\n");
-    xml += QStringLiteral("    <g_refresh_rate>%1</g_refresh_rate>\n").arg(req.refresh);
-    for (int r : refreshPresets())
-        if (r != req.refresh)
-            xml += QStringLiteral("    <g_refresh_rate>%1</g_refresh_rate>\n").arg(r);
+    xml += QStringLiteral("    <g_refresh_rate>%1</g_refresh_rate>\n").arg(kRefreshHz);
+    for (const int hz : rates)
+        xml += QStringLiteral("    <g_refresh_rate>%1</g_refresh_rate>\n").arg(hz);
     xml += QStringLiteral("  </global>\n  <resolutions>\n");
-    auto one = [&](int w, int h, int hz) {
-        xml +=
-            QStringLiteral("    <resolution>\n      <width>%1</width>\n      <height>%2</height>\n"
-                           "      <refresh_rate>%3</refresh_rate>\n    </resolution>\n")
-                .arg(w)
-                .arg(h)
-                .arg(hz);
+    const auto one = [&xml](int w, int h) {
+        xml += QStringLiteral("    <resolution>\n      <width>%1</width>\n"
+                              "      <height>%2</height>\n      <refresh_rate>%3</refresh_rate>\n"
+                              "    </resolution>\n")
+                   .arg(w)
+                   .arg(h)
+                   .arg(kRefreshHz);
     };
-    one(req.width, req.height, req.refresh);
-    for (const Preset& p : resolutionPresets())
-        if (p.width != req.width || p.height != req.height) one(p.width, p.height, req.refresh);
+    one(kWidth, kHeight);
+    for (const Size& s : sizes)
+        one(s.w, s.h);
     xml += QStringLiteral("  </resolutions>\n  <options>\n");
     xml += QStringLiteral("    <CustomEdid>false</CustomEdid>\n"
                           "    <PreventSpoof>false</PreventSpoof>\n"
                           "    <EdidCeaOverride>false</EdidCeaOverride>\n"
-                          "    <HardwareCursor>true</HardwareCursor>\n");
-    xml += QStringLiteral("    <SDR10bit>%1</SDR10bit>\n    <HDRPlus>%1</HDRPlus>\n")
-               .arg(req.hdr ? QStringLiteral("true") : QStringLiteral("false"));
-    xml += QStringLiteral("    <logging>false</logging>\n    <debuglogging>false</debuglogging>\n"
+                          "    <HardwareCursor>true</HardwareCursor>\n"
+                          "    <SDR10bit>false</SDR10bit>\n    <HDRPlus>false</HDRPlus>\n"
+                          "    <logging>false</logging>\n    <debuglogging>false</debuglogging>\n"
                           "  </options>\n</vdd_settings>\n");
     return xml;
 }

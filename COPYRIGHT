@@ -39,11 +39,18 @@ Third-party components fetched at run time (never bundled, never linked)
   ViGEmBus (nefarius) ................. BSD-3-Clause
     Windows virtual gamepad bus. Downloaded by the installer, or from the
     app's notice, from a pinned GitHub release URL verified by SHA-256.
+
+Third-party components bundled unmodified (never linked)
+----------------------------------------------------------------------------
+
   Virtual Display Driver (VirtualDrivers, "VDD by MTT") ...... MIT
-    Windows IddCx virtual display. Downloaded on "Add Virtual Display"
-    from a pinned GitHub release URL, SHA-256 verified before installation
-    (backend/src/backend/VirtualDisplay.h). Catalog signed by SignPath
-    Foundation; that certificate is trusted only for the install.
+    Windows IddCx virtual display behind "MoonlightWeb Virtual Display".
+    Release 25.7.23, the bare driver package (inf + cat + dll) as published,
+    committed under backend/installer/drivers/vdd and shipped inside the
+    Windows installer; every file is pinned by SHA-256
+    (backend/src/backend/VirtualDisplay.h) and re-hashed before install.
+    Catalog signed by SignPath Foundation; that certificate is trusted only
+    for the install. License: backend/installer/drivers/vdd/LICENSE.
 
 Each component retains its own license; see the corresponding LICENSE files in
 backend/third_party/. This project as a whole is distributed under GPL-3.0 to

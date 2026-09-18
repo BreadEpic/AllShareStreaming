@@ -91,6 +91,7 @@
 #include "backend/streambackend/NativeProbeService.h"
 #include "backend/VirtualDisplay.h"
 #include "backend/VirtualDisplayApply.h"
+#include "backend/VirtualDisplayJob.h"
 #include "backend/streambackend/NativeHostBackend.h"
 #include "Limelight.h" // SCM_* codec-support masks
 #include "streaming/DataChannelRelay.h"
@@ -1697,7 +1698,7 @@ int main(int argc, char* argv[])
 
     // A virtual display the admin added lives only as long as the process
     // that holds it (macOS): bring it back before the first probe looks.
-    VirtualDisplay::restoreAtStartup();
+    VirtualDisplay::resetAtStartup();
 
     // Initialize ComputerManager (Phase 2: host discovery)
     ComputerManager computerManager(&app);
@@ -1877,16 +1878,26 @@ int main(int argc, char* argv[])
     // down. Suppresses the slot's normal ended-cleanup (no Sunshine /cancel:
     // take-over and standby-restart both want the Sunshine session kept alive
     // for the /resume that follows). The host object self-deletes on exit.
-    auto detachWorkerSlot = [&g_Pool, &authManager](int i, bool takenOver,
-                                                    bool sessionEnded = false) {
+    auto detachWorkerSlot = [&g_Pool, &authManager, &anyOtherSlotLive](int i, bool takenOver,
+                                                                       bool sessionEnded = false) {
         SessionPool::Slot& sl = g_Pool.at(i);
         StreamWorkerHost* old = g_Pool.workerAs<StreamWorkerHost>(i);
         const QString token = sl.sessionToken;
+        const QString hostUuid = sl.hostUuid;
+        // A stream on "MoonlightWeb Virtual Display" leaving by this door
+        // (quit, take-over, standby restart) bypasses the slot's ended
+        // handler, so the display's release is decided here: off, after the
+        // grace, unless another slot still streams it — and a take-over's
+        // own /start cancels the grace on its way in.
+        const bool onVirtualDisplay = hostUuid == NativeHostBackend::hostUuid() &&
+                                      sl.appId == NativeHostBackend::virtualDisplayAppId();
         sl.worker = nullptr;
         sl.clientUniqueId.clear();
         sl.hostUuid.clear();
         sl.sessionToken.clear();
         sl.appId = 0;
+        if (onVirtualDisplay && !anyOtherSlotLive(i, hostUuid))
+            VirtualDisplayJob::instance().releaseSoon();
         if (!old) return static_cast<StreamWorkerHost*>(nullptr);
         QObject::disconnect(old, &StreamWorkerHost::ended, nullptr, nullptr);
         QObject::connect(old, &StreamWorkerHost::ended, qApp, [token, &authManager]() {
@@ -3347,13 +3358,22 @@ int main(int argc, char* argv[])
                                    "/cancel (shared app session)";
                     }
                     SessionPool::Slot& sl = g_Pool.at(reqSlot);
+                    const bool onVirtualDisplay =
+                        host->backendType == NativeHostBackend::typeName() &&
+                        sl.appId == NativeHostBackend::virtualDisplayAppId();
                     if (sl.worker == worker) {
                         sl.worker = nullptr;
                         sl.clientUniqueId.clear();
                         sl.hostUuid.clear();
                         sl.sessionToken.clear();
                         sl.coopSessionId.clear();
+                        sl.appId = 0;
                     }
+                    // The last stream on "MoonlightWeb Virtual Display" turns
+                    // it off again — after a grace, so a reload comes back to
+                    // a display that never went.
+                    if (onVirtualDisplay && !siblingLive)
+                        VirtualDisplayJob::instance().releaseSoon();
                 });
 
             auto startWorker = [worker, respond, standby, reqSlot, appId, &g_Pool,
@@ -3431,6 +3451,43 @@ int main(int argc, char* argv[])
                     });
             };
 
+            // "MoonlightWeb Virtual Display" is off between streams: a /start
+            // on its card turns it on first — enable, mode, primary — and the
+            // worker is spawned once the engine can see it. Several viewers
+            // opening it at once share the one operation.
+            std::function<void()> readyThenStart = claimThenStart;
+            if (host->backendType == NativeHostBackend::typeName() &&
+                appId == NativeHostBackend::virtualDisplayAppId()) {
+                readyThenStart = [claimThenStart, worker, respond, standby, reqSlot,
+                                  generation]() {
+                    VirtualDisplayJob::instance().activate(
+                        [claimThenStart, worker, respond, standby, reqSlot,
+                         generation](bool ok, const QString& error) {
+                            if (g_SlotLaunchGeneration.value(reqSlot) != generation) {
+                                worker->deleteLater();
+                                respond(HttpResponse::error(409, "Superseded by a newer launch"));
+                                return;
+                            }
+                            if (!ok) {
+                                worker->deleteLater();
+                                if (standby) {
+                                    respond(HttpResponse::json(
+                                        QJsonObject{
+                                            {"status", QStringLiteral("dual_unavailable")},
+                                            {"reason", error}},
+                                        200));
+                                } else {
+                                    respond(HttpResponse::error(
+                                        500,
+                                        "The virtual display could not be turned on: " + error));
+                                }
+                                return;
+                            }
+                            claimThenStart();
+                        });
+                };
+            }
+
             // Serialize with whatever still holds this slot's ports: a previous
             // worker child (wait for its process to die) or a legacy in-process
             // relay (wait for its destruction) — same rationale as the deferred
@@ -3438,13 +3495,13 @@ int main(int argc, char* argv[])
             if (previousWorker) {
                 qInfo() << "[Session] Previous slot" << reqSlot
                         << "worker still tearing down — deferring worker start";
-                QObject::connect(previousWorker, &QObject::destroyed, qApp, claimThenStart);
+                QObject::connect(previousWorker, &QObject::destroyed, qApp, readyThenStart);
             } else if (reqSlot == 0 && g_ActiveRelayRoot) {
                 qInfo() << "[Session] Previous in-process relay still tearing down — "
                            "deferring worker start";
-                QObject::connect(g_ActiveRelayRoot, &QObject::destroyed, qApp, claimThenStart);
+                QObject::connect(g_ActiveRelayRoot, &QObject::destroyed, qApp, readyThenStart);
             } else {
-                claimThenStart();
+                readyThenStart();
             }
             return;
         }
@@ -4243,6 +4300,9 @@ int main(int argc, char* argv[])
                 }
                 g_LiveSunshineUids.remove(uid);
                 SessionPool::Slot& sl = g_Pool.at(slot);
+                const bool onVirtualDisplay =
+                    host->backendType == NativeHostBackend::typeName() &&
+                    sl.appId == NativeHostBackend::virtualDisplayAppId();
                 if (sl.worker == worker) {
                     sl.worker = nullptr;
                     sl.clientUniqueId.clear();
@@ -4251,6 +4311,8 @@ int main(int argc, char* argv[])
                     sl.coopSessionId.clear();
                     sl.appId = 0;
                 }
+                if (onVirtualDisplay && !anyOtherSlotLive(slot, host->uuid))
+                    VirtualDisplayJob::instance().releaseSoon();
             });
 
         const QString hostUuidCopy = host->uuid;

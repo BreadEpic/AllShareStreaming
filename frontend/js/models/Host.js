@@ -58,9 +58,9 @@ export class Host {
         // never sent to the browser — backendConfigured only says one is stored.
         this.backendType = data.backendType || '';
         // The native host only: {state: 'ok'|'no_display'|'unavailable',
-        // virtual_display: {supported, installed, active, can_install}}.
+        // virtual_display: {supported, installed, enabled, active, name}}.
         // Computed by the server — the card never guesses whether the machine
-        // behind it has a screen.
+        // behind it has a screen, or a "MoonlightWeb Virtual Display" to open.
         this.nativeDisplay = data.nativeDisplay || null;
         this.backendApiUrl = data.backendApiUrl || '';
         this.backendConfigured = data.backendConfigured === true;
@@ -97,12 +97,18 @@ export class Host {
         return this.isOnline && this.isPaired;
     }
 
-    // The native host with nothing attached: online and paired by
-    // construction, but with no display to show — the card offers to add a
-    // virtual one instead of an app grid. Checked before isAvailable wherever
-    // a grid would be painted.
+    // The native host with nothing attached AND no "MoonlightWeb Virtual
+    // Display" installed: online and paired by construction, but with nothing
+    // to show — the card says what is missing instead of an app grid. With
+    // the virtual display installed, a headless host is an ordinary card
+    // whose one app is that display. Checked before isAvailable wherever a
+    // grid would be painted.
     get needsVirtualDisplay() {
-        return this.backendType === 'native' && this.nativeDisplay?.state === 'no_display';
+        return (
+            this.backendType === 'native' &&
+            this.nativeDisplay?.state === 'no_display' &&
+            !this.nativeDisplay?.virtual_display?.installed
+        );
     }
 
     /** The server's virtual display capability for this card, or null. */

@@ -154,6 +154,10 @@ en.InternetPageBody=MoonlightWeb can allow streaming from outside your local net
 en.InternetPageOption=Allow the Internet link (recommended)
 en.InternetBtnSkip=&Skip
 en.InternetBtnAccept=&Accept
+en.VDisplayPageCaption=Virtual Display
+en.VDisplayPageDesc=Install "MoonlightWeb Virtual Display"?
+en.VDisplayPageBody=MoonlightWeb can give this PC a screen of its own to stream: "MoonlightWeb Virtual Display", a virtual monitor that appears as a card on the hosts page.%n%nIt is off by default. Opening its card turns it on, makes it the primary display and streams it; when the last stream ends it is turned off again and your previous primary display gets its role back. A PC with no monitor attached — installed through a TV, then left in a cupboard — streams through it.%n%nThe driver is the open-source Virtual Display Driver (MIT, signed), installed silently and in addition to any virtual display you already have. Only uninstalling MoonlightWeb removes it.
+en.VDisplayPageOption=Install "MoonlightWeb Virtual Display" (recommended)
 en.RunApp=Launch {#MyAppName}
 en.RunAdmin=Open the admin page
 en.ProvisionPageCaption=Setting up {#MyAppName}
@@ -178,6 +182,10 @@ fr.InternetPageBody=MoonlightWeb peut autoriser le streaming depuis l'extérieur
 fr.InternetPageOption=Autoriser le lien Internet (recommandé)
 fr.InternetBtnSkip=&Passer
 fr.InternetBtnAccept=&Accepter
+fr.VDisplayPageCaption=Écran virtuel
+fr.VDisplayPageDesc=Installer « MoonlightWeb Virtual Display » ?
+fr.VDisplayPageBody=MoonlightWeb peut donner à ce PC un écran à lui, à diffuser : « MoonlightWeb Virtual Display », un moniteur virtuel qui apparaît comme une carte sur la page des hôtes.%n%nIl est éteint par défaut. Ouvrir sa carte l'allume, en fait l'écran principal et le diffuse ; à la fin du dernier stream il s'éteint et votre écran principal précédent retrouve son rôle. Un PC sans moniteur — installé depuis une TV, puis rangé dans un placard — diffuse grâce à lui.%n%nLe pilote est le Virtual Display Driver open source (MIT, signé), installé silencieusement et en plus de tout écran virtuel déjà présent. Seule la désinstallation de MoonlightWeb le retire.
+fr.VDisplayPageOption=Installer « MoonlightWeb Virtual Display » (recommandé)
 fr.RunApp=Lancer {#MyAppName}
 fr.RunAdmin=Ouvrir la page admin
 fr.ProvisionPageCaption=Configuration de {#MyAppName}
@@ -202,6 +210,10 @@ zh.InternetPageBody=MoonlightWeb 可以以高度安全的方式，允许从本�
 zh.InternetPageOption=允许互联网链接（推荐）
 zh.InternetBtnSkip=跳过(&S)
 zh.InternetBtnAccept=接受(&A)
+zh.VDisplayPageCaption=虚拟显示器
+zh.VDisplayPageDesc=是否安装“MoonlightWeb Virtual Display”？
+zh.VDisplayPageBody=MoonlightWeb 可以为这台电脑提供一个专属的串流屏幕：“MoonlightWeb Virtual Display”，一个在主机页面上显示为卡片的虚拟显示器。%n%n它默认处于关闭状态。打开其卡片即可开启它、将其设为主显示器并进行串流；最后一个串流结束后它会再次关闭，您之前的主显示器恢复原来的角色。没有连接显示器的电脑——通过电视安装后放进柜子里——就靠它来串流。%n%n驱动程序是开源的 Virtual Display Driver（MIT 许可，已签名），静默安装，且与您已有的任何虚拟显示器并存。只有卸载 MoonlightWeb 才会将其移除。
+zh.VDisplayPageOption=安装“MoonlightWeb Virtual Display”（推荐）
 zh.RunApp=启动 {#MyAppName}
 zh.RunAdmin=打开管理页面
 zh.ProvisionPageCaption=正在设置 {#MyAppName}
@@ -265,6 +277,10 @@ const
   // on is a parameters-only file under %LocalAppData% (VirtualDisplay.h).
   VDisplayTaskName = '{#MyAppName} Virtual Display';
   VDisplayArgs = '--vdisplay-apply';
+  // Where this installer remembers the answer to its own Virtual Display
+  // page, so an update does not ask again (the device node itself is the
+  // truth about what is installed; the helper never creates a second one).
+  VDisplaySetupKey = 'SOFTWARE\{#MyAppName}\Setup';
 
 var
   InternetPage: TWizardPage;
@@ -277,6 +293,13 @@ var
   InternetSkipButton: TNewButton;
   InternetSkipped: Boolean;
   InternetAuthorized: Boolean;
+  // The Virtual Display page: the same two buttons (the Skip button is
+  // shared, its handler swapped per page) and the same flag pair.
+  VDisplayPage: TWizardPage;
+  VDisplayBodyLabel: TNewStaticText;
+  VDisplayOptionLabel: TNewStaticText;
+  VDisplaySkipped: Boolean;
+  VDisplayAccepted: Boolean;
   BackButtonHidden: Boolean;
   // Live post-install checklist. One row since September 2026: the app captures
   // and encodes this machine itself, so there is no streaming server to install
@@ -366,6 +389,12 @@ end;
 procedure InternetSkipClick(Sender: TObject);
 begin
   InternetSkipped := True;
+  WizardForm.NextButton.OnClick(WizardForm.NextButton);
+end;
+
+procedure VDisplaySkipClick(Sender: TObject);
+begin
+  VDisplaySkipped := True;
   WizardForm.NextButton.OnClick(WizardForm.NextButton);
 end;
 
@@ -467,6 +496,30 @@ begin
   InternetSkipButton.OnClick := @InternetSkipClick;
   InternetSkipButton.Visible := False;
 
+  // Step: "MoonlightWeb Virtual Display". Same shape as the Internet page:
+  // a question with two answers and no default, asked once.
+  VDisplayPage := CreateCustomPage(InternetPage.ID,
+    ExpandConstant('{cm:VDisplayPageCaption}'), ExpandConstant('{cm:VDisplayPageDesc}'));
+
+  VDisplayBodyLabel := TNewStaticText.Create(WizardForm);
+  VDisplayBodyLabel.Parent := VDisplayPage.Surface;
+  VDisplayBodyLabel.Left := 0;
+  VDisplayBodyLabel.Top := 0;
+  VDisplayBodyLabel.Width := VDisplayPage.SurfaceWidth;
+  VDisplayBodyLabel.WordWrap := True;
+  VDisplayBodyLabel.AutoSize := True;
+  VDisplayBodyLabel.Caption := ExpandConstant('{cm:VDisplayPageBody}');
+
+  VDisplayOptionLabel := TNewStaticText.Create(WizardForm);
+  VDisplayOptionLabel.Parent := VDisplayPage.Surface;
+  VDisplayOptionLabel.Left := 0;
+  VDisplayOptionLabel.Top := VDisplayBodyLabel.Top + VDisplayBodyLabel.Height + ScaleY(12);
+  VDisplayOptionLabel.Width := VDisplayPage.SurfaceWidth;
+  VDisplayOptionLabel.WordWrap := True;
+  VDisplayOptionLabel.Font.Style := [fsBold];
+  VDisplayOptionLabel.Font.Color := $43A02E;
+  VDisplayOptionLabel.Caption := ExpandConstant('{cm:VDisplayPageOption}');
+
   // Live checklist shown during post-install (driven in RunProvisionChecklist).
   ProgressPage := CreateOutputProgressPage(
     ExpandConstant('{cm:ProvisionPageCaption}'), ExpandConstant('{cm:ProvisionPageDesc}'));
@@ -528,7 +581,9 @@ begin
   if (PageID = wpSelectDir) or (PageID = wpSelectProgramGroup) or (PageID = wpSelectTasks) then
     Result := True
   else if (InternetPage <> nil) and (PageID = InternetPage.ID) then
-    Result := SettingsHasKey('internet_access_enabled');
+    Result := SettingsHasKey('internet_access_enabled')
+  else if (VDisplayPage <> nil) and (PageID = VDisplayPage.ID) then
+    Result := RegValueExists(HKEY_LOCAL_MACHINE, VDisplaySetupKey, 'VirtualDisplayAccepted');
 end;
 
 // Content of the Ready page's memo. In update mode it says what is about to
@@ -594,8 +649,16 @@ begin
     // the Next caption on every page change before calling us — which is why
     // the Update caption above is re-applied here rather than set once.
     WizardForm.NextButton.Caption := ExpandConstant('{cm:InternetBtnAccept}');
+  end else if (VDisplayPage <> nil) and (CurPageID = VDisplayPage.ID) then begin
+    VDisplaySkipped := False;
+    WizardForm.BackButton.Visible := False;
+    BackButtonHidden := True;
+    InternetSkipButton.OnClick := @VDisplaySkipClick;
+    InternetSkipButton.Visible := True;
+    WizardForm.NextButton.Caption := ExpandConstant('{cm:InternetBtnAccept}');
   end else begin
     InternetSkipButton.Visible := False;
+    InternetSkipButton.OnClick := @InternetSkipClick;
     // Only ever restore what we hid. The Internet page is the one page that
     // hides Back, and it takes the branch above rather than this one.
     if BackButtonHidden then begin
@@ -617,6 +680,8 @@ begin
   Result := True;
   if (InternetPage <> nil) and (CurPageID = InternetPage.ID) then
     InternetAuthorized := not InternetSkipped;
+  if (VDisplayPage <> nil) and (CurPageID = VDisplayPage.ID) then
+    VDisplayAccepted := not VDisplaySkipped;
   // Finish: the last click is what the start-at-logon box means. Done before
   // Inno runs the [Run] rows, so the admin page it opens next already sees the
   // task the way the box left it.
@@ -797,7 +862,7 @@ end;
 //
 // Same mechanism as the update task (trigger-less, RunLevel=HighestAvailable,
 // started on demand by the unprivileged server), for the driver install that
-// "Add Virtual Display" needs on a headless PC. Unlike the update task the
+// turning "MoonlightWeb Virtual Display" on and off needs. Unlike the update task the
 // command is a fixed path under {app} — admin-writable only — so nothing the
 // user's account can write is ever what runs elevated. Hidden: it runs on a
 // desktop that may have no monitor, and it never has anything to show.
@@ -833,6 +898,27 @@ begin
   if SaveStringToFile(xmlPath, xml, False) then
     Exec('schtasks.exe', '/Create /TN "' + VDisplayTaskName + '" /XML "' + xmlPath + '" /F',
          '', SW_HIDE, ewWaitUntilTerminated, rc);
+end;
+
+// Run the app's own elevated helper for one verb on "MoonlightWeb Virtual
+// Display": `install` creates the driver's device node from the files under
+// {app}\drivers\vdd, named, disabled, and creates none when one is there;
+// `uninstall` removes it (and the driver package, unless another node still
+// uses it). The request is a file holding the verb and nothing else; the
+// helper re-hashes the driver against the constants compiled into it before
+// SetupAPI sees a byte. Exit 0 or 3010 (reboot wanted) both mean done.
+procedure RunVirtualDisplayHelper(verb: String);
+var
+  dir: String;
+  rc: Integer;
+begin
+  dir := ExpandConstant('{tmp}\vdisplay');
+  ForceDirectories(dir);
+  if not SaveStringToFile(dir + '\request.json', '{"action":"' + verb + '"}', False) then Exit;
+  Exec(ExpandConstant('{app}\{#MyAppExe}'),
+       VDisplayArgs + ' --stage=driver --vdisplay-dir "' + dir + '"',
+       ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, rc);
+  Log(Format('virtual display helper (%s): exit %d', [verb, rc]));
 end;
 
 // Release the files under {app} before the copy: a running server holds its exe
@@ -1248,6 +1334,13 @@ begin
   // stream a headless machine just as well. Refreshed on every install so
   // the action follows {app}.
   RegisterVirtualDisplayTask();
+  // "MoonlightWeb Virtual Display" itself: on Accept, and again on every
+  // update once accepted (the helper finds the node and creates no second
+  // one — this is what makes an update a no-op and a reinstall a repair).
+  if VDisplayAccepted then
+    RegWriteDWordValue(HKEY_LOCAL_MACHINE, VDisplaySetupKey, 'VirtualDisplayAccepted', 1);
+  if RegValueExists(HKEY_LOCAL_MACHINE, VDisplaySetupKey, 'VirtualDisplayAccepted') then
+    RunVirtualDisplayHelper('install');
 
   // provisioning.json — consumed and removed by the server on first run.
   // An update skips it: the server is already provisioned, and replaying a
@@ -1413,9 +1506,12 @@ begin
     Exec('schtasks.exe', '/Delete /TN "' + UpdateTaskName + '" /F', '', SW_HIDE,
          ewWaitUntilTerminated, rc);
     DelTree(ExpandConstant('{localappdata}\{#MyAppName}\update'), True, True, True);
-    // The virtual display helper task and its staging directory. The driver
-    // itself stays: on a headless PC it is the only screen there is, and the
-    // app's own "Remove virtual display" is the way to take it out.
+    // "MoonlightWeb Virtual Display" goes with the app — this is the one
+    // place it is ever removed from (the app offers no such button). Run
+    // while the exe and the driver files are still under {app}.
+    RunVirtualDisplayHelper('uninstall');
+    RegDeleteKeyIncludingSubkeys(HKEY_LOCAL_MACHINE, VDisplaySetupKey);
+    // The virtual display helper task and its staging directory.
     Exec('schtasks.exe', '/Delete /TN "' + VDisplayTaskName + '" /F', '', SW_HIDE,
          ewWaitUntilTerminated, rc);
     DelTree(ExpandConstant('{localappdata}\{#MyAppName}\vdisplay'), True, True, True);

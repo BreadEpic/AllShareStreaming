@@ -595,6 +595,12 @@ install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../frontend" DESTINATION .
 if(WIN32 AND _mw_ssl_prebuilt)
     install(FILES ${_mw_ssl_dlls} DESTINATION .)
 endif()
+if(WIN32)
+    # "MoonlightWeb Virtual Display": the bundled IddCx driver package (MIT,
+    # SignPath-signed; pinned by SHA-256 in src/backend/VirtualDisplay.h) that
+    # the installer's elevated helper installs from {app}\drivers\vdd.
+    install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/installer/drivers/vdd" DESTINATION drivers)
+endif()
 
 set(CPACK_PACKAGE_NAME "moonlightweb")
 set(CPACK_PACKAGE_VENDOR "moonlightweb")

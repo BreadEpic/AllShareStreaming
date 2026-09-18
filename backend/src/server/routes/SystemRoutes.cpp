@@ -822,65 +822,19 @@ void registerSystemRoutes(HttpServer& server, AppSettings& appSettings, AuthMana
             });
         });
 
-    // ── Virtual display (headless native host) ──────────────────────────────
+    // ── Virtual display ─────────────────────────────────────────────────────
     //
-    // GET /api/native/virtual-display — can this machine have a virtual display
-    // added, is one there, and (admin only) how it would be done.
-    //
-    // The gate is the admin privilege (req.isLocal: the host machine, or a
-    // session that unlocked the remote admin password — LAN or tunnel), NOT
-    // GamepadDriver's loopback-only rule: a headless server is managed from
-    // another machine or it is not managed at all. That is one notch stricter
-    // than /api/update/start, which any signed-in session may call.
+    // GET /api/native/virtual-display — "MoonlightWeb Virtual Display" on this
+    // machine: supported, installed, enabled (on), active (in the engine's
+    // list), can_manage + method (task = the installer's elevated task,
+    // elevated = this process already is, inprocess = macOS), and the
+    // operation in flight, if any. Nothing here adds or removes it: the
+    // installer does, and opening its card is what turns it on.
     server.router()->get("/api/native/virtual-display", [](const HttpRequest& req) {
-        const VirtualDisplay::Status st = VirtualDisplay::probe();
-        QJsonObject obj = VirtualDisplay::toJson(st, /*admin=*/req.isLocal);
-        if (req.isLocal) obj["job"] = VirtualDisplayJob::instance().statusJson();
+        Q_UNUSED(req);
+        QJsonObject obj = VirtualDisplay::toJson(VirtualDisplay::probe());
+        obj["job"] = VirtualDisplayJob::instance().statusJson();
         return HttpResponse::json(obj);
-    });
-
-    // POST /api/native/virtual-display/add {width, height, refresh, hdr, gpu}
-    // Starts the job; poll /status. 403 without the admin privilege, 400 on a
-    // request outside the presets, 409 when one is running or nothing here can
-    // elevate (the answer names the download for a manual install).
-    server.router()->post("/api/native/virtual-display/add", [](const HttpRequest& req) {
-        const VirtualDisplay::Status st = VirtualDisplay::probe();
-        if (!VirtualDisplay::mayManage(req.isLocal, st))
-            return HttpResponse::error(403, "Administrator privilege required");
-        QJsonObject body = QJsonDocument::fromJson(req.body).object();
-        body["action"] = QStringLiteral("add");
-        QString error;
-        const auto parsed = VirtualDisplay::parseRequest(
-            QJsonDocument(body).toJson(QJsonDocument::Compact), &error);
-        if (!parsed) return HttpResponse::error(400, error);
-        const QString err = VirtualDisplayJob::instance().start(*parsed);
-        if (!err.isEmpty()) {
-            QJsonObject obj;
-            obj["error"] = err;
-            obj["can_install"] = st.canInstall;
-            obj["download_url"] = VirtualDisplay::downloadUrl();
-            return HttpResponse::json(obj, 409);
-        }
-        return HttpResponse::json(VirtualDisplayJob::instance().statusJson(), 202);
-    });
-
-    // POST /api/native/virtual-display/remove — the reverse: device node and
-    // package gone, the card back to its empty state.
-    server.router()->post("/api/native/virtual-display/remove", [](const HttpRequest& req) {
-        const VirtualDisplay::Status st = VirtualDisplay::probe();
-        if (!VirtualDisplay::mayManage(req.isLocal, st))
-            return HttpResponse::error(403, "Administrator privilege required");
-        VirtualDisplay::Request r;
-        r.action = VirtualDisplay::Request::Action::Remove;
-        const QString err = VirtualDisplayJob::instance().start(r);
-        if (!err.isEmpty()) return HttpResponse::error(409, err);
-        return HttpResponse::json(VirtualDisplayJob::instance().statusJson(), 202);
-    });
-
-    // GET /api/native/virtual-display/status — progress of the job above.
-    server.router()->get("/api/native/virtual-display/status", [](const HttpRequest& req) {
-        if (!req.isLocal) return HttpResponse::error(403, "Administrator privilege required");
-        return HttpResponse::json(VirtualDisplayJob::instance().statusJson());
     });
 
     // POST /api/system/restart — restart this MoonlightWeb process. Localhost-only.

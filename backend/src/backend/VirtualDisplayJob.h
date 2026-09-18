@@ -21,87 +21,103 @@
 
 #include <QDateTime>
 #include <QJsonObject>
+#include <QList>
 #include <QObject>
 #include <QString>
 #include <QTimer>
 
+#include <functional>
 #include <optional>
 
-class QNetworkAccessManager;
-
 /**
- * @brief The add/remove operation, from the click to the display being there.
+ * @brief Turning "MoonlightWeb Virtual Display" on and off, from a stream's
+ * start to the display being there — and back.
  *
- * One at a time, fully asynchronous on the Qt main thread (event-driven, like
- * GamepadDriver::install): download → verify → extract → verify each file →
- * write the request → reach the elevated helper (see VirtualDisplay.h for the
- * three ways) → wait for its result → re-probe the engine → persist.
+ * One operation at a time, fully asynchronous on the Qt main thread: write the
+ * request → reach the elevated helper (see VirtualDisplay.h for the three
+ * ways) → wait for its result → re-probe the engine → persist. Callers pass a
+ * callback; several streams asking for the same thing at once share one
+ * operation, and a request that arrives while another runs waits its turn.
  *
- * The browser polls statusJson() every second; the states are the progress
- * text it shows.
+ * The off switch is deferred (releaseSoon): a page reload or a quality
+ * switch ends one worker and starts another within a second, and toggling a
+ * display — moving every window twice — for that would be worse than
+ * leaving it on a moment longer.
  */
 class VirtualDisplayJob : public QObject
 {
     Q_OBJECT
 
 public:
+    using Callback = std::function<void(bool ok, const QString& error)>;
+
     static VirtualDisplayJob& instance();
 
     enum class State
     {
         Idle,
-        Downloading,
-        Verifying,
-        Staging,
         Elevating,
-        Installing,
+        Applying,
         Configuring,
         Refreshing,
         Done,
         Failed
     };
 
-    /// Start an operation. Returns an English reason when it cannot start:
-    /// one already running, platform unsupported, no way to elevate.
-    QString start(const VirtualDisplay::Request& req);
+    /// Turn the display on (enable, mode, primary). Answers at once when it
+    /// is already on. Cancels a pending releaseSoon().
+    void activate(Callback cb);
+
+    /// Turn it off (previous primary back, disable). @p cb may be null.
+    void deactivate(Callback cb);
+
+    /// Turn it off in a few seconds unless activate() comes first.
+    void releaseSoon();
 
     bool running() const;
 
-    /// {state, error?, reboot_required?, started_at, finished_at?, display?}
+    /// {state, action, error?, started_at, finished_at?, display?}
     QJsonObject statusJson() const;
 
 private:
     explicit VirtualDisplayJob(QObject* parent = nullptr);
 
+    struct Pending
+    {
+        VirtualDisplay::Request::Action action;
+        Callback cb;
+    };
+
+    void enqueue(VirtualDisplay::Request::Action action, Callback cb);
+    void startNext();
     void setState(State s);
     void fail(const QString& error);
     void succeed(const VirtualDisplay::Result& res);
+    void settle(bool ok, const QString& error);
 
-    void download();
-    void extract();
     void dispatch();
     void applyInProcess();
     void runHelper(const QStringList& args, bool inConsoleSession);
     void runTask();
     void pollResult();
     void handleResult(const VirtualDisplay::Result& res);
-    void refreshEngine();
 
     State m_State = State::Idle;
     VirtualDisplay::Request m_Request;
+    QList<Callback> m_Callbacks; ///< who asked for the running operation
+    QList<Pending> m_Queue;      ///< what comes after it
     QString m_Error;
-    bool m_RebootRequired = false;
     QString m_Display;
     QDateTime m_StartedAt;
     QDateTime m_FinishedAt;
 
-    QNetworkAccessManager* m_Nam = nullptr;
     QTimer m_Poll;
     QTimer m_Deadline;
+    QTimer m_Release;
     QByteArray m_HelperOut;
-    // The service path runs the driver stage as SYSTEM and the mode stage in
-    // the console session; this remembers which half is in flight.
-    bool m_ModeStagePending = false;
+    // The service path runs the elevated half as SYSTEM and the desktop half
+    // in the console session; this remembers which half is still to run.
+    std::optional<QString> m_NextStage;
     // macOS: the request was applied in this process and the poll is waiting
     // for the OS to list the display; this is the result to deliver then.
     std::optional<VirtualDisplay::Result> m_InProcessResult;

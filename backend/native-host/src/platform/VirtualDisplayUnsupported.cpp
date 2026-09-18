@@ -56,6 +56,18 @@ bool isOnline()
     return false;
 }
 
+uint32_t mainDisplay()
+{
+    return 0;
+}
+
+bool setMain(uint32_t displayId, std::string* error)
+{
+    (void)displayId;
+    if (error) *error = unsupportedReason();
+    return false;
+}
+
 uint32_t displayId()
 {
     return 0;
