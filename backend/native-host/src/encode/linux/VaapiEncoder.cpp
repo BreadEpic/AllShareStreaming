@@ -18,6 +18,7 @@
 #include "VaapiEncoder.h"
 
 #include "../../core/Log.h"
+#include "../../core/Selector.h"
 #include "../RateControl.h"
 
 #include <fcntl.h>
@@ -305,21 +306,23 @@ bool VaapiEncoder::init(const std::string& renderNode, Codec codec, int width, i
     // that is not a whole number of macroblocks is padded and cropped back.
     // HEVC's VA-API sequence buffer has no such field and the driver writes the
     // SPS, so the only honest coded size is a whole number of minimum coding
-    // blocks: round DOWN to 8 and encode that. Every common resolution already
-    // is one — 1920×1080 included — so this costs nothing where it costs
-    // nothing, and loses at most 7 columns or rows where it would otherwise
-    // hand the decoder a size the bitstream cannot express.
+    // blocks. Rounding each side on its own would be enough to encode it — and
+    // would stretch the picture, since 1366x768 becomes 1360x768, a desktop
+    // 0.4% wider than it is. Both sides come down together instead
+    // (alignedToBlocks), which costs a few more pixels and keeps the shape:
+    // 1352x760. Every common resolution is already whole blocks — 1920x1080
+    // included — so this costs nothing where it costs nothing.
     if (codec == Codec::Hevc) {
-        const int alignedWidth = m_Width & ~7;
-        const int alignedHeight = m_Height & ~7;
-        if (alignedWidth != m_Width || alignedHeight != m_Height)
+        const FrameSize aligned = alignedToBlocks(FrameSize{m_Width, m_Height}, 8);
+        if (aligned.width != m_Width || aligned.height != m_Height)
             log::info("[native] VA-API HEVC: " + std::to_string(m_Width) + "x" +
                       std::to_string(m_Height) +
                       " is not a whole number of 8-pixel blocks — "
                       "encoding " +
-                      std::to_string(alignedWidth) + "x" + std::to_string(alignedHeight));
-        m_Width = alignedWidth;
-        m_Height = alignedHeight;
+                      std::to_string(aligned.width) + "x" + std::to_string(aligned.height) +
+                      ", the same shape");
+        m_Width = aligned.width;
+        m_Height = aligned.height;
     }
     m_Fps = fps > 0 ? fps : 60;
     m_BitrateKbps = bitrateKbps > 0 ? bitrateKbps : 20000;

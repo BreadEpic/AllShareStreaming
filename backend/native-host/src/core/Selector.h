@@ -129,6 +129,21 @@ struct FramePolicy
 /// session when the display changes mode under it.
 FrameSize frameForDisplay(FrameSize display, FrameSize frame, FramePolicy policy = {});
 
+/// The largest frame of whole @p block × @p block blocks that fits inside
+/// @p frame AND keeps its shape — what an encoder that cannot express a
+/// partial block has to be given.
+///
+/// Rounding each side on its own is what a naive aligner does, and it stretches
+/// the picture: 1366x768 becomes 1360x768, a desktop 0.4% wider than it is.
+/// Here both sides move together, so the same frame becomes 1352x760 — a few
+/// pixels smaller, the exact shape of the desktop, and nothing on screen leans.
+/// A frame already made of whole blocks comes back untouched, which is every
+/// common resolution (1920x1080, 2560x1440, 3840x2160).
+///
+/// Never returns less than one block on a side. @p block must be a power of
+/// two; anything else, or a frame with no size, comes back unchanged.
+FrameSize alignedToBlocks(FrameSize frame, int block);
+
 /// The FramePolicy a session's config asks for.
 inline FramePolicy policyOf(const SessionConfig& config)
 {

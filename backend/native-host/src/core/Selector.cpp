@@ -381,6 +381,42 @@ bool fallBackFromMatch(SessionConfig& config)
     return true;
 }
 
+FrameSize alignedToBlocks(FrameSize frame, int block)
+{
+    if (block <= 1 || (block & (block - 1)) != 0) return frame;
+    if (frame.width <= 0 || frame.height <= 0) return frame;
+    const int w = frame.width & ~(block - 1);
+    const int h = frame.height & ~(block - 1);
+    if (w == frame.width && h == frame.height) return frame;
+    if (w < block || h < block) return FrameSize{std::max(w, block), std::max(h, block)};
+
+    // Both sides are now whole blocks, but rounding them apart moved the
+    // shape. Walk down the block grid from there — at most a few steps, since
+    // one side is at most one block short of right — and keep the pair whose
+    // shape is closest to the one asked for. The search is bounded: a frame
+    // stays within a handful of blocks of the size it came in as.
+    const double wanted = double(frame.width) / double(frame.height);
+    FrameSize best{w, h};
+    double bestErr = std::abs(double(w) / double(h) - wanted);
+    const int steps = 16;
+    for (int i = 0; i <= steps; ++i) {
+        const int cw = w - i * block;
+        if (cw < block) break;
+        // The height that comes closest to the shape at this width, snapped
+        // to the grid, never above what was asked for.
+        int ch = int(std::lround(double(cw) / wanted)) & ~(block - 1);
+        if (ch > h) ch = h;
+        if (ch < block) continue;
+        const double err = std::abs(double(cw) / double(ch) - wanted);
+        // A tie goes to the larger frame, which is the one found first.
+        if (err < bestErr - 1e-12) {
+            bestErr = err;
+            best = FrameSize{cw, ch};
+        }
+    }
+    return best;
+}
+
 FrameSize frameForDisplay(FrameSize display, FrameSize frame, FramePolicy policy)
 {
     if (display.width <= 0 || display.height <= 0 || frame.width <= 0 || frame.height <= 0)

@@ -6,6 +6,8 @@
 
 #include "core/Selector.h"
 
+#include <cmath>
+
 using namespace mw::native;
 
 namespace {
@@ -486,6 +488,42 @@ void run_selector_tests()
         f = frameForDisplay({3840, 2160}, {1920, 1080});
         CHECK_EQ(f.width, 1920);
         CHECK_EQ(f.height, 1080);
+
+        // An encoder that cannot express a partial block — VA-API in HEVC,
+        // whose sequence buffer has no cropping window and whose SPS the
+        // driver writes — is given whole blocks. Both sides come down
+        // together, so the picture keeps its shape instead of leaning.
+        FrameSize a = alignedToBlocks({1366, 768}, 8);
+        CHECK_EQ(a.width, 1352);
+        CHECK_EQ(a.height, 760);
+        // 1352/760 is 1.77895, 1366/768 is 1.77864 — closer than the 1.78947
+        // that rounding each side apart (1360x760) would have given.
+        CHECK(std::abs(double(a.width) / a.height - 1366.0 / 768.0) <
+              std::abs(1360.0 / 760.0 - 1366.0 / 768.0));
+        // Every common resolution is already whole blocks: untouched.
+        for (const FrameSize& s : {FrameSize{1920, 1080}, FrameSize{2560, 1440},
+                                   FrameSize{3840, 2160}, FrameSize{1280, 720}}) {
+            const FrameSize kept = alignedToBlocks(s, 8);
+            CHECK_EQ(kept.width, s.width);
+            CHECK_EQ(kept.height, s.height);
+        }
+        // A phone's shape, made to measure and not a multiple of 8.
+        a = alignedToBlocks({2532, 1170}, 8);
+        CHECK_EQ(a.width % 8, 0);
+        CHECK_EQ(a.height % 8, 0);
+        CHECK(a.width <= 2532 && a.height <= 1170);
+        CHECK(std::abs(double(a.width) / a.height - 2532.0 / 1170.0) < 0.005);
+        // Nothing to align, nothing to lose.
+        a = alignedToBlocks({1920, 1080}, 1);
+        CHECK_EQ(a.width, 1920);
+        a = alignedToBlocks({1920, 1080}, 6); // not a power of two
+        CHECK_EQ(a.width, 1920);
+        a = alignedToBlocks({0, 0}, 8);
+        CHECK_EQ(a.width, 0);
+        // Smaller than one block on a side: one block, never zero.
+        a = alignedToBlocks({4, 4}, 8);
+        CHECK_EQ(a.width, 8);
+        CHECK_EQ(a.height, 8);
 
         // Unknown sizes change nothing.
         f = frameForDisplay({0, 0}, {1920, 1080});
