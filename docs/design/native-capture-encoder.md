@@ -4608,10 +4608,27 @@ piloté par CDP (recette dans la mémoire de session) : détection après trois
 événements (« keeps putting the pointer back at 1280,720 » dans le log), zéro
 `JUMP` ensuite, un balayage de 400 px à droite puis à gauche ramène la vue au
 pixel, Échap vers le menu → placements en 1,5 s et le curseur suit à nouveau,
-reprise → re-détection. macOS et Linux : compilés sur mw-mac et UM790Pro, tests
-unitaires verts (4190/4190 sur l'UM790Pro) ; pas de jeu recentreur sur le Mac
-de banc, et l'UM790Pro est en Wayland — le chemin X11 reste à mesurer sur un
-bureau X avec un jeu du genre.
+reprise → re-détection. macOS : compilé sur mw-mac, tests unitaires verts ; pas
+de jeu recentreur sur le Mac de banc, le chemin Quartz n'est pas mesuré.
+
+**Mesuré sur l'UM790Pro en GNOME Xorg** (session basculée le temps du test),
+avec une sonde de banc `recentre-live` : une fenêtre X qui, comme un jeu SDL en
+mode *warp*, ramène le pointeur au centre (960,540) toutes les 4 ms et cumule
+l'écart lu, et le vrai `UinputInput` nourri de positions client à 125 Hz :
+
+| Phase | Résultat |
+|---|---|
+| A — bureau, 20 placements | le pointeur suit 20/20 |
+| B — jeu, balayage +400 px puis −400 px | détection au 3ᵉ événement (ligne « keeps putting the pointer back at 960,540 »), 80 warps par balayage, le jeu lit ≈ +470 puis −556 |
+| C — le jeu lâche | « no longer put back » et placements suivis à nouveau **362 ms** après (300 ms de grâce + cadence) |
+| D — le jeu reprend | re-détection, +200 px lus ≈ +236 |
+
+Deux écarts attendus dans ce que le jeu lit : le device relatif uinput passe par
+l'**accélération de libinput** (×1,2 à 1,4 à cette vitesse, la même chose que
+l'*enhance pointer precision* de Windows sur `MOUSEEVENTF_MOVE`), et le
+placement absolu d'**avant** la détection est lu une fois comme un coup depuis
+le centre (−360,−40 ici : les trois premiers événements d'une prise en main,
+inhérent à la règle des trois retours, Windows pareil).
 
 **Limites assumées.** Les deltas dérivés de positions gardent l'accélération
 du navigateur client (pas de pointer lock en mode bureau) en plus de celle de
