@@ -389,7 +389,7 @@ export class SettingsView {
     }
 
     _computeAutoBitrate(height, fps, aspect, chroma444, hdr) {
-        return computeAutoBitrate(height, fps, aspect, chroma444, hdr);
+        return computeAutoBitrate(height, fps, aspect, chroma444, hdr, IS_MOBILE_OR_TABLET);
     }
 
     /**

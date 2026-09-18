@@ -2424,6 +2424,7 @@ const MoonlightApp = {
                 aspect,
                 settings.chroma_444_enabled === true,
                 settings.hdr_enabled === true,
+                IS_MOBILE_OR_TABLET,
             ) * 1000
         );
     },
@@ -3548,6 +3549,7 @@ const MoonlightApp = {
                     effective.stream_aspect,
                     effective.chroma_444_enabled === true,
                     effective.hdr_enabled === true,
+                    IS_MOBILE_OR_TABLET,
                 ) * 1000;
             newBitrate = Math.max(2000, Math.min(newBitrate, autoKbps));
             toastKey = 'stream.degradeResolution';
