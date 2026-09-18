@@ -28,6 +28,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <vector>
 
 namespace mw::native::input {
@@ -171,6 +172,21 @@ void post(CGEventRef event)
     CFRelease(event);
 }
 
+/// Where the pointer is, in points of the global display space — read from the
+/// window server, not from our own account of what we posted. An event created
+/// out of nothing carries the current location, which is the documented way to
+/// ask without an NSApplication around.
+bool pointerLocation(double& x, double& y)
+{
+    CGEventRef probe = CGEventCreate(nullptr);
+    if (!probe) return false;
+    const CGPoint at = CGEventGetLocation(probe);
+    CFRelease(probe);
+    x = at.x;
+    y = at.y;
+    return true;
+}
+
 } // namespace
 
 CgInput::~CgInput()
@@ -195,12 +211,8 @@ bool CgInput::start(std::string& error)
     }
 
     // Where the pointer is now, so relative motion starts from the truth.
-    if (CGEventRef probe = CGEventCreate(nullptr)) {
-        const CGPoint at = CGEventGetLocation(probe);
-        m_X = at.x;
-        m_Y = at.y;
-        CFRelease(probe);
-    }
+    pointerLocation(m_X, m_Y);
+    m_Recentre.reset();
     m_Modifiers = 0;
     m_Started = true;
     log::info("[native] input: Quartz events on the display at " + std::to_string(m_Left) + "," +
@@ -228,6 +240,9 @@ void CgInput::setDisplayRect(int left, int top, int right, int bottom)
     m_Top = top;
     m_Right = right;
     m_Bottom = bottom;
+    // A spot the pointer kept returning to on the old rectangle means nothing
+    // on the new one.
+    m_Recentre.reset();
     if (m_Started)
         log::info("[native] input: display now at " + std::to_string(left) + "," +
                   std::to_string(top) + " " + std::to_string(right - left) + "x" +
@@ -552,10 +567,50 @@ void CgInput::injectMousePosition(const InputEvent& event)
 {
     if (event.referenceWidth <= 0 || event.referenceHeight <= 0) return;
     if (m_Right <= m_Left || m_Bottom <= m_Top) return;
-    const double x =
+    double x =
         m_Left + static_cast<double>(event.positionX) * (m_Right - m_Left) / event.referenceWidth;
-    const double y =
+    double y =
         m_Top + static_cast<double>(event.positionY) * (m_Bottom - m_Top) / event.referenceHeight;
+    // Clamped here and not only in moveTo: the detector compares what was
+    // asked with what is found, and what was asked is the clamped point.
+    x = std::min(std::max(x, static_cast<double>(m_Left)), static_cast<double>(m_Right - 1));
+    y = std::min(std::max(y, static_cast<double>(m_Top)), static_cast<double>(m_Bottom - 1));
+
+    // A game that keeps warping the pointer to the middle of its window reads
+    // the mouse as the distance from there — placing the client's position
+    // would hand it half a screen per frame. Found by looking where the
+    // pointer is before each placement; see RecentreDetector for the whole
+    // argument. From then on the client's motion goes in as deltas, exactly
+    // as gaming mode would send them, until the game lets the pointer be.
+    double hereX = 0;
+    double hereY = 0;
+    const bool haveHere = pointerLocation(hereX, hereY);
+    const RecentreDetector::Verdict verdict =
+        m_Recentre.observe(haveHere, std::llround(hereX), std::llround(hereY), std::llround(x),
+                           std::llround(y), steadyNowUs());
+    if (verdict.changed) {
+        if (verdict.relative)
+            log::info(RecentreDetector::enteredMessage(m_Recentre.anchorX(), m_Recentre.anchorY()));
+        else
+            log::info(RecentreDetector::leftMessage());
+    }
+    if (verdict.relative) {
+        // A pointer that re-enters the picture far from where it left is a
+        // jump the viewer did not make: no game should turn on it.
+        if (RecentreDetector::isReentryJump(verdict.deltaX, verdict.deltaY, m_Right - m_Left))
+            return;
+        if (verdict.deltaX == 0 && verdict.deltaY == 0) return;
+        // A Quartz event always carries a position, so the delta is applied
+        // from where the pointer IS — the spot the game keeps it at — and
+        // stamped as the delta too, which is what a game reading raw motion
+        // looks at. Exactly the event a mouse moved from there would produce.
+        const double fromX = haveHere ? hereX : m_X;
+        const double fromY = haveHere ? hereY : m_Y;
+        moveTo(fromX + verdict.deltaX, fromY + verdict.deltaY, static_cast<int>(verdict.deltaX),
+               static_cast<int>(verdict.deltaY));
+        return;
+    }
+
     moveTo(x, y, static_cast<int>(x - m_X), static_cast<int>(y - m_Y));
 }
 

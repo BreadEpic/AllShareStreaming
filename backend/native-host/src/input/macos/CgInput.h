@@ -18,6 +18,7 @@
 #pragma once
 
 #include "../IInputSink.h"
+#include "../RecentreDetector.h"
 
 #include <atomic>
 #include <cstdint>
@@ -86,6 +87,9 @@ private:
     bool ensureCharMap();
 
     void injectMouseMove(int deltaX, int deltaY);
+    /// A client position — placed as such, or, once a game is found to be
+    /// re-centring the pointer, applied as the delta from the previous one.
+    /// See RecentreDetector.
     void injectMousePosition(const InputEvent& event);
     void injectMouseButton(int button, bool down);
     void injectScroll(int amount, bool horizontal);
@@ -136,6 +140,11 @@ private:
     int m_Top = 0;
     int m_Right = 0;
     int m_Bottom = 0;
+
+    /// Whether the application under the pointer keeps warping it back to one
+    /// spot — the one case where placing the client's position is wrong.
+    /// Under m_Mutex like everything else here.
+    RecentreDetector m_Recentre;
 
     /// For the click count the OS wants declared: which button was last
     /// pressed, when, and how many times in a row.

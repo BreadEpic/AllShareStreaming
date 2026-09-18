@@ -19,6 +19,7 @@
 
 #include <cstdint>
 #include <cstdlib>
+#include <string>
 
 namespace mw::native::input {
 
@@ -122,6 +123,33 @@ public:
     bool relative() const { return m_Relative; }
     int64_t anchorX() const { return m_AnchorX; }
     int64_t anchorY() const { return m_AnchorY; }
+
+    /// A delta no hand made: the viewer's pointer left the picture and came
+    /// back somewhere else, and the difference between the two client
+    /// positions is a jump across the screen. A game turned by it would face
+    /// the other way; a delta this size is dropped instead. A quarter of the
+    /// captured display, which no single mouse event between two frames
+    /// reaches.
+    static bool isReentryJump(int64_t deltaX, int64_t deltaY, int64_t displayWidth)
+    {
+        const int64_t jump = displayWidth / 4 > 1 ? displayWidth / 4 : 1;
+        return std::llabs(deltaX) >= jump || std::llabs(deltaY) >= jump;
+    }
+
+    /// The log lines for the two flips of the verdict, worded once for every
+    /// host so the same situation reads the same in every log.
+    static std::string enteredMessage(int64_t anchorX, int64_t anchorY)
+    {
+        return "[native] input: the application keeps putting the pointer back at " +
+               std::to_string(anchorX) + "," + std::to_string(anchorY) +
+               " (a game reading the mouse from the cursor) — client positions go in as "
+               "deltas from there";
+    }
+    static const char* leftMessage()
+    {
+        return "[native] input: the pointer is no longer put back, client positions are "
+               "placed again";
+    }
 
     /// Forget everything: a new session, or a display that moved.
     void reset()

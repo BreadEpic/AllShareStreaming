@@ -21,6 +21,7 @@
 #include "EvdevKeyMap.h"
 
 #include <cerrno>
+#include <chrono>
 #include <cstring>
 #include <fcntl.h>
 #include <linux/input-event-codes.h>
@@ -173,6 +174,13 @@ uint16_t buttonCode(int button)
 /// change does not need the device recreated.
 constexpr int32_t kAbsMax = 32767;
 
+int64_t steadyNowUs()
+{
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
 std::string errnoText()
 {
     char buffer[128] = {};
@@ -274,6 +282,7 @@ bool UinputInput::start(std::string& error)
     // exactly what it was before, which is right on the single-screen hosts
     // that are the common case.
     m_X11.open();
+    m_Recentre.reset();
 
     log::info("[native] input: uinput keyboard and pointer created");
     if (pointerDiagnostics())
@@ -559,6 +568,9 @@ void UinputInput::setDisplayRect(int left, int top, int right, int bottom)
     m_RectTop = top;
     m_RectWidth = right - left;
     m_RectHeight = bottom - top;
+    // A spot the pointer kept returning to on the old rectangle means nothing
+    // on the new one.
+    m_Recentre.reset();
     if (pointerDiagnostics())
         log::info("[PTR] display rect " + std::to_string(left) + "," + std::to_string(top) + " " +
                   std::to_string(right - left) + "x" + std::to_string(bottom - top));
@@ -682,6 +694,40 @@ void UinputInput::inject(const InputEvent& event)
             const int64_t rawY = (static_cast<int64_t>(event.positionY) * kAbsMax) / refH;
             x = static_cast<int>(rawX < 0 ? 0 : (rawX > kAbsMax ? kAbsMax : rawX));
             y = static_cast<int>(rawY < 0 ? 0 : (rawY > kAbsMax ? kAbsMax : rawY));
+        }
+
+        // A game that keeps warping the pointer to the middle of its window
+        // reads the mouse as the distance from there — placing the client's
+        // position would hand it half a screen per frame. Found by looking
+        // where the pointer is before each placement (X11 only: Wayland will
+        // not say, and the detector then never decides); see RecentreDetector
+        // for the whole argument. From then on the client's motion goes in as
+        // deltas on the relative device, exactly as gaming mode would send
+        // them, until the game lets the pointer be.
+        if (mapped) {
+            int hereX = 0;
+            int hereY = 0;
+            const bool haveHere = m_X11.isOpen() && m_X11.position(hereX, hereY);
+            const RecentreDetector::Verdict verdict =
+                m_Recentre.observe(haveHere, hereX, hereY, onDeskX, onDeskY, steadyNowUs());
+            if (verdict.changed) {
+                if (verdict.relative)
+                    log::info(RecentreDetector::enteredMessage(m_Recentre.anchorX(),
+                                                               m_Recentre.anchorY()));
+                else
+                    log::info(RecentreDetector::leftMessage());
+            }
+            if (verdict.relative) {
+                // A pointer that re-enters the picture far from where it left
+                // is a jump the viewer did not make: no game should turn on it.
+                if (RecentreDetector::isReentryJump(verdict.deltaX, verdict.deltaY, m_RectWidth))
+                    break;
+                if (verdict.deltaX == 0 && verdict.deltaY == 0) break;
+                emit(m_Keyboard, EV_REL, REL_X, static_cast<int32_t>(verdict.deltaX));
+                emit(m_Keyboard, EV_REL, REL_Y, static_cast<int32_t>(verdict.deltaY));
+                emitSyn(m_Keyboard);
+                break;
+            }
         }
 
         emit(m_Absolute, EV_ABS, ABS_X, static_cast<int32_t>(x));

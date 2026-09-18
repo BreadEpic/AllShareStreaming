@@ -1,156 +1,123 @@
+# Moteur natif de capture & encodage — MoonlightWeb Native Host
 
-## 29. Deux souris pendant un glissement de fenêtre, et la souris qui attend un clic en mode jeu (18/09/2026)
+> Chantier demandé dans `moonlightweb-native-capture-encoder-plan.md`.
+> Branche : `feature/native-capture-encoder`.
+>
+> Ce document est le livrable d'architecture de la mission (§34) **tenu à jour
+> par ce qui a été mesuré**, pas par ce qui était prévu. Chaque chiffre ici a
+> été relevé sur du matériel réel ; les sections marquées ⚠️ consignent une
+> hypothèse que le banc a **réfutée**, et sont les plus utiles à lire.
+>
+> Le plan de session d'origine vit dans
+> `~/.claude/plans/splendid-enchanting-rossum.md` ; en cas de divergence,
+> **c'est ce fichier-ci qui fait foi** — il est le seul des deux à être
+> versionné avec le code qu'il décrit.
 
-Deux signalements de Bruno sur le client Desktop, le 18/09 :
+---
 
-1. **Game mode ON, la session démarre, la souris reste au client.** Le pointeur
-   du navigateur est visible par-dessus l'image et peut sortir du cadre tant
-   qu'on n'a pas cliqué dans l'image. Attente : « Game mode » veut dire « la
-   souris appartient à l'hôte », dès la première image.
-2. **Game mode OFF, on attrape une fenêtre par sa barre de titre :** deux
-   pointeurs à l'écran pendant tout le glissement, celui du client et celui de
-   l'hôte.
+## 1. Résumé exécutif
 
-### 29.1 Le deuxième pointeur vient de l'image, pas du client
+MoonlightWeb est un **client** GameStream : pour streamer la machine sur
+laquelle il tourne, il fallait installer Sunshine. Ce chantier lui donne son
+propre moteur de capture et d'encodage, dans le processus qui tient déjà la
+PeerConnection.
 
-C'est la suite directe du §27. Desktop Duplication déclare le pointeur **caché**
-pendant toute la boucle de déplacement d'une fenêtre ; l'hypothèse posée là-bas
-— Windows repasse en **curseur logiciel** pendant cette boucle — est justement
-ce que « caché » veut dire chez DXGI : *le pointeur n'est plus sur son plan
-matériel, il est peint dans l'image du bureau*. Le §27 a bien rétabli la
-visibilité et la position à partir de `GetCursorInfo`, mais il l'a dit au
-client qui, lui, dessine le sien : deux pointeurs, celui que Windows a peint
-dans l'image et celui que le navigateur pose par-dessus. Le rapport de Bruno est
-la preuve directe que l'image le contient — et donc que la phrase du §27.2 sur
-le mode composité était une déduction, pas une observation : le pointeur n'y
-disparaissait pas, il était déjà dans l'image.
+Le gain de latence ne vient pas du transport (inchangé) mais de ce qui
+disparaît en amont :
 
-Donc `CursorState` gagne `inImage` : *l'image porte déjà le pointeur*. Transitoire,
-contrairement au verdict par écran de `PaintedPointer.h` — il dure le temps du
-glissement. `DxgiDuplication` le lève exactement quand la substitution du §27
-joue (DXGI dit caché, Windows dit montré), et deux conséquences en découlent :
+```
+AVANT (host local via Sunshine)
+  capture → encode → RTP+FEC+AES-GCM → UDP loopback → moonlight-common-c
+    (réassemblage, déchiffrement, FEC) → QByteArray → signal Qt en file
+    → relais → fragmentation → SCTP/DTLS → navigateur
 
-- **ce qu'on dessine** — `WindowsSession::pointerToDraw()` remplace les quatre
-  `composite ? cursor() : kNoCursor` du boucle de capture : pas de pointeur si
-  le client dessine le sien, et pas de pointeur non plus si l'image le porte
-  déjà. Sans quoi le mode composité dessinait par-dessus le vrai une **forme
-  périmée** (DXGI n'envoie plus de forme pendant le glissement), et une forme
-  inversante — l'I-beam — inversée deux fois devient invisible. Le chemin
-  `PointerOnly` sort tôt pour la même raison : un pointeur peint dans le bureau
-  bouge avec le bureau, il n'y a rien de nôtre à redessiner ;
-- **ce qu'on dit au client** — `reportCursor` et `reportCursorPosition`
-  rapportent `visible && !inImage`. « Pas visible » est la vérité utile pour un
-  client qui dessine : il n'a rien à poser, l'image s'en charge. Il cache donc le
-  sien pendant le glissement et le retrouve au relâchement, quand DXGI reprend
-  la main. C'est aussi, mot pour mot, ce que Bruno attendait : le pointeur passe
-  à l'hôte seul le temps du glissement.
+APRÈS (moteur natif)
+  capture (surface GPU) → encode (zéro-copie) → fragmentation → SCTP/DTLS → navigateur
+```
 
-Rien ne change quand DXGI parle normalement : `inImage` reste faux, et les
-chemins macOS et Linux ne le lèvent jamais.
+Supprimés : un aller-retour réseau, RTP, FEC, un chiffrement AES-GCM redondant
+(DTLS chiffre déjà), le réassemblage, **et un saut de signal Qt en file**.
 
-### 29.2 Le mode jeu prend la souris à la première image
+### Mesuré (RTX 5060 Ti, 2560×1440, H.264)
 
-`_autoCapturePointer()` (`StreamView.js`) demande le verrou dès la première
-image décodée — le mode a été choisi avant que le flux existe, le redemander
-d'un clic n'apprend rien à personne. Jamais sur une vue en attente (la promotion
-d'une vue standby a sa propre passation), jamais si une autre vue tient le
-verrou.
+| Étape | Mesure |
+|---|---|
+| Capture DXGI (présent → acquis) | **0,06 ms** moyenne, 0,11 ms au pire |
+| Encodage NVENC (contenu statique) | **3,46 ms** moyenne, 3,70 ms au pire |
+| Copies mémoire par frame | **1** (lecture du bitstream GPU→CPU) |
 
-Un navigateur peut vouloir un geste à lui, et celui qui a démarré la session a
-plusieurs secondes quand l'image arrive. Sur refus, `_armPointerCapture()` arme
-un **coup unique sur la première touche** : le premier W de la partie sert de
-geste. Les clics dans l'image capturaient déjà (gestionnaire de clic du mode
-jeu), d'où le clavier seul ici. Désarmé dès que le verrou arrive, au changement
-de mode et à la fermeture. Et passer le mode jeu en cours de session demande le
-verrou tout de suite : la bascule est elle-même le geste.
+Capacités confirmées en ouvrant une vraie session : AV1, HEVC, H.264, 10-bit,
+4:4:4.
 
-Sur refus des deux, le comportement est celui d'aujourd'hui : l'indice « cliquer
-pour capturer » reste affiché et fonctionne.
+---
 
-### 29.3 La souris de l'hôte qui « se recentre » : c'est une application, pas nous
+## 2. Où le module se greffe
 
-Troisième signalement du même jour : sur DualRTX, la souris physique de l'hôte
-revient toujours au centre. Relevé sur la machine, sans session native ouverte :
+Deux points d'extension **existaient déjà** et étaient prévus pour ça :
 
-- la position est **figée à 853,480**, soit exactement le centre de l'écran
-  principal (2560×1440 à 150 %, donc 1706×960 en coordonnées virtualisées) ;
-- un `SetCursorPos` vers un autre point est **défait en moins de 100 ms**, et un
-  `SendInput` relatif ne déplace rien ;
-- `GetCursorInfo` rend `CURSOR_SHOWING` avec un **handle de curseur applicatif**
-  (ni `IDC_ARROW` ni aucun curseur système), dont la forme décodée est **vide**
-  (ink 0×0) ;
-- `hl.exe` (Counter-Strike) et `portal2.exe` tournent.
+| Point | Fichier |
+|---|---|
+| `IStreamBackend` | `backend/src/backend/streambackend/IStreamBackend.h` |
+| `MediaDescriptor` (union taguée) | `.../MediaDescriptor.h` |
 
-C'est la signature d'un jeu qui garde la souris : il pose son propre curseur
-(vide), la replace au centre à chaque image et lit le mouvement comme un écart
-à ce centre. C'est précisément le comportement pour lequel `RecentreDetector`
-existe côté injection (§ input) — mais côté souris physique de l'hôte, rien
-dans MoonlightWeb ne peut ni ne doit intervenir : le worker n'injecte que sur
-un événement du client, et il n'y en avait aucun. **Verdict : hors périmètre.**
+Le seul refactor du code existant est l'extraction d'**`IMediaEngine`**
+(`backend/src/streaming/IMediaEngine.h`) hors de `MoonlightShim`, pour que les
+relais parlent à un moteur abstrait plutôt qu'à moonlight-common-c.
+`MoonlightShim` en dérive sans qu'une ligne de son corps change.
 
-⚠️ Conséquence pour les tests : `test_win32_cursor` lit le pointeur **réel** du
-bureau. Tant qu'un jeu tient la souris avec une forme vide, trois checks
-tombent (`inkWidth > 0`, `inkHeight > 0`, `drawn + inverting > 0`) — un fait sur
-la machine, pas sur le code. À rejouer jeux fermés.
+**Inchangé, et devant le rester** : tout le chemin `gamestream` / `wolf` /
+`multiseat`, le format de trame sur le DataChannel (en-tête 17 o), le décodeur
+WebCodecs du navigateur. L'encodeur natif produit de l'Annex-B/OBU exactement
+comme Sunshine, donc le frontend n'a rien à changer pour la vidéo.
 
-### 29.4 La forme du curseur ne suit plus la souris physique de l'hôte
+---
 
-Quatrième signalement : bouger la souris **physique** de l'hôte ne déplace pas
-le pointeur du client (attendu — il est piloté en absolu depuis le navigateur),
-mais **changeait sa forme**. La raison est directe : l'hôte rapporte la forme
-que son pointeur survole, et son pointeur n'est pas toujours celui du client.
-Une main sur la souris de l'hôte qui traverse un champ de texte faisait
-apparaître un I-beam sous une main qui n'avait pas bougé.
+## 3. Structure
 
-Le client garde donc la forme reçue mais ne la **peint** que si son propre
-pointeur a bougé récemment (`CLIENT_POINTER_FRESH_MS`, 500 ms — la réponse de
-l'hôte à notre propre mouvement arrive un aller-retour plus tard, il ne faut pas
-la rejeter). Sinon elle attend : chaque `mousemove` relit la forme courante
-(`_applyLocalCursor`), donc le prochain mouvement du viewer l'applique. La toute
-première forme d'une session est toujours peinte — il n'y en a pas d'autre, et
-rien n'a encore bougé par définition.
+```
+backend/native-host/              # cible CMake mw-native-host (STATIC)
+  LICENSE.md                      # la frontière juridique, expliquée
+  cmake/boundary_check.cmake      # …et rendue mécanique
+  include/mw/native/              # API publique : C++17 pur, zéro Qt, zéro GPL
+  src/core/                       # Probe, Selector, Log, façade
+  src/capture/windows/            # DxgiDuplication (+ WGC en repli, à venir)
+  src/convert/windows/            # ColorConvert : NV12 (4:2:0) et AYUV (4:4:4)
+  src/encode/windows/             # NvencApi, NvencCapabilities, NvencEncoder
+  src/platform/windows/           # sonde + boucle de session
+  third_party/nvenc-headers/      # nv-codec-headers (MIT), SDK 12.0
+  tests/                          # Qt-free, exécutables sur CI sans GPU
+```
 
-### 29.5 « Le pointeur est sur l'autre écran » se voit
+### La frontière de licence est vérifiée, pas déclarée
 
-Amélioration demandée : en mode bureau, quand la souris n'est pas sur l'écran
-stream, mettre un curseur au milieu de l'image. Sans rien d'autre, le client ne
-peut pas distinguer les deux façons de n'avoir aucun pointeur à dessiner : une
-application l'a caché (lecteur vidéo, jeu) ou il est sur un **autre écran** de
-l'hôte. Seule la seconde laisse le viewer sans rien pour viser, et une flèche
-posée sur un lecteur vidéo qui cache volontairement le pointeur serait une
-régression.
+`mw-native-host` ne lie **ni Qt, ni moonlight-common-c, ni aucune dépendance
+GPL**. C'est ce qui la garde relicenciable seule (§26 de la mission).
 
-`CursorState::elsewhere` porte donc la différence — les deux captures Windows
-la calculent déjà sans le dire (`GetCursorInfo` montre un pointeur, il n'est pas
-dans le rectangle de cet écran) — et remonte jusqu'au message `cursor`
-(`elsewhere: true`, envoyé seulement quand c'est vrai). macOS et Linux ne la
-lèvent jamais : pour eux rien ne change.
+`cmake/boundary_check.cmake` tourne **à chaque build** et casse la compilation
+en nommant fichier et ligne si un `#include` interdit apparaît (Qt,
+`Limelight.h`, FFmpeg, x264/x265, `backend/src/`). Vérifié en le faisant
+échouer volontairement.
 
-Le client dessine alors `_placeAwayCursor()` : la flèche ordinaire, au centre de
-l'image, à 0,6 d'opacité et un peu plus grande que nature — **un signe, pas un
-pointeur**. Mode bureau seulement (en mode jeu la souris est capturée). Au
-premier mouvement du viewer, une position absolue part, le pointeur de l'hôte
-atterrit sous elle, `visible` redevient vrai et le signe s'efface.
+---
 
-### 29.6 Vérifié
+## 4. Capture
 
-DualRTX : build complet propre, `mw-native-tests` 4006/4009 — les 3 restants
-sont le pointeur vide tenu par le jeu du §29.3, à rejouer jeux fermés (3864/3864
-sur le même arbre avant que le jeu ne prenne la souris) — ESLint et Prettier
-propres sur `StreamView.js` et `stream.css`. **À confirmer par Bruno sur le banc
-réel** : mode jeu qui prend la souris au démarrage ; glissement de fenêtre avec
-un seul pointeur, en mode bureau **et** en mode jeu (c'est le mode jeu qui dirait
-si l'image ne portait finalement pas le pointeur : il disparaîtrait pendant le
-glissement au lieu d'être doublé) ; forme du curseur inchangée quand la souris
-physique de l'hôte bouge ; et le signe au centre quand le pointeur de l'hôte est
-sur son autre écran.
+### Windows — DXGI Desktop Duplication (retenu)
 
-**Concrètement, pour l'utilisateur** : en Game mode, la session s'ouvre avec la
-souris déjà dans le jeu — plus de pointeur de navigateur qui traîne sur l'image
-ni de sortie accidentelle du cadre. Et en mode bureau, attraper une fenêtre par
-sa barre de titre ne montre plus deux souris : pendant le glissement c'est celle
-de l'hôte qui commande, la sienne s'efface, et elle revient dès qu'on relâche.
-, et vide de sens.
+`AcquireNextFrame` **débloque sur le présent réel** au lieu de scruter, et
+`LastPresentTime` date ce présent en QPC. Donc t₀ est une **mesure**, pas une
+estimation, et tous les chiffres de latence en aval en héritent.
+
+Repli prévu : Windows.Graphics.Capture, pour les cas où DDA répond
+`DXGI_ERROR_UNSUPPORTED` (sorties hybrides). Les deux rendent un
+`ID3D11Texture2D`, donc l'étage encodeur est identique.
+
+Trois points de justesse invisibles hors exécution :
+
+1. **Les horloges.** DXGI date en QPC, le reste du moteur en `steady_clock`.
+   Même cadence, origines différentes : sans le couple de calibration pris au
+   démarrage, la latence de capture serait un écart entre deux époques sans
+   rapport — grand, stable, et vide de sens.
 2. **Un présent à zéro n'est pas une frame.** DXGI réveille aussi sur un simple
    mouvement de pointeur ; le compter comme une frame enverrait un doublon
    horodaté n'importe comment.
@@ -4436,3 +4403,226 @@ défaut, DualRTX NVENC/VPL, UM790Pro VA-API) et le visuel client 1:1 — à
 Bruno, sur le banc réel.
 
 **Concrètement, pour l'utilisateur** : sur une machine à encodeur matériel, un écran 1440p ou 4K streamé en 1080p arrive désormais sans le scintillement du texte au défilement et nettement plus fidèle (+6 à +16 dB), pour quelques centaines de microsecondes de GPU par image ; un écran qui change de forme en cours de route montre des bandes noires au lieu d'une image écrasée. À la résolution native, ou sur une machine qui encode au CPU, rien ne change.
+
+---
+## 29. Deux souris pendant un glissement de fenêtre, et la souris qui attend un clic en mode jeu (18/09/2026)
+
+Deux signalements de Bruno sur le client Desktop, le 18/09 :
+
+1. **Game mode ON, la session démarre, la souris reste au client.** Le pointeur
+   du navigateur est visible par-dessus l'image et peut sortir du cadre tant
+   qu'on n'a pas cliqué dans l'image. Attente : « Game mode » veut dire « la
+   souris appartient à l'hôte », dès la première image.
+2. **Game mode OFF, on attrape une fenêtre par sa barre de titre :** deux
+   pointeurs à l'écran pendant tout le glissement, celui du client et celui de
+   l'hôte.
+
+### 29.1 Le deuxième pointeur vient de l'image, pas du client
+
+C'est la suite directe du §27. Desktop Duplication déclare le pointeur **caché**
+pendant toute la boucle de déplacement d'une fenêtre ; l'hypothèse posée là-bas
+— Windows repasse en **curseur logiciel** pendant cette boucle — est justement
+ce que « caché » veut dire chez DXGI : *le pointeur n'est plus sur son plan
+matériel, il est peint dans l'image du bureau*. Le §27 a bien rétabli la
+visibilité et la position à partir de `GetCursorInfo`, mais il l'a dit au
+client qui, lui, dessine le sien : deux pointeurs, celui que Windows a peint
+dans l'image et celui que le navigateur pose par-dessus. Le rapport de Bruno est
+la preuve directe que l'image le contient — et donc que la phrase du §27.2 sur
+le mode composité était une déduction, pas une observation : le pointeur n'y
+disparaissait pas, il était déjà dans l'image.
+
+Donc `CursorState` gagne `inImage` : *l'image porte déjà le pointeur*. Transitoire,
+contrairement au verdict par écran de `PaintedPointer.h` — il dure le temps du
+glissement. `DxgiDuplication` le lève exactement quand la substitution du §27
+joue (DXGI dit caché, Windows dit montré), et deux conséquences en découlent :
+
+- **ce qu'on dessine** — `WindowsSession::pointerToDraw()` remplace les quatre
+  `composite ? cursor() : kNoCursor` du boucle de capture : pas de pointeur si
+  le client dessine le sien, et pas de pointeur non plus si l'image le porte
+  déjà. Sans quoi le mode composité dessinait par-dessus le vrai une **forme
+  périmée** (DXGI n'envoie plus de forme pendant le glissement), et une forme
+  inversante — l'I-beam — inversée deux fois devient invisible. Le chemin
+  `PointerOnly` sort tôt pour la même raison : un pointeur peint dans le bureau
+  bouge avec le bureau, il n'y a rien de nôtre à redessiner ;
+- **ce qu'on dit au client** — `reportCursor` et `reportCursorPosition`
+  rapportent `visible && !inImage`. « Pas visible » est la vérité utile pour un
+  client qui dessine : il n'a rien à poser, l'image s'en charge. Il cache donc le
+  sien pendant le glissement et le retrouve au relâchement, quand DXGI reprend
+  la main. C'est aussi, mot pour mot, ce que Bruno attendait : le pointeur passe
+  à l'hôte seul le temps du glissement.
+
+Rien ne change quand DXGI parle normalement : `inImage` reste faux, et les
+chemins macOS et Linux ne le lèvent jamais.
+
+### 29.2 Le mode jeu prend la souris à la première image
+
+`_autoCapturePointer()` (`StreamView.js`) demande le verrou dès la première
+image décodée — le mode a été choisi avant que le flux existe, le redemander
+d'un clic n'apprend rien à personne. Jamais sur une vue en attente (la promotion
+d'une vue standby a sa propre passation), jamais si une autre vue tient le
+verrou.
+
+Un navigateur peut vouloir un geste à lui, et celui qui a démarré la session a
+plusieurs secondes quand l'image arrive. Sur refus, `_armPointerCapture()` arme
+un **coup unique sur la première touche** : le premier W de la partie sert de
+geste. Les clics dans l'image capturaient déjà (gestionnaire de clic du mode
+jeu), d'où le clavier seul ici. Désarmé dès que le verrou arrive, au changement
+de mode et à la fermeture. Et passer le mode jeu en cours de session demande le
+verrou tout de suite : la bascule est elle-même le geste.
+
+Sur refus des deux, le comportement est celui d'aujourd'hui : l'indice « cliquer
+pour capturer » reste affiché et fonctionne.
+
+### 29.3 La souris de l'hôte qui « se recentre » : c'est une application, pas nous
+
+Troisième signalement du même jour : sur DualRTX, la souris physique de l'hôte
+revient toujours au centre. Relevé sur la machine, sans session native ouverte :
+
+- la position est **figée à 853,480**, soit exactement le centre de l'écran
+  principal (2560×1440 à 150 %, donc 1706×960 en coordonnées virtualisées) ;
+- un `SetCursorPos` vers un autre point est **défait en moins de 100 ms**, et un
+  `SendInput` relatif ne déplace rien ;
+- `GetCursorInfo` rend `CURSOR_SHOWING` avec un **handle de curseur applicatif**
+  (ni `IDC_ARROW` ni aucun curseur système), dont la forme décodée est **vide**
+  (ink 0×0) ;
+- `hl.exe` (Counter-Strike) et `portal2.exe` tournent.
+
+C'est la signature d'un jeu qui garde la souris : il pose son propre curseur
+(vide), la replace au centre à chaque image et lit le mouvement comme un écart
+à ce centre. C'est précisément le comportement pour lequel `RecentreDetector`
+existe côté injection (§ input) — mais côté souris physique de l'hôte, rien
+dans MoonlightWeb ne peut ni ne doit intervenir : le worker n'injecte que sur
+un événement du client, et il n'y en avait aucun. **Verdict : hors périmètre.**
+
+⚠️ Conséquence pour les tests : `test_win32_cursor` lit le pointeur **réel** du
+bureau. Tant qu'un jeu tient la souris avec une forme vide, trois checks
+tombent (`inkWidth > 0`, `inkHeight > 0`, `drawn + inverting > 0`) — un fait sur
+la machine, pas sur le code. À rejouer jeux fermés.
+
+### 29.4 La forme du curseur ne suit plus la souris physique de l'hôte
+
+Quatrième signalement : bouger la souris **physique** de l'hôte ne déplace pas
+le pointeur du client (attendu — il est piloté en absolu depuis le navigateur),
+mais **changeait sa forme**. La raison est directe : l'hôte rapporte la forme
+que son pointeur survole, et son pointeur n'est pas toujours celui du client.
+Une main sur la souris de l'hôte qui traverse un champ de texte faisait
+apparaître un I-beam sous une main qui n'avait pas bougé.
+
+Le client garde donc la forme reçue mais ne la **peint** que si son propre
+pointeur a bougé récemment (`CLIENT_POINTER_FRESH_MS`, 500 ms — la réponse de
+l'hôte à notre propre mouvement arrive un aller-retour plus tard, il ne faut pas
+la rejeter). Sinon elle attend : chaque `mousemove` relit la forme courante
+(`_applyLocalCursor`), donc le prochain mouvement du viewer l'applique. La toute
+première forme d'une session est toujours peinte — il n'y en a pas d'autre, et
+rien n'a encore bougé par définition.
+
+### 29.5 « Le pointeur est sur l'autre écran » se voit
+
+Amélioration demandée : en mode bureau, quand la souris n'est pas sur l'écran
+stream, mettre un curseur au milieu de l'image. Sans rien d'autre, le client ne
+peut pas distinguer les deux façons de n'avoir aucun pointeur à dessiner : une
+application l'a caché (lecteur vidéo, jeu) ou il est sur un **autre écran** de
+l'hôte. Seule la seconde laisse le viewer sans rien pour viser, et une flèche
+posée sur un lecteur vidéo qui cache volontairement le pointeur serait une
+régression.
+
+`CursorState::elsewhere` porte donc la différence — les deux captures Windows
+la calculent déjà sans le dire (`GetCursorInfo` montre un pointeur, il n'est pas
+dans le rectangle de cet écran) — et remonte jusqu'au message `cursor`
+(`elsewhere: true`, envoyé seulement quand c'est vrai). macOS et Linux ne la
+lèvent jamais : pour eux rien ne change.
+
+Le client dessine alors `_placeAwayCursor()` : la flèche ordinaire, au centre de
+l'image, à 0,6 d'opacité et un peu plus grande que nature — **un signe, pas un
+pointeur**. Mode bureau seulement (en mode jeu la souris est capturée). Au
+premier mouvement du viewer, une position absolue part, le pointeur de l'hôte
+atterrit sous elle, `visible` redevient vrai et le signe s'efface.
+
+### 29.6 Mode bureau + jeu qui recentre le pointeur : la visée tournait
+
+Cinquième signalement, le même jour, et le plus grave : Counter-Strike (GoldSrc)
+et Portal 2 (Source) streamés en mode bureau (Game mode **OFF**, le défaut), la
+vue « part au ciel et au sol » au moindre mouvement ; Ravenfield (Unity), lui,
+se joue très bien dans le même mode, et tout va bien en Game mode ON.
+
+**Le mécanisme.** En mode bureau le navigateur envoie *où est* son pointeur,
+et l'hôte y place le pointeur système (`MOUSEEVENTF_ABSOLUTE`). Un jeu à
+l'ancienne lit la souris en **ramenant le curseur au centre de sa fenêtre à
+chaque image** et en mesurant de combien il a été poussé depuis. Les deux se
+battent : le jeu recentre, la position client suivante remet le pointeur là où
+est celui du viewer, et le jeu lit toute cette distance — une demi-fenêtre —
+comme un coup de poignet. Un jeu en raw input (Unity) ne recentre jamais, et
+le bureau non plus : seul le genre recentreur casse, et il casse complètement.
+Le log du matin de Bruno le montrait en clair : `pointer report JUMP` à chaque
+image, en alternance entre 960,540 (le centre de la fenêtre) et la position du
+viewer.
+
+**Deux correctifs, un par côté.**
+
+1. *Client, mode jeu* (2c13f5ff) : le verrou demande `unadjustedMovement`, donc
+   des deltas en counts de souris, sans l'accélération du navigateur qui
+   s'ajoutait à celle de l'hôte (×3,3 mesuré sur le banc du §pointer lock).
+2. *Hôte, mode bureau* (edd2b58b pour Windows, puis macOS et Linux) :
+   `RecentreDetector`, arithmétique pure et neutre, partagée par les trois
+   puits. Avant chaque placement l'hôte **regarde où est le pointeur**. Trouvé
+   ailleurs qu'où il l'avait mis, **au même point trois fois de suite** (à 2 px
+   près, l'axe absolu 16 bits arrondit), c'est qu'une application le recentre :
+   à partir de là chaque position client part comme **le delta entre deux
+   positions consécutives**, exactement ce que le mode jeu envoie, et le jeu
+   mesure la distance que le viewer a réellement parcourue. Quand le pointeur
+   cesse de revenir à ce point pendant **300 ms** (menu ouvert, jeu quitté), les
+   placements reprennent — 300 ms et pas un seul raté, parce qu'entre un
+   placement et l'image suivante du jeu le pointeur est légitimement ailleurs.
+   Une main sur la souris physique de l'hôte ne revient jamais au pixel : elle
+   ne déclenche rien. Un delta d'un quart d'écran ou plus est un pointeur qui
+   **rentre dans l'image** loin de là où il en était sorti, pas un geste : il
+   est jeté (`isReentryJump`).
+
+Par hôte, la lecture et le delta :
+
+| Hôte | Lire le pointeur | Envoyer le delta |
+|---|---|---|
+| Windows | `GetCursorPos` | `MOUSEEVENTF_MOVE` |
+| macOS | `CGEventCreate` + `CGEventGetLocation` | événement posé à *ici + delta*, champs `kCGMouseEventDeltaX/Y` renseignés (un événement Quartz porte toujours une position ; c'est celui qu'une souris bougée depuis là produirait) |
+| Linux X11 | `XQueryPointer` (déjà là pour ramener le pointeur sur l'écran) | `REL_X/REL_Y` sur le device clavier |
+| Linux Wayland | personne ne peut lire le pointeur d'autrui | le détecteur ne décide jamais : comportement inchangé, le mode jeu reste la réponse |
+
+**Mesuré sur DualRTX**, CS 1.6 au premier plan, auto-stream en mode bureau
+piloté par CDP (recette dans la mémoire de session) : détection après trois
+événements (« keeps putting the pointer back at 1280,720 » dans le log), zéro
+`JUMP` ensuite, un balayage de 400 px à droite puis à gauche ramène la vue au
+pixel, Échap vers le menu → placements en 1,5 s et le curseur suit à nouveau,
+reprise → re-détection. macOS et Linux : compilés sur mw-mac et UM790Pro, tests
+unitaires verts (4190/4190 sur l'UM790Pro) ; pas de jeu recentreur sur le Mac
+de banc, et l'UM790Pro est en Wayland — le chemin X11 reste à mesurer sur un
+bureau X avec un jeu du genre.
+
+**Limites assumées.** Les deltas dérivés de positions gardent l'accélération
+du navigateur client (pas de pointer lock en mode bureau) en plus de celle de
+l'hôte : la visée est un peu moins précise qu'en mode jeu, qui reste la
+référence pour un FPS. Sortir de l'image arrête le mouvement, comme avant.
+
+**Concrètement, pour l'utilisateur** : il lance son FPS depuis le stream sans
+toucher au réglage souris. Si le jeu est du genre qui recentre le curseur, la
+vue suit la main au lieu de partir au ciel ; s'il ouvre le menu, la souris
+redevient un pointeur ordinaire. Le mode jeu reste là pour la précision
+maximale — et sous Wayland il reste nécessaire pour ces jeux-là.
+
+### 29.7 Vérifié
+
+DualRTX : build complet propre, `mw-native-tests` 4006/4009 — les 3 restants
+sont le pointeur vide tenu par le jeu du §29.3, à rejouer jeux fermés (3864/3864
+sur le même arbre avant que le jeu ne prenne la souris) — ESLint et Prettier
+propres sur `StreamView.js` et `stream.css`. **À confirmer par Bruno sur le banc
+réel** : mode jeu qui prend la souris au démarrage ; glissement de fenêtre avec
+un seul pointeur, en mode bureau **et** en mode jeu (c'est le mode jeu qui dirait
+si l'image ne portait finalement pas le pointeur : il disparaîtrait pendant le
+glissement au lieu d'être doublé) ; forme du curseur inchangée quand la souris
+physique de l'hôte bouge ; et le signe au centre quand le pointeur de l'hôte est
+sur son autre écran.
+
+**Concrètement, pour l'utilisateur** : en Game mode, la session s'ouvre avec la
+souris déjà dans le jeu — plus de pointeur de navigateur qui traîne sur l'image
+ni de sortie accidentelle du cadre. Et en mode bureau, attraper une fenêtre par
+sa barre de titre ne montre plus deux souris : pendant le glissement c'est celle
+de l'hôte qui commande, la sienne s'efface, et elle revient dès qu'on relâche.

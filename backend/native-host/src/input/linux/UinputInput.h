@@ -18,6 +18,7 @@
 #pragma once
 
 #include "../IInputSink.h"
+#include "../RecentreDetector.h"
 #include "X11Pointer.h"
 #include "XkbTextMap.h"
 
@@ -145,6 +146,12 @@ private:
     /// The X pointer, when there is an X server. Absent on Wayland and on a
     /// headless host, where relative motion keeps behaving as it did.
     X11Pointer m_X11;
+    /// Whether the application under the pointer keeps warping it back to one
+    /// spot — the one case where placing the client's position is wrong (see
+    /// RecentreDetector). Fed from the X pointer, so it only ever decides on
+    /// X11: Wayland lets nobody read the pointer, and a re-centring game there
+    /// keeps the behaviour it has — gaming mode, which sends deltas itself.
+    RecentreDetector m_Recentre;
     /// The host's keyboard layout, read once and only if a client ever sends
     /// text: a viewer on a desktop browser sends keys, and never pays for this.
     XkbTextMap m_TextMap;

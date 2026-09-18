@@ -7,6 +7,7 @@
 #include "input/RecentreDetector.h"
 
 #include <cstdio>
+#include <string>
 
 using namespace mw::native::input;
 
@@ -160,6 +161,26 @@ void run_recentre_detector_tests()
             CHECK(!v.relative);
             CHECK(!v.changed);
         }
+    }
+
+    // ── A re-entry across the picture is dropped, a mouse move is not ───────
+    {
+        // 2560 wide: a quarter is 640.
+        CHECK(!RecentreDetector::isReentryJump(639, 0, 2560));
+        CHECK(!RecentreDetector::isReentryJump(-639, 400, 2560));
+        CHECK(RecentreDetector::isReentryJump(640, 0, 2560));
+        CHECK(RecentreDetector::isReentryJump(0, -640, 2560));
+        // No display known: anything non-zero is a jump, nothing turns.
+        CHECK(RecentreDetector::isReentryJump(1, 0, 0));
+        CHECK(!RecentreDetector::isReentryJump(0, 0, 0));
+    }
+
+    // ── One wording for every host ──────────────────────────────────────────
+    {
+        const std::string entered = RecentreDetector::enteredMessage(1280, 720);
+        CHECK(entered.find("1280,720") != std::string::npos);
+        CHECK(entered.find("[native] input:") == 0);
+        CHECK(std::string(RecentreDetector::leftMessage()).find("[native] input:") == 0);
     }
 
     // ── reset(): a new display forgets the verdict and the last position ────

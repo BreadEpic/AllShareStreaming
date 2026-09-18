@@ -1207,20 +1207,15 @@ void Win32Input::injectMousePosition(const InputEvent& event)
         m_Recentre.observe(haveHere, here.x, here.y, x, y, steadyNowUs());
     if (verdict.changed) {
         if (verdict.relative)
-            log::info("[native] input: the application keeps putting the pointer back at " +
-                      std::to_string(m_Recentre.anchorX()) + "," +
-                      std::to_string(m_Recentre.anchorY()) +
-                      " (a game reading the mouse from the cursor) — client positions go in "
-                      "as deltas from there");
+            log::info(RecentreDetector::enteredMessage(m_Recentre.anchorX(), m_Recentre.anchorY()));
         else
-            log::info("[native] input: the pointer is no longer put back, client positions "
-                      "are placed again");
+            log::info(RecentreDetector::leftMessage());
     }
     if (verdict.relative) {
         // A pointer that re-enters the picture far from where it left is a
         // jump the viewer did not make: no game should turn on it.
-        const int64_t jump = std::max<int64_t>(1, m_DisplayRect.width() / 4);
-        if (std::llabs(verdict.deltaX) >= jump || std::llabs(verdict.deltaY) >= jump) return;
+        const int64_t width = m_DisplayRect.width();
+        if (RecentreDetector::isReentryJump(verdict.deltaX, verdict.deltaY, width)) return;
         if (verdict.deltaX == 0 && verdict.deltaY == 0) return;
         INPUT input = {};
         input.type = INPUT_MOUSE;
