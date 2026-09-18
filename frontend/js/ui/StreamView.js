@@ -823,6 +823,9 @@ export class StreamView {
         this._lastRawPointerMs = 0; // last pointerrawupdate seen — see _rawPointerLive
         this._mediaRectWarned = false; // one line when the media rect fell back
         this.pointerLocked = false;
+        // One-shot keydown listener waiting to ask for the mouse — see
+        // _armPointerCapture. Null when nothing is waiting.
+        this._pointerCaptureArmed = null;
         // ── Host pointer, drawn by US ──────────────────────────────────────
         // The native host can hand over the pointer's shape instead of burning
         // it into the picture. Drawn as the CSS cursor of the video element,
@@ -3334,6 +3337,10 @@ export class StreamView {
         // against an unknown picture (see _pictureWidth); rebuild it, or a
         // pointer nobody has moved keeps that size until the viewer moves it.
         if (first) this._applyHostCursor();
+        // There is a picture to take the mouse into now — see
+        // _autoCapturePointer. Not on a standby view: it is not the one the
+        // viewer is looking at, and activate() takes the lock over for it.
+        if (first && !this._standby) this._autoCapturePointer();
         if (first && typeof this.onFirstFrame === 'function') {
             try {
                 this.onFirstFrame();
@@ -3393,23 +3400,12 @@ export class StreamView {
         // Chromium usually honors the relock (sticky activation from earlier
         // gameplay clicks); if it refuses, the "click to capture" hint covers.
         if (this._gamingMode && this.inputEl) {
-            const tryLock = () => {
-                try {
-                    const p = this._lockPointer();
-                    if (p && typeof p.catch === 'function')
-                        p.catch(() => {
-                            /* hint flow covers it */
-                        });
-                } catch (e) {
-                    /* hint flow covers it */
-                }
-            };
             if (!document.pointerLockElement) {
-                tryLock();
+                this._autoCapturePointer();
             } else {
                 const onChange = () => {
                     document.removeEventListener('pointerlockchange', onChange);
-                    if (!document.pointerLockElement) tryLock();
+                    if (!document.pointerLockElement) this._autoCapturePointer();
                 };
                 document.addEventListener('pointerlockchange', onChange);
                 setTimeout(() => document.removeEventListener('pointerlockchange', onChange), 3000);
@@ -7569,6 +7565,7 @@ export class StreamView {
             this._pendingPasteKey = null;
         }
         document.removeEventListener('pointerlockchange', this._onPointerLockChange);
+        this._disarmPointerCapture();
         window.removeEventListener('beforeunload', this._onBeforeUnload);
         window.removeEventListener('pagehide', this._onPageHide);
         window.removeEventListener('blur', this._onWindowBlur);
@@ -7633,6 +7630,62 @@ export class StreamView {
         if (!this.pointerLocked && this.inputEl) {
             this._lockPointer();
         }
+    }
+
+    /**
+     * Take the mouse without waiting for a click.
+     *
+     * Gaming mode is chosen before the stream exists, and it means "the mouse
+     * belongs to the host": making the viewer click the picture once more to
+     * say it again left the session opening with the client's own pointer over
+     * the game, free to wander out of the frame. So the first picture takes it.
+     *
+     * Best effort, never noisy. Chromium grants this off sticky activation —
+     * the click that started the session is in the same document — but a
+     * refusal is a normal outcome (a page opened without any gesture at all,
+     * an engine that wants a fresh one), and there the "click to capture" hint
+     * is still on screen and still works. Never while another view holds the
+     * lock: the standby-to-live promotion has its own hand-over, which waits
+     * for the retiring view to let go (see activate()).
+     */
+    _autoCapturePointer() {
+        if (!this._gamingMode || !this.inputEl || this.pointerLocked) return;
+        if (document.pointerLockElement && document.pointerLockElement !== this.inputEl) return;
+        try {
+            const p = this._lockPointer();
+            if (p && typeof p.catch === 'function') p.catch(() => this._armPointerCapture());
+            else if (!p) this._armPointerCapture();
+        } catch (e) {
+            this._armPointerCapture();
+        }
+    }
+
+    /**
+     * The mouse was refused at the first picture: take it at the first thing
+     * the viewer does instead.
+     *
+     * A browser may want a gesture of its own for the lock, and the one that
+     * started the session is minutes old by the time a stream is up. A key —
+     * the first W of the game — is such a gesture, and asking on it is the
+     * difference between "gaming mode took the mouse" and "gaming mode took the
+     * mouse once I remembered to click the picture". Clicks over the picture
+     * already capture (see the gaming click handler), which is why only the
+     * keyboard is listened for here; one shot, and gone as soon as it fires or
+     * the lock arrives by any other road.
+     */
+    _armPointerCapture() {
+        if (this._pointerCaptureArmed || !this._gamingMode) return;
+        this._pointerCaptureArmed = () => {
+            this._disarmPointerCapture();
+            this._autoCapturePointer();
+        };
+        document.addEventListener('keydown', this._pointerCaptureArmed, true);
+    }
+
+    _disarmPointerCapture() {
+        if (!this._pointerCaptureArmed) return;
+        document.removeEventListener('keydown', this._pointerCaptureArmed, true);
+        this._pointerCaptureArmed = null;
     }
 
     /**
@@ -9073,6 +9126,9 @@ export class StreamView {
 
     handlePointerLockChange() {
         this.pointerLocked = document.pointerLockElement === this.inputEl;
+        // However the mouse was taken, the one-shot that was waiting for a
+        // keystroke to ask for it has nothing left to do.
+        if (this.pointerLocked) this._disarmPointerCapture();
         this._mouseFocused = this.pointerLocked;
         if (this.hintEl) {
             this.hintEl.style.display = this.pointerLocked ? 'none' : 'flex';
@@ -9142,6 +9198,9 @@ export class StreamView {
         if (this._gamingMode && document.pointerLockElement === this.inputEl) {
             document.exitPointerLock();
         }
+        // Whichever way it is going, a capture that was waiting for a keystroke
+        // belongs to the mode being left.
+        this._disarmPointerCapture();
 
         // ── Toggle mode ─────────────────────────────────────────────────
         this._gamingMode = !this._gamingMode;
@@ -9151,6 +9210,10 @@ export class StreamView {
             this._bindGamingEvents();
             // Show hint so user knows to click to capture
             if (this.hintEl) this.hintEl.style.display = 'flex';
+            // …though it should not be needed: switching mode is itself the
+            // gesture, so the mouse can be taken right now. The hint stays up
+            // if the browser refuses, and goes as soon as the lock lands.
+            this._autoCapturePointer();
         } else {
             this._setupNormalMouse();
             // Hide hint — no pointer lock in desktop mode

@@ -1521,12 +1521,9 @@ private:
             // capture has.
             if (m_PendingResize.exchange(false) && applyLoadCap()) {
                 if (m_DesktopCopy) {
-                    static const capture::CursorState kNoPointer;
                     ID3D11Texture2D* picture = pictureFor(m_DesktopCopy.Get(), error);
                     if (!picture ||
-                        !m_Converter->convert(
-                            picture, m_CompositeCursor.load() ? m_Capture->cursor() : kNoPointer,
-                            cursorDraw(), error)) {
+                        !m_Converter->convert(picture, pointerToDraw(), cursorDraw(), error)) {
                         finish("colour conversion failed: " + error);
                         return;
                     }
@@ -1590,7 +1587,7 @@ private:
                 if (m_CursorDirty.exchange(false) && m_CompositeCursor.load() && m_DesktopCopy) {
                     ID3D11Texture2D* picture = pictureFor(m_DesktopCopy.Get(), error);
                     if (!picture ||
-                        !m_Converter->convert(picture, m_Capture->cursor(), cursorDraw(), error)) {
+                        !m_Converter->convert(picture, pointerToDraw(), cursorDraw(), error)) {
                         finish("colour conversion failed: " + error);
                         return;
                     }
@@ -1678,6 +1675,10 @@ private:
             if (status == capture::AcquireStatus::PointerOnly) {
                 if (!m_CompositeCursor.load()) continue;
                 if (!m_DesktopCopy) continue;
+                // A pointer Windows paints into the desktop itself moves with
+                // the desktop, not apart from it: there is nothing of ours to
+                // redraw, and our copy is the picture from before it moved.
+                if (m_Capture->cursor().inImage) continue;
                 m_CursorDirty.store(false);
                 const int64_t submittedUs = steadyNowUs();
                 ID3D11Texture2D* picture = pictureFor(m_DesktopCopy.Get(), error);
@@ -1735,17 +1736,14 @@ private:
             m_PresentsSeen++;
             const int64_t submittedUs = steadyNowUs();
 
-            // An empty state draws nothing: that is how the client-drawn mode
-            // keeps the picture clean.
-            static const capture::CursorState kNoCursor;
+            // See pointerToDraw(): an empty state draws nothing, which is how
+            // the client-drawn mode keeps the picture clean.
             const bool composite = m_CompositeCursor.load();
             m_CursorDirty.store(false);
             // Through the bridge first when the encoder is on another GPU;
             // the texture itself otherwise. Counted in the convert stage.
             ID3D11Texture2D* picture = pictureFor(frame.texture, error);
-            if (!picture ||
-                !m_Converter->convert(picture, composite ? m_Capture->cursor() : kNoCursor,
-                                      cursorDraw(), error)) {
+            if (!picture || !m_Converter->convert(picture, pointerToDraw(), cursorDraw(), error)) {
                 m_Capture->release();
                 finish("colour conversion failed: " + error);
                 return;
@@ -1943,6 +1941,11 @@ private:
 
         const capture::CursorState& cursor = m_Capture->cursor();
         const bool forced = m_ResendCursor.exchange(false);
+        // A pointer the picture already carries is not the client's to draw:
+        // it would end up beside the real one, in the shape the drag started
+        // with. "Not visible" is exactly right — there is nothing for the
+        // client to put on screen. See CursorState::inImage.
+        const bool visible = cursor.visible && !cursor.inImage;
         // The KIND is checked too, not just the shape version. An application
         // can swap between two standard cursors without DXGI ever handing over
         // a new bitmap — it caches shapes it has already sent — so a client
@@ -1955,16 +1958,16 @@ private:
         const float scale = cursorScale();
         const bool scaleChanged = scale != m_ReportedScale;
         if (!forced && !kindChanged && !scaleChanged && cursor.shapeVersion == m_ReportedShape &&
-            cursor.visible == m_ReportedVisible)
+            visible == m_ReportedVisible)
             return;
 
         m_ReportedShape = cursor.shapeVersion;
-        m_ReportedVisible = cursor.visible;
+        m_ReportedVisible = visible;
         m_ReportedKind = kind;
         m_ReportedScale = scale;
 
         CursorUpdate update;
-        update.visible = cursor.visible;
+        update.visible = visible;
         update.kind = kind;
         update.width = cursor.width;
         update.height = cursor.height;
@@ -2002,16 +2005,18 @@ private:
         }
         const capture::CursorState& cursor = m_Capture->cursor();
         const float scale = cursorScale();
+        // Same rule as reportCursor: a pointer the picture already carries is
+        // not one the client should be drawing anywhere.
+        const bool visible = cursor.visible && !cursor.inImage;
         // The capture keeps the image's corner; the client wants the hotspot.
         const float fx = static_cast<float>(cursor.x + m_Capture->cursorHotspotX()) * scale;
         const float fy = static_cast<float>(cursor.y + m_Capture->cursorHotspotY()) * scale;
-        if (!m_PositionGate.due(cursor.visible, static_cast<int>(fx), static_cast<int>(fy),
-                                steadyNowUs()))
+        if (!m_PositionGate.due(visible, static_cast<int>(fx), static_cast<int>(fy), steadyNowUs()))
             return;
         if (input::pointerDiagnostics()) diagPointerReport(cursor, fx, fy, scale);
         CursorUpdate update;
         update.positionOnly = true;
-        update.visible = cursor.visible;
+        update.visible = visible;
         update.x = fx;
         update.y = fy;
         m_Callbacks.onCursor(update);
@@ -2098,6 +2103,22 @@ private:
         const float magnify = static_cast<float>(wanted) / natural;
         if (!(magnify > 1.0f)) return 1.0f;
         return magnify > kMaxCursorMagnify ? kMaxCursorMagnify : magnify;
+    }
+
+    /// The pointer the converter should draw over the desktop.
+    ///
+    /// None when the client draws its own, which is what keeps the picture
+    /// clean in desktop mode. And none either when the capture says the
+    /// picture already carries the pointer — Windows paints it in for the whole
+    /// of a title-bar drag, and the shape we hold is the one from before the
+    /// drag, so drawing it would put a second, stale pointer beside the real
+    /// one. See CursorState::inImage.
+    const capture::CursorState& pointerToDraw() const
+    {
+        static const capture::CursorState kNoPointer;
+        if (!m_CompositeCursor.load() || !m_Capture) return kNoPointer;
+        const capture::CursorState& cursor = m_Capture->cursor();
+        return cursor.inImage ? kNoPointer : cursor;
     }
 
     /// Everything the converter needs about the pointer that the capture does

@@ -125,6 +125,18 @@ struct CursorState
     /// Whether the pointer is on THIS display right now.
     bool visible = false;
 
+    /// The captured picture ALREADY contains the pointer: the OS painted it
+    /// into the desktop instead of keeping it on its own plane, so the position
+    /// and shape below describe something that is in the image, not something
+    /// to add to it.
+    ///
+    /// Transient, unlike PaintedPointer.h's per-display verdict: Windows 11
+    /// paints the pointer in for the whole of a title-bar drag and hands it
+    /// back to its plane on release. Drawing our own over it there put a
+    /// second, stale pointer beside the real one, and telling a client that
+    /// draws its own "visible" gave the viewer two pointers at once.
+    bool inImage = false;
+
     /// Top-left of the cursor image in captured-frame pixels — the hotspot has
     /// already been subtracted, so this is where the image goes.
     int x = 0;

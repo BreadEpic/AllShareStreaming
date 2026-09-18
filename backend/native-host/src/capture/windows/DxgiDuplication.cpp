@@ -303,6 +303,7 @@ bool DxgiDuplication::updateCursor(const DXGI_OUTDUPL_FRAME_INFO& info)
     const bool news = info.LastMouseUpdateTime.QuadPart != 0;
     if (news || m_HiddenOverridden) {
         const bool wasVisible = m_Cursor.visible;
+        const bool wasInImage = m_Cursor.inImage;
         const int oldX = m_Cursor.x;
         const int oldY = m_Cursor.y;
 
@@ -321,6 +322,12 @@ bool DxgiDuplication::updateCursor(const DXGI_OUTDUPL_FRAME_INFO& info)
         // corner. Windows' own word settles it, the way Win32Cursor reads it
         // for WGC: showing and on this display means visible, at the place it
         // says — scaled from the DPI-virtualized desktop into captured pixels.
+        //
+        // And "hidden while Windows shows it" is not an error to paper over: it
+        // is what Desktop Duplication says when the picture itself carries the
+        // pointer. So the pointer is visible AND already in the image — see
+        // CursorState::inImage, which is what keeps the drawing from happening
+        // twice, here or on the client.
         if (!visible) {
             CURSORINFO ci = {};
             ci.cbSize = sizeof(ci);
@@ -350,13 +357,14 @@ bool DxgiDuplication::updateCursor(const DXGI_OUTDUPL_FRAME_INFO& info)
         }
 
         m_Cursor.visible = visible;
+        m_Cursor.inImage = m_HiddenOverridden;
         // Position is given for the hotspot; the image starts above and left of
         // it. Drawing at the hotspot would offset every cursor by its own
         // shape — an arrow would look right and a crosshair would not.
         m_Cursor.x = px - m_CursorHotspotX;
         m_Cursor.y = py - m_CursorHotspotY;
 
-        changed = changed || m_Cursor.visible != wasVisible ||
+        changed = changed || m_Cursor.visible != wasVisible || m_Cursor.inImage != wasInImage ||
                   (m_Cursor.visible && (m_Cursor.x != oldX || m_Cursor.y != oldY));
     }
 
