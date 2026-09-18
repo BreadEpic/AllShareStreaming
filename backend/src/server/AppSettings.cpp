@@ -393,19 +393,34 @@ void AppSettings::setStreamHeight(int height)
 
 // ── Stream resolution mode ──────────────────────────────────────────────────────
 
+// "host" was the short-lived choice of the 0.3.1 development builds; "auto"
+// covers it, and anything unknown lands there too.
+static const QStringList kResolutionModes = {"auto", "device", "custom", "fixed"};
+
 QString AppSettings::streamResolution() const
 {
     QJsonObject obj = readAll();
-    const QString mode = obj.value("stream_resolution").toString("fixed");
-    static const QStringList valid = {"fixed", "device", "host", "custom"};
-    return valid.contains(mode) ? mode : QStringLiteral("fixed");
+    const QString mode = obj.value("stream_resolution").toString("auto");
+    return kResolutionModes.contains(mode) ? mode : QStringLiteral("auto");
 }
 
 void AppSettings::setStreamResolution(const QString& mode)
 {
     QJsonObject obj = readAll();
-    static const QStringList valid = {"fixed", "device", "host", "custom"};
-    obj["stream_resolution"] = valid.contains(mode) ? mode : QStringLiteral("fixed");
+    obj["stream_resolution"] = kResolutionModes.contains(mode) ? mode : QStringLiteral("auto");
+    writeAll(obj);
+}
+
+bool AppSettings::streamBitrateAuto() const
+{
+    QJsonObject obj = readAll();
+    return obj.value("stream_bitrate_auto").toBool(true);
+}
+
+void AppSettings::setStreamBitrateAuto(bool automatic)
+{
+    QJsonObject obj = readAll();
+    obj["stream_bitrate_auto"] = automatic;
     writeAll(obj);
 }
 

@@ -367,6 +367,13 @@
     font-style: italic;
 }
 
+/* "· auto" after the bitrate value while it follows the estimate */
+.settings-bitrate-auto {
+    color: var(--text-3);
+    font-weight: normal;
+    font-size: var(--fs-xs);
+}
+
 /* Custom resolution — two numbers side by side, styled like the select */
 .settings-size-row {
     display: flex;

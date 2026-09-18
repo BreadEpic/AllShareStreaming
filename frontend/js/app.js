@@ -1881,11 +1881,13 @@ const MoonlightApp = {
         //
         // Before any of that, the resolution choice becomes the size this
         // launch asks for (util/StreamResolution.js): a fixed rung leaves the
-        // width to the ratio logic above; "Same as your device" and "Custom"
-        // fix both — the size IS the shape, so the probe and the memory stay
-        // out of it — and tell a native host to fit its display's shape inside
-        // that box (upscaling for this screen's size, never otherwise); "Same
-        // as the remote PC" is height 0 to a native host, 1080p to any other.
+        // width to the ratio logic above; Auto on a native host, "Match my
+        // screen" and "Custom" fix both — the size IS the shape, so the probe
+        // and the memory stay out of it — and tell a native host to fit its
+        // display's shape inside that box (upscaling, and switching its
+        // display to the size, for "Match my screen" only). Auto and "Match my
+        // screen" follow this screen: turned or moved to another monitor, the
+        // stream is relaunched at the new size (_onClientScreenChanged).
         const choice = readResolutionChoice(streamingSettings);
         const size = resolveStreamSize(
             {
@@ -1896,9 +1898,15 @@ const MoonlightApp = {
             },
             { nativeHost },
         );
-        streamingSettings.stream_height = size.height;
-        streamingSettings.stream_fit_box = size.fitBox;
-        streamingSettings.stream_allow_upscale = size.allowUpscale;
+        this._applyResolvedSize(streamingSettings, size);
+        this._sizeFollowsScreen = size.followsScreen;
+        // The ladder's session-only rung and bitrate outrank the choice: a
+        // relaunch through here (a codec fallback under congestion) keeps
+        // what the ladder brought the stream down to.
+        for (const key of ['stream_height', 'stream_bitrate']) {
+            const o = this._degradeOverrides || {};
+            if (o[key] !== undefined) streamingSettings[key] = o[key];
+        }
         // A stored ratio counts only when a debug build forced it and said so
         // (SettingsView marks it): the dropdown left the product in 0.3.1, and
         // a "4:3" a user forced before then is Auto from here on.
@@ -2307,6 +2315,7 @@ const MoonlightApp = {
             this._lastCongSignal = performance.now();
         };
         this.streamView.onHostDisplayFormat = (msg) => this._onHostDisplayFormat(msg);
+        this.streamView.onClientScreenChanged = (device) => this._onClientScreenChanged(device);
         this._armUpgradeTimer();
         this._adoptNativeFormat(result);
         this._startAspectProbe();
@@ -2372,9 +2381,104 @@ const MoonlightApp = {
             f.hdrCapable;
         this._nativeHdrAttempt = f.hdr === asked ? null : asked;
         this._noteNativeAspect(result.stream_width, result.stream_height);
+        this._followFrameBitrate(result.stream_width, result.stream_height);
         this._watchClientDynamicRange();
         // The screens may have changed while this session was being set up.
         this._reconcileNativeHdr('session start');
+    },
+
+    /**
+     * Write a resolved size (util/StreamResolution.js) into a launch's
+     * settings: the height, the "W:H" that fixes the width when the size
+     * fixes the shape, the native host's reading of it (a box to fit, may it
+     * upscale, should its display switch to it) — and the bitrate, when it is
+     * the estimate's rather than the user's: the pixels the stream will
+     * carry, not the ones a rung stood for in Settings. Power Saving keeps
+     * its own reduced bitrate.
+     */
+    _applyResolvedSize(settings, size) {
+        settings.stream_height = size.height;
+        settings.stream_fit_box = size.fitBox;
+        settings.stream_allow_upscale = size.allowUpscale;
+        settings.stream_match_display = size.matchDisplay;
+        if (size.aspect) settings.stream_aspect = size.aspect;
+        if (settings.stream_bitrate_auto !== false && !settings.power_save) {
+            settings.stream_bitrate = this._autoBitrateFor(
+                settings,
+                size.height || 1080,
+                size.aspect || '16:9',
+            );
+        }
+    },
+
+    /** The estimate's bitrate, in kbps, for a frame of that size. */
+    _autoBitrateFor(settings, height, aspect) {
+        return (
+            computeAutoBitrate(
+                height,
+                settings.stream_fps > 0 ? settings.stream_fps : 60,
+                aspect,
+                settings.chroma_444_enabled === true,
+                settings.hdr_enabled === true,
+            ) * 1000
+        );
+    },
+
+    /**
+     * The native host said what frame it streams (launch reply, or
+     * `displayformat` mid-stream): an automatic bitrate follows it — Auto
+     * asked for this screen's size and got the host's, smaller; the host's
+     * display changed mode under the session. Moved on the host between two
+     * frames (`clientbitrate` → its rate governor's ceiling), no relaunch.
+     */
+    _followFrameBitrate(width, height) {
+        const settings = this._lastStreamingSettings;
+        if (!settings || settings.stream_bitrate_auto === false || settings.power_save) return;
+        if (!(width > 0) || !(height > 0)) return;
+        // The ladder holds the bitrate down: its word, not the estimate's.
+        if (this._degradeOverrides && this._degradeOverrides.stream_bitrate !== undefined) return;
+        const kbps = this._autoBitrateFor(settings, height, width + ':' + height);
+        if (kbps === settings.stream_bitrate) return;
+        console.log(
+            '[MW] Bitrate follows the frame ' + width + 'x' + height + ': ' + kbps / 1000 + ' Mbps',
+        );
+        settings.stream_bitrate = kbps;
+        if (this.streamView) this.streamView.sendClientBitrate(kbps);
+    },
+
+    /**
+     * This screen changed under the stream — turned, or the window moved to a
+     * monitor of another size or scale — and the choice follows this screen
+     * (Auto on the native host, "Match my screen"): the stream is relaunched
+     * at the new size, seamlessly where the host allows two sessions. Nothing
+     * happens when the size the host is asked for does not change.
+     */
+    _onClientScreenChanged(device) {
+        if (!this._sizeFollowsScreen || this._nav.overlay !== 'streaming') return;
+        if (this._standbyView) return;
+        const settings = this._lastStreamingSettings;
+        const host = this._lastStreamHost;
+        if (!settings || !host) return;
+        const choice = readResolutionChoice(settings);
+        const size = resolveStreamSize(
+            {
+                mode: choice.mode,
+                height: settings.stream_height,
+                customWidth: choice.customWidth,
+                customHeight: choice.customHeight,
+            },
+            { nativeHost: host.backendType === 'native', device },
+        );
+        if (size.height === settings.stream_height && size.aspect === settings.stream_aspect)
+            return;
+        console.log(
+            '[MW] This screen is now ' +
+                (device ? device.width + 'x' + device.height : '?') +
+                ' — relaunching at ' +
+                (size.aspect || size.height),
+        );
+        this._applyResolvedSize(settings, size);
+        this._qualityRelaunch(this._transportIndex || 0);
     },
 
     /** The native frame's shape becomes the session's aspect, and the host's
@@ -2400,6 +2504,7 @@ const MoonlightApp = {
         f.displayHdr = msg.displayHdr === true;
         f.hdrCapable = msg.hdrCapable === true;
         this._noteNativeAspect(msg.frameWidth, msg.frameHeight);
+        this._followFrameBitrate(msg.frameWidth, msg.frameHeight);
         this._reconcileNativeHdr('host display changed', true);
     },
 

@@ -51,12 +51,36 @@ describe('SettingsView resolution', () => {
         view = new SettingsView(document.getElementById('settings'), () => {});
     });
 
-    it('offers the three choices after the fixed rungs', () => {
+    it('offers Auto, this screen and custom, then the rungs largest first', () => {
         view.render();
         const values = [...select().options].map((o) => o.value);
-        expect(values).toEqual(['720', '1080', '1440', '2160', 'device', 'host', 'custom']);
-        expect(select().value).toBe('1080');
+        expect(values).toEqual(['auto', 'device', 'custom', '2160', '1440', '1080', '720']);
+        expect(select().value).toBe('auto');
         expect(view.container.querySelector('#settings-custom-width')).toBeNull();
+    });
+
+    // The bitrate follows the estimate until the slider leaves it, and is the
+    // user's own from then on — whatever the resolution becomes.
+    it('keeps a bitrate the user set, and follows the estimate otherwise', async () => {
+        view.render();
+        view.bindEvents();
+        expect(view._bitrateAuto).toBe(true);
+        const slider = view.container.querySelector('#settings-stream-bitrate');
+        slider.value = '7';
+        slider.dispatchEvent(new Event('change'));
+        await new Promise((r) => setTimeout(r, 350));
+        expect(view._bitrateAuto).toBe(false);
+        expect(stored().stream_bitrate_auto).toBe(false);
+        expect(stored().stream_bitrate).toBe(7000);
+        await pick('720');
+        expect(stored().stream_bitrate).toBe(7000);
+        // Back on the estimate: auto again, and it moves with the rung.
+        slider.value = String(view._estimateBitrate());
+        slider.dispatchEvent(new Event('change'));
+        await new Promise((r) => setTimeout(r, 350));
+        expect(stored().stream_bitrate_auto).toBe(true);
+        await pick('2160');
+        expect(stored().stream_bitrate).toBe(view._estimateBitrate() * 1000);
     });
 
     it('hides the ratio from a user, and shows it to a debug build', () => {
@@ -79,7 +103,8 @@ describe('SettingsView resolution', () => {
         expect(stored().stream_aspect).toBe('auto');
         expect(stored().stream_aspect_forced).toBeUndefined();
         expect(stored().stream_height).toBe(1440);
-        expect(stored().stream_resolution).toBe('fixed');
+        // A store from before the choice existed is Auto, the rung kept.
+        expect(stored().stream_resolution).toBe('auto');
     });
 
     it('keeps a forced ratio in a debug build, and says so', async () => {
@@ -132,9 +157,10 @@ describe('SettingsView resolution', () => {
         expect(stored().stream_custom_width).toBe(4096);
     });
 
-    it('reads an unknown stored choice as the fixed rung', () => {
+    it('reads an unknown stored choice as Auto, the rung kept for later', () => {
         view._applySettings({ stream_resolution: 'native', stream_height: 2160 });
         view.render();
-        expect(select().value).toBe('2160');
+        expect(select().value).toBe('auto');
+        expect(view._streamHeight).toBe(2160);
     });
 });

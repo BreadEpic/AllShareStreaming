@@ -173,10 +173,11 @@ public:
     /// browser's "Same as your device" / "Custom" resolutions. See
     /// mw::native::SessionConfig::fitRequestedBox and allowUpscale. Other
     /// engines ignore both: they get the explicit width and height.
-    void setFrameFit(bool fitBox, bool allowUpscale)
+    void setFrameFit(bool fitBox, bool allowUpscale, bool matchDisplay = false)
     {
         m_FitRequestedBox = fitBox;
         m_AllowUpscale = fitBox && allowUpscale;
+        m_MatchClientDisplay = fitBox && matchDisplay;
     }
 
     /// The provider this session launches through. Required: set it before
@@ -448,6 +449,7 @@ private:
     /// See setFrameFit.
     bool m_FitRequestedBox = false;
     bool m_AllowUpscale = false;
+    bool m_MatchClientDisplay = false;
 
     /// The engine producing this session's media: MoonlightShim for a
     /// GameStream host, NativeMediaEngine for this machine's own screen.

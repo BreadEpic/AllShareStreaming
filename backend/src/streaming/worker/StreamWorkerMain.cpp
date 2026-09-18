@@ -307,7 +307,8 @@ int runStreamWorker(QCoreApplication& app)
     // Absent (an older parent) → the frame keeps its size, today's behaviour.
     session->setFollowDisplayShape(cfg["followDisplayShape"].toBool(false));
     // Absent (an older parent) → the height is kept, today's behaviour.
-    session->setFrameFit(cfg["fitRequestedBox"].toBool(false), cfg["allowUpscale"].toBool(false));
+    session->setFrameFit(cfg["fitRequestedBox"].toBool(false), cfg["allowUpscale"].toBool(false),
+                         cfg["matchClientDisplay"].toBool(false));
     session->setBackend(backend);
     session->setClientUniqueId(cfg["clientUniqueId"].toString());
     session->setPreferResume(cfg["preferResume"].toBool(false));

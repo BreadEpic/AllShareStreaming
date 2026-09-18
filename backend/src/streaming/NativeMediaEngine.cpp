@@ -157,6 +157,7 @@ void NativeMediaEngine::startCapture(const StartParams& params)
     config.followDisplayShape = params.followDisplayShape;
     config.fitRequestedBox = params.fitRequestedBox;
     config.allowUpscale = params.allowUpscale;
+    config.matchClientDisplay = params.matchClientDisplay;
     config.allowElevatedInput = params.viewerAdmin;
     config.muteHostAudio = params.muteHostAudio;
     // The consent this machine was already given, replayed. Empty on the very
@@ -588,6 +589,16 @@ void NativeMediaEngine::setClientRefresh(int milliHz, bool vsync)
     m_ClientVsync.store(vsync, std::memory_order_relaxed);
     m_ClientRefreshKnown.store(true, std::memory_order_release);
     if (m_Session) m_Session->setClientRefresh(milliHz, vsync);
+}
+
+void NativeMediaEngine::setClientBitrate(int kbps)
+{
+    // The same bounds as the setting itself (AppSettings::setStreamBitrate).
+    if (kbps < 1000 || kbps > 150000) {
+        qWarning() << "[NativeMediaEngine] Ignoring a client bitrate of" << kbps << "kbps";
+        return;
+    }
+    if (m_Session) m_Session->setTargetBitrate(kbps);
 }
 
 bool NativeMediaEngine::referenceInvalidation() const

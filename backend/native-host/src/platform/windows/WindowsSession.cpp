@@ -46,6 +46,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <cwchar>
@@ -248,6 +249,11 @@ public:
         // converter tone-maps them itself (buildPipeline): DXGI's own 8-bit
         // rendition clips at 80 nits, under every window on a desktop whose
         // SDR brightness slider has been touched.
+        // "Match my screen": the display in the client's own mode for the
+        // session, when its driver lists one — before the capture opens, so
+        // the first frame is already the right size. Best effort.
+        const bool modeChanged = applyClientMode(*display);
+
         if (!openCapture(error)) return false;
         if (!convert::ColorConvert::supportsSource(m_Capture->format())) {
             error = "the display delivers frames in a format this build cannot convert (" +
@@ -275,7 +281,8 @@ public:
         // resolved "0, the display's own" to the display's rounded refresh,
         // so the setting is always a number here; the guard in chooseCadence
         // is for a config that bypassed it.
-        m_DisplayMilliHz = display->refreshMilliHz;
+        m_DisplayMilliHz =
+            modeChanged && m_ModeChangedHz > 0 ? m_ModeChangedHz * 1000 : display->refreshMilliHz;
         m_ClientMilliHz.store(m_Config.clientRefreshMilliHz);
         m_ClientVsync.store(m_Config.clientVsync);
         {
@@ -287,8 +294,18 @@ public:
         }
 
         // The client's own frame size is whatever it asked for, or the desktop
-        // when it asked for nothing.
-        if (!buildPipeline(m_Config.width, m_Config.height, error)) return false;
+        // when it asked for nothing. The Selector shaped it to the display as
+        // it was; a display just put in the client's mode reshapes it — the
+        // box rule against the new size gives the box itself back.
+        FrameSize frame{m_Config.width, m_Config.height};
+        if (modeChanged) {
+            frame = frameForDisplay({m_Capture->width(), m_Capture->height()}, frame,
+                                    policyOf(m_Config));
+            log::info("[native] the frame follows the display's new mode: " +
+                      std::to_string(m_Config.width) + "x" + std::to_string(m_Config.height) +
+                      " -> " + std::to_string(frame.width) + "x" + std::to_string(frame.height));
+        }
+        if (!buildPipeline(frame.width, frame.height, error)) return false;
 
         m_Info = SessionInfo{};
         m_Info.displayId = display->id;
@@ -420,6 +437,10 @@ public:
         // After the loopback is closed: the speakers come back, or the default
         // output goes back to where it was.
         m_HostMute.release();
+        // The display gets its own mode back (a CDS_FULLSCREEN change is
+        // undone by passing no mode — and by the OS itself, should this
+        // process die first).
+        restoreDisplayMode();
 
         if (!wasRunning && !m_Encoder && !m_Capture) return;
 
@@ -603,6 +624,108 @@ private:
     /// fallback is for the machines where DDA cannot work at all — a hybrid
     /// laptop whose panel is not scanned out by the adapter it is asked of
     /// answers DXGI_ERROR_UNSUPPORTED and always will.
+    // ── "Match my screen": the display in the client's mode ──────────────
+    //
+    // The client wants its own pixels, one for one. That is a display mode
+    // of the client screen's size — and only a mode the display's driver
+    // lists can be set (a physical panel takes its EDID's, a virtual display
+    // its configuration's). The exact size is taken when listed, at the
+    // highest refresh that is at least the display's own; otherwise the
+    // largest listed mode of the client's shape (within 0.5%) that fits
+    // inside it; otherwise nothing changes and the frame follows the box
+    // rule as usual (the host upscales). CDS_FULLSCREEN: the change is the
+    // session's — undone at stop(), and by Windows if the process dies.
+
+    /// @returns true when the display's mode was changed for this session.
+    bool applyClientMode(const DisplayInfo& display)
+    {
+        if (!m_Config.matchClientDisplay || !m_Config.fitRequestedBox) return false;
+        const int wantW = m_Config.requestedWidth, wantH = m_Config.requestedHeight;
+        if (wantW <= 0 || wantH <= 0 || display.osName.empty()) return false;
+        if (display.width == wantW && display.height == wantH) return false;
+
+        std::wstring name(display.osName.begin(), display.osName.end()); // ASCII, "\\.\DISPLAYn"
+        const int currentHz = (display.refreshMilliHz + 500) / 1000;
+        const double wantAspect = static_cast<double>(wantW) / wantH;
+
+        DEVMODEW best{};
+        bool exact = false;
+        long long bestArea = 0;
+        DEVMODEW dm{};
+        dm.dmSize = sizeof(dm);
+        for (DWORD i = 0; ::EnumDisplaySettingsExW(name.c_str(), i, &dm, 0); ++i) {
+            const int w = static_cast<int>(dm.dmPelsWidth), h = static_cast<int>(dm.dmPelsHeight);
+            const int hz = static_cast<int>(dm.dmDisplayFrequency);
+            if (w <= 0 || h <= 0) continue;
+            if (w == wantW && h == wantH) {
+                // The exact size: the highest refresh, the display's own at least.
+                if (!exact || static_cast<int>(best.dmDisplayFrequency) < hz) best = dm;
+                exact = true;
+                continue;
+            }
+            if (exact || w > wantW || h > wantH) continue;
+            const double aspect = static_cast<double>(w) / h;
+            if (std::abs(aspect - wantAspect) / wantAspect > 0.005) continue;
+            const long long area = static_cast<long long>(w) * h;
+            if (area > bestArea ||
+                (area == bestArea && hz > static_cast<int>(best.dmDisplayFrequency))) {
+                best = dm;
+                bestArea = area;
+            }
+        }
+        if (best.dmPelsWidth == 0) {
+            log::info("[native] " + display.osName + " lists no mode of " + std::to_string(wantW) +
+                      "x" + std::to_string(wantH) + " or of its shape — the display keeps " +
+                      std::to_string(display.width) + "x" + std::to_string(display.height));
+            return false;
+        }
+        if (exact && static_cast<int>(best.dmDisplayFrequency) < currentHz)
+            log::info("[native] " + std::to_string(wantW) + "x" + std::to_string(wantH) +
+                      " is listed at " + std::to_string(best.dmDisplayFrequency) + " Hz only");
+
+        DEVMODEW wanted{};
+        wanted.dmSize = sizeof(wanted);
+        wanted.dmPelsWidth = best.dmPelsWidth;
+        wanted.dmPelsHeight = best.dmPelsHeight;
+        wanted.dmDisplayFrequency = best.dmDisplayFrequency;
+        wanted.dmBitsPerPel = best.dmBitsPerPel;
+        wanted.dmFields = DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFREQUENCY | DM_BITSPERPEL;
+        const LONG rc =
+            ::ChangeDisplaySettingsExW(name.c_str(), &wanted, nullptr, CDS_FULLSCREEN, nullptr);
+        if (rc != DISP_CHANGE_SUCCESSFUL) {
+            log::warning("[native] " + display.osName + " refused " +
+                         std::to_string(wanted.dmPelsWidth) + "x" +
+                         std::to_string(wanted.dmPelsHeight) + " (ChangeDisplaySettingsEx " +
+                         std::to_string(rc) + ") — the display keeps its mode");
+            return false;
+        }
+        m_ModeChangedDevice = name;
+        m_ModeChangedHz = static_cast<int>(wanted.dmDisplayFrequency);
+        log::info("[native] " + display.osName + " put in " + std::to_string(wanted.dmPelsWidth) +
+                  "x" + std::to_string(wanted.dmPelsHeight) + " @ " +
+                  std::to_string(wanted.dmDisplayFrequency) + " Hz for the session (" +
+                  (exact ? "the client's own size" : "the largest of its shape that fits") +
+                  ", was " + std::to_string(display.width) + "x" + std::to_string(display.height) +
+                  ")");
+        return true;
+    }
+
+    /// The mode the session changed, put back. Idempotent.
+    void restoreDisplayMode()
+    {
+        if (m_ModeChangedDevice.empty()) return;
+        const LONG rc =
+            ::ChangeDisplaySettingsExW(m_ModeChangedDevice.c_str(), nullptr, nullptr, 0, nullptr);
+        if (rc == DISP_CHANGE_SUCCESSFUL)
+            log::info("[native] the display's own mode is back");
+        else
+            log::warning("[native] the display's own mode could not be put back "
+                         "(ChangeDisplaySettingsEx " +
+                         std::to_string(rc) + ")");
+        m_ModeChangedDevice.clear();
+        m_ModeChangedHz = 0;
+    }
+
     bool openCapture(std::string& error)
     {
         // MW_CAPTURE=wgc takes the fallback on a machine where Desktop
@@ -2520,6 +2643,12 @@ private:
     /// from the current one, or a run of reductions would compound.
     int m_FullWidth = 0;
     int m_FullHeight = 0;
+
+    /// The GDI device whose mode this session changed ("Match my screen"),
+    /// to put back at stop(), and the refresh of the mode it was put in.
+    /// Empty / 0 when none was.
+    std::wstring m_ModeChangedDevice;
+    int m_ModeChangedHz = 0;
     encode::EncodeLoadCap m_LoadCap;
     std::atomic<bool> m_PendingResize{false};
     /// Frames the receiver reported lost, waiting for the capture thread to

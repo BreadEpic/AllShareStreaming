@@ -112,12 +112,16 @@ export class SettingsView {
         this._videoEnhancement = 'off';
         this._videoEnhancementAlgo = 'auto';
         this._debugBuild = false;
-        // How the streamed size is chosen: 'fixed' (the rung in _streamHeight),
-        // 'device', 'host' or 'custom' (the pair below) — see
+        // How the streamed size is chosen: 'auto' (the host's size brought
+        // down to this screen), 'device' (this screen), 'custom' (the pair
+        // below) or 'fixed' (the rung in _streamHeight) — see
         // util/StreamResolution.js.
-        this._streamResolution = 'fixed';
+        this._streamResolution = 'auto';
         this._customWidth = 1920;
         this._customHeight = 1080;
+        // The bitrate follows the estimate (resolution × fps × HDR) until the
+        // slider is moved off it; then it is the user's, and it stays.
+        this._bitrateAuto = true;
         // Which virtual controller the host presents: 'auto' follows the pad we
         // detect, 'x360'/'ds4' force one. Shown only in debug builds — in
         // production the right behaviour is to guess correctly, and a visible
@@ -333,6 +337,10 @@ export class SettingsView {
         this._showPerformanceStats = data.show_performance_stats === true;
         const kbps = data.stream_bitrate || 20000;
         this._streamBitrateMbps = Math.round(kbps / 1000);
+        // Auto unless the slider was moved off the estimate (see bindEvents):
+        // a value stored without the flag is one from before it existed, and
+        // was the estimate of its day.
+        this._bitrateAuto = data.stream_bitrate_auto !== false;
         this._streamHeight = data.stream_height || 1080;
         const choice = readResolutionChoice(data);
         this._streamResolution = choice.mode;
@@ -412,8 +420,8 @@ export class SettingsView {
         };
     }
 
-    /** Recompute the bitrate from current selects and sync the slider UI. */
-    _applyAutoBitrate() {
+    /** The recommended bitrate, in Mbps, for what the controls show now. */
+    _estimateBitrate() {
         const fps = parseInt(this.container.querySelector('#settings-stream-fps')?.value, 10);
         const chroma444 = this.container.querySelector('#settings-chroma-444')?.checked === true;
         // The size the choice stands for — this screen's, the custom pair, or
@@ -428,14 +436,29 @@ export class SettingsView {
                   this._streamAspect
                 : ref.aspect;
         const hdr = this.container.querySelector('#settings-hdr')?.checked ?? this._hdrEnabled;
-        const mbps = this._computeAutoBitrate(
+        return this._computeAutoBitrate(
             ref.height,
             isNaN(fps) ? this._streamFps : fps,
             aspect,
             chroma444,
             hdr,
         );
+    }
 
+    /** Show whether the bitrate is the estimate's or the user's own. */
+    _syncBitrateMark() {
+        const mark = this.container.querySelector('#settings-bitrate-auto');
+        if (mark) mark.textContent = this._bitrateAuto ? t('settings.bitrateAuto') : '';
+    }
+
+    /**
+     * Recompute the bitrate from current selects and sync the slider UI —
+     * only while the bitrate is the estimate's: a value the user set stays
+     * theirs whatever the resolution, frame rate or HDR become.
+     */
+    _applyAutoBitrate() {
+        if (!this._bitrateAuto) return;
+        const mbps = this._estimateBitrate();
         const slider = this.container.querySelector('#settings-stream-bitrate');
         const label = this.container.querySelector('#settings-bitrate-value');
         if (slider) slider.value = mbps;
@@ -451,6 +474,7 @@ export class SettingsView {
             gaming_mode: this._gamingMode,
             show_performance_stats: this._showPerformanceStats,
             stream_bitrate: this._streamBitrateMbps * 1000,
+            stream_bitrate_auto: this._bitrateAuto,
             stream_height: this._streamHeight,
             stream_resolution: this._streamResolution,
             stream_custom_width: this._customWidth,
@@ -708,9 +732,10 @@ export class SettingsView {
         this._gamingMode = false;
         this._showPerformanceStats = false;
         this._streamHeight = 1080;
-        this._streamResolution = 'fixed';
+        this._streamResolution = 'auto';
         this._customWidth = 1920;
         this._customHeight = 1080;
+        this._bitrateAuto = true;
         this._streamAspect = 'auto';
         this._streamFps = 60;
         this._hdrEnabled = false;
@@ -934,36 +959,37 @@ export class SettingsView {
             </div>`;
         }
 
-        // Resolution options: the fixed rungs (short labels: "1080p"), then the
-        // three choices that fix the size another way — this screen, the
-        // host's display, a typed pair (util/StreamResolution.js).
+        // Resolution options: the three choices that follow a screen or a
+        // typed pair — Auto, this screen, custom — then the fixed rungs, the
+        // largest first (short labels: "1080p"). See util/StreamResolution.js.
         const resolutionMode = this._streamResolution;
         const device = devicePixelSize();
-        const heights = FIXED_HEIGHTS.map((h) => ({
-            value: String(h),
-            label: h + 'p',
-            selected: resolutionMode === 'fixed' && h === this._streamHeight,
-        }));
         const modes = [
+            { value: 'auto', label: t('settings.resolutionAuto') },
             { value: 'device', label: t('settings.resolutionDevice') },
-            { value: 'host', label: t('settings.resolutionHost') },
             { value: 'custom', label: t('settings.resolutionCustom') },
         ].map((m) => ({ ...m, selected: resolutionMode === m.value }));
-        const heightOptions = heights
-            .concat(modes)
+        const heights = FIXED_HEIGHTS.slice()
+            .reverse()
+            .map((h) => ({
+                value: String(h),
+                label: h + 'p',
+                selected: resolutionMode === 'fixed' && h === this._streamHeight,
+            }));
+        const heightOptions = modes
+            .concat(heights)
             .map(
                 (h) =>
                     `<option value="${h.value}" ${h.selected ? 'selected' : ''}>${this.esc(h.label)}</option>`,
             )
             .join('');
         // One line under the select says what the choice stands for.
+        const sizeText = device ? device.width + '×' + device.height : '?';
         const resolutionDesc =
-            resolutionMode === 'device'
-                ? t('settings.resolutionDeviceDesc', {
-                      size: device ? device.width + '×' + device.height : '?',
-                  })
-                : resolutionMode === 'host'
-                  ? t('settings.resolutionHostDesc')
+            resolutionMode === 'auto'
+                ? t('settings.resolutionAutoDesc', { size: sizeText })
+                : resolutionMode === 'device'
+                  ? t('settings.resolutionDeviceDesc', { size: sizeText })
                   : resolutionMode === 'custom'
                     ? t('settings.resolutionCustomDesc', {
                           min: CUSTOM_SIZE_MIN,
@@ -1148,6 +1174,7 @@ export class SettingsView {
                     <div class="settings-field">
                         <label class="settings-label" for="settings-stream-bitrate">
                             ${t('settings.bitrate')} <strong id="settings-bitrate-value">${this._streamBitrateMbps}</strong> ${t('settings.bitrateUnit')}
+                            <span id="settings-bitrate-auto" class="settings-bitrate-auto">${this._bitrateAuto ? this.esc(t('settings.bitrateAuto')) : ''}</span>
                         </label>
                         <span class="setting-desc">${t('settings.bitrateDesc')}</span>
                         <input type="range" id="settings-stream-bitrate"
@@ -1516,7 +1543,16 @@ export class SettingsView {
             });
 
         const bitrateSlider = this.container.querySelector('#settings-stream-bitrate');
-        if (bitrateSlider) bitrateSlider.addEventListener('change', () => this._autoSave());
+        if (bitrateSlider)
+            bitrateSlider.addEventListener('change', () => {
+                // Moved off the estimate: the user's own, kept whatever the
+                // resolution becomes. Put back ON the estimate: auto again,
+                // and it follows once more.
+                const value = parseInt(bitrateSlider.value, 10);
+                this._bitrateAuto = !isNaN(value) && value === this._estimateBitrate();
+                this._syncBitrateMark();
+                this._autoSave();
+            });
 
         const gamingCheck = this.container.querySelector('#settings-gaming-mode');
         if (gamingCheck) gamingCheck.addEventListener('change', () => this._autoSave());

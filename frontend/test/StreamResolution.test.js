@@ -4,10 +4,11 @@
  *
  * The resolution choice, from what Settings stores to the size a launch asks
  * for. Each choice has one property that matters to the user and that only a
- * launch reveals: a device stream that is not the screen's size is not 1:1, a
- * custom pair that reaches a native host as a height is a squeezed picture,
- * and "Same as the remote PC" sent as a height of 0 to Sunshine is a refused
- * launch.
+ * launch reveals: Auto on the native host is the host's own size brought down
+ * to this screen and never blown up; "Match my screen" is this screen's size
+ * and the host's display asked to take it; a custom pair that reaches a native
+ * host as a height is a squeezed picture; and any of them sent as a height of
+ * 0 to Sunshine is a refused launch.
  */
 import { describe, it, expect } from 'vitest';
 import {
@@ -23,12 +24,15 @@ import {
 
 const phone = { screen: { width: 390, height: 844 }, devicePixelRatio: 3 };
 const laptop = { screen: { width: 1536, height: 864 }, devicePixelRatio: 1.25 };
+const tablet = { width: 2000, height: 1600 };
 
 describe('readResolutionChoice', () => {
-    it('is the fixed rung by default, and for anything it does not know', () => {
-        expect(readResolutionChoice(undefined).mode).toBe('fixed');
-        expect(readResolutionChoice({ stream_resolution: 'native' }).mode).toBe('fixed');
-        expect(readResolutionChoice({ stream_resolution: 'host' }).mode).toBe('host');
+    it('is Auto by default, for anything it does not know, and for the retired "host"', () => {
+        expect(readResolutionChoice(undefined).mode).toBe('auto');
+        expect(readResolutionChoice({ stream_resolution: 'native' }).mode).toBe('auto');
+        expect(readResolutionChoice({ stream_resolution: 'host' }).mode).toBe('auto');
+        expect(readResolutionChoice({ stream_resolution: 'fixed' }).mode).toBe('fixed');
+        expect(readResolutionChoice({ stream_resolution: 'device' }).mode).toBe('device');
     });
 
     it('pins a stored custom pair into its bounds and fills a missing one', () => {
@@ -64,19 +68,55 @@ describe('devicePixelSize', () => {
 });
 
 describe('resolveStreamSize', () => {
+    const noFlags = {
+        fitBox: false,
+        allowUpscale: false,
+        matchDisplay: false,
+        followsScreen: false,
+    };
+
     it('leaves a fixed rung to the ratio logic: height only', () => {
         expect(resolveStreamSize({ mode: 'fixed', height: 1440 }, { nativeHost: false })).toEqual({
             height: 1440,
             aspect: null,
-            fitBox: false,
-            allowUpscale: false,
+            ...noFlags,
         });
     });
 
-    // The one property of "Same as your device": the stream is this screen's
-    // size, so full screen it is 1:1 — and it is the one choice allowed to ask
-    // a host for more than its display has.
-    it('asks for this screen, pixel for pixel, upscaling allowed', () => {
+    // Auto on the native host: this screen is the box the host's own size
+    // must fit in — the host keeps its size when it fits (1920×1080 in
+    // 2000×1600), scales down at its own shape when it does not (2560×1440 →
+    // 2000×1125), never up. All of that is the host's box rule; what is sent
+    // is the box, and the request follows this screen.
+    it('asks the native host for its own size within this screen, never upscaled', () => {
+        expect(resolveStreamSize({ mode: 'auto' }, { nativeHost: true, device: tablet })).toEqual({
+            height: 1600,
+            aspect: '2000:1600',
+            fitBox: true,
+            allowUpscale: false,
+            matchDisplay: false,
+            followsScreen: true,
+        });
+        // No screen to read: the host's own size, whatever it is.
+        expect(resolveStreamSize({ mode: 'auto' }, { nativeHost: true, device: null })).toEqual({
+            height: 0,
+            aspect: null,
+            ...noFlags,
+        });
+    });
+
+    it("is today's 1080p on a host that cannot say its size", () => {
+        expect(resolveStreamSize({ mode: 'auto' }, { nativeHost: false, device: tablet })).toEqual({
+            height: HOST_FALLBACK_HEIGHT,
+            aspect: null,
+            ...noFlags,
+        });
+    });
+
+    // "Match my screen": this screen's size, pixel for pixel — the one choice
+    // that may ask a host for more than its display has, and the one that
+    // asks the native host to switch its display to that size.
+    it('asks for this screen, the display switched to it, upscaling allowed', () => {
         const size = resolveStreamSize(
             { mode: 'device' },
             { nativeHost: true, device: { width: 2532, height: 1170 } },
@@ -86,9 +126,12 @@ describe('resolveStreamSize', () => {
             aspect: '2532:1170',
             fitBox: true,
             allowUpscale: true,
+            matchDisplay: true,
+            followsScreen: true,
         });
-        // The same request reaches every host: it is the backend that turns
-        // "W:H" at that height into the explicit width Sunshine needs.
+        // The same request reaches every host: the backend turns "W:H" at
+        // that height into the explicit width Sunshine needs, and GameStream's
+        // optimal-settings flag lets it switch the host display to it.
         expect(
             resolveStreamSize(
                 { mode: 'device' },
@@ -100,51 +143,40 @@ describe('resolveStreamSize', () => {
     it('falls back to the fixed rung when the screen is unknown', () => {
         expect(
             resolveStreamSize({ mode: 'device', height: 720 }, { nativeHost: true, device: null }),
-        ).toEqual({ height: 720, aspect: null, fitBox: false, allowUpscale: false });
+        ).toEqual({ height: 720, aspect: null, ...noFlags });
     });
 
-    // "Same as the remote PC": only the native host can answer it, with a
-    // height of 0. Sent to Sunshine, 0 would be a refused launch — so it gets
-    // 1080p, and the choice itself is kept for the day the host is native.
-    it('is the host display for a native host, 1080p for any other', () => {
-        expect(resolveStreamSize({ mode: 'host', height: 1440 }, { nativeHost: true })).toEqual({
-            height: 0,
-            aspect: null,
-            fitBox: false,
-            allowUpscale: false,
-        });
-        expect(resolveStreamSize({ mode: 'host', height: 1440 }, { nativeHost: false })).toEqual({
-            height: HOST_FALLBACK_HEIGHT,
-            aspect: null,
-            fitBox: false,
-            allowUpscale: false,
-        });
-    });
-
-    it('sends a custom pair as a box, even, never upscaled', () => {
+    it('sends a custom pair as a box, even, never upscaled, nothing switched', () => {
         expect(
             resolveStreamSize(
                 { mode: 'custom', customWidth: 1601, customHeight: 1201 },
                 { nativeHost: true },
             ),
-        ).toEqual({ height: 1200, aspect: '1600:1200', fitBox: true, allowUpscale: false });
-        // Out of bounds is pinned, not refused.
-        expect(
-            resolveStreamSize(
-                { mode: 'custom', customWidth: 100, customHeight: 9000 },
-                { nativeHost: false },
-            ),
         ).toEqual({
-            height: CUSTOM_SIZE_MAX,
-            aspect: `${CUSTOM_SIZE_MIN}:${CUSTOM_SIZE_MAX}`,
+            height: 1200,
+            aspect: '1600:1200',
             fitBox: true,
             allowUpscale: false,
+            matchDisplay: false,
+            followsScreen: false,
         });
+        // Out of bounds is pinned, not refused.
+        const pinned = resolveStreamSize(
+            { mode: 'custom', customWidth: 100, customHeight: 9000 },
+            { nativeHost: false },
+        );
+        expect(pinned.height).toBe(CUSTOM_SIZE_MAX);
+        expect(pinned.aspect).toBe(`${CUSTOM_SIZE_MIN}:${CUSTOM_SIZE_MAX}`);
     });
 });
 
 describe('bitrateReference', () => {
     it('counts the pixels the choice stands for', () => {
+        // Auto and "Match my screen": this screen, the most the host sends.
+        expect(bitrateReference({ mode: 'auto' }, tablet)).toEqual({
+            height: 1600,
+            aspect: '2000:1600',
+        });
         expect(bitrateReference({ mode: 'device' }, { width: 2532, height: 1170 })).toEqual({
             height: 1170,
             aspect: '2532:1170',
@@ -152,8 +184,8 @@ describe('bitrateReference', () => {
         expect(bitrateReference({ mode: 'custom', customWidth: 2560, customHeight: 1080 })).toEqual(
             { height: 1080, aspect: '2560:1080' },
         );
-        // Unknown until launch: the estimate's own 1080p reference.
-        expect(bitrateReference({ mode: 'host', height: 2160 })).toEqual({
+        // Unknown screen: the estimate's own 1080p reference.
+        expect(bitrateReference({ mode: 'auto', height: 2160 }, null)).toEqual({
             height: 1080,
             aspect: '16:9',
         });

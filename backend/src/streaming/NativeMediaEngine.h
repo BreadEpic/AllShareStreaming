@@ -102,6 +102,9 @@ public:
         /// SessionConfig::fitRequestedBox and allowUpscale.
         bool fitRequestedBox = false;
         bool allowUpscale = false;
+        /// Put the display in the requested mode for the session — see
+        /// SessionConfig::matchClientDisplay.
+        bool matchClientDisplay = false;
         /// The client's screen, as the browser measured it: refresh in
         /// millihertz (0 = unknown) and whether it paints on vsync. A vsync
         /// client gets a cadence that divides its refresh — see
@@ -264,6 +267,13 @@ public:
     /// Session::setClientRefresh. Safe from any thread; remembered for a
     /// session that starts after it was said.
     void setClientRefresh(int milliHz, bool vsync);
+
+    /// The viewer moved its bitrate (a `clientbitrate` message): the
+    /// estimate following the frame the host really streams. The session's
+    /// ceiling from the next frame — see mw::native::Session::
+    /// setTargetBitrate. Ignored (with a log line) when the value is not a
+    /// bitrate; safe from any thread.
+    void setClientBitrate(int kbps);
 
     /// A human-readable description of what the session settled on, for the
     /// session log: "NVIDIA GeForce RTX 4070 · NVENC HEVC 4:4:4". Empty until

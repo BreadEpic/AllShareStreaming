@@ -142,14 +142,20 @@ public:
     // ── Stream resolution mode ────────────────────────────────────────────────
     //
     // How the streamed size is chosen. Stored as JSON string "stream_resolution":
-    // "fixed" (default: the rung in stream_height), "device" (the client's own
-    // screen, pixel for pixel), "host" (the host display's own size — a native
-    // host; every other host streams 1080p under that choice) or "custom" (the
-    // pair below). The browser resolves the choice into an explicit width and
-    // height at launch; these are only the defaults it seeds from.
+    // "auto" (default: the native host's display, brought down to fit the
+    // client's screen; 1080p from every other host), "device" (the client's
+    // own screen, pixel for pixel), "custom" (the pair below) or "fixed" (the
+    // rung in stream_height). The browser resolves the choice into an explicit
+    // width and height at launch; these are only the defaults it seeds from.
 
     QString streamResolution() const;
     void setStreamResolution(const QString& mode);
+
+    // Whether the bitrate is the estimate's (resolution × frame rate × HDR),
+    // following the streamed frame, or a value the user set. Stored as JSON
+    // bool "stream_bitrate_auto", default true.
+    bool streamBitrateAuto() const;
+    void setStreamBitrateAuto(bool automatic);
 
     // The "custom" pair, each bounded to [360, 4096]. Stored as JSON ints
     // "stream_custom_width" / "stream_custom_height", default 1920x1080.

@@ -31,6 +31,7 @@ import { AudioPipeline } from '../audio/AudioPipeline.js';
 import { JitterController } from '../stream/JitterController.js';
 import { FramePacer } from '../stream/FramePacer.js';
 import { measureRefreshRate, onRefreshRateChange } from '../util/RefreshRate.js';
+import { devicePixelSize } from '../util/StreamResolution.js';
 import { PeriodicStallDetector } from '../stream/PeriodicStallDetector.js';
 import { GamepadManager } from '../stream/GamepadManager.js';
 import { armAudioPlayRetry } from '../util/audioAutoplay.js';
@@ -800,6 +801,13 @@ export class StreamView {
         this._clientVsync = !this._tearing;
         this._sentClientRefresh = opts.clientRefreshMilliHz || 0;
         this._offRefreshChange = null;
+        // This screen's size in device pixels, for a resolution choice that
+        // follows it (Auto on the native host, "Match my screen"): a change —
+        // rotation, another monitor, another scale — goes up to the app as
+        // onClientScreenChanged, which relaunches at the new size.
+        this._offScreenChange = null;
+        this._screenSizeSeen = null;
+        this.onClientScreenChanged = null;
         // The host heals a lost frame with a delta (NVENC reference
         // invalidation, /start says so): after a gap this view names the
         // frames it missed and keeps decoding, instead of discarding deltas
@@ -4158,6 +4166,8 @@ export class StreamView {
             this._startLinkReporting();
             // …and this screen's refresh, whenever it changes under the stream.
             this._startRefreshWatch();
+            // …and its size, for the choices that follow it.
+            this._startScreenWatch();
 
             if (this._transport === 'webrtc-media') {
                 // Media track mode: video arrives natively via <video> element.
@@ -4528,6 +4538,7 @@ export class StreamView {
         this._stopAudioStatsPolling();
         this._stopLinkReporting();
         this._stopRefreshWatch();
+        this._stopScreenWatch();
     }
 
     // ── Link report for the native host's rate governor ──────────────────
@@ -4679,6 +4690,71 @@ export class StreamView {
             this._offRefreshChange();
             this._offRefreshChange = null;
         }
+    }
+
+    // ── This screen's size, for a resolution choice that follows it ──────
+    //
+    // The size in device pixels is what the stream was asked to match or fit
+    // (util/StreamResolution.js). Rotation, a move to another monitor, a
+    // change of scale: every one of them fires a resize or an orientation
+    // event, none of them says which — so the size is re-read on either and
+    // compared, and only a real change goes up. Settled for 700 ms first: a
+    // rotation reports two or three intermediate sizes on its way.
+    _startScreenWatch() {
+        if (this._offScreenChange) return;
+        this._screenSizeSeen = devicePixelSize();
+        let timer = null;
+        const check = () => {
+            timer = null;
+            const now = devicePixelSize();
+            const seen = this._screenSizeSeen;
+            if (!now || (seen && now.width === seen.width && now.height === seen.height)) return;
+            this._screenSizeSeen = now;
+            if (this.onClientScreenChanged) this.onClientScreenChanged(now);
+        };
+        const schedule = () => {
+            if (timer) clearTimeout(timer);
+            timer = setTimeout(check, 700);
+        };
+        window.addEventListener('resize', schedule);
+        const orientation = (window.screen || {}).orientation;
+        const onOrientation = orientation && typeof orientation.addEventListener === 'function';
+        if (onOrientation) {
+            try {
+                orientation.addEventListener('change', schedule);
+            } catch (e) {
+                /* older WebKit exposes the object without the event */
+            }
+        }
+        this._offScreenChange = () => {
+            if (timer) clearTimeout(timer);
+            window.removeEventListener('resize', schedule);
+            if (onOrientation) {
+                try {
+                    orientation.removeEventListener('change', schedule);
+                } catch (e) {
+                    /* as above */
+                }
+            }
+        };
+    }
+
+    _stopScreenWatch() {
+        if (this._offScreenChange) {
+            this._offScreenChange();
+            this._offScreenChange = null;
+        }
+    }
+
+    /**
+     * Move the native host's bitrate ceiling between two frames — the
+     * estimate following the frame the host really streams (app.js
+     * _followFrameBitrate). Native host only: a GameStream host takes a
+     * bitrate at launch and nowhere else.
+     */
+    sendClientBitrate(kbps) {
+        if (!this._nativeHost || !(kbps > 0)) return;
+        this._sendToHost({ type: 'clientbitrate', kbps: Math.round(kbps) });
     }
 
     /** One frame arrived at @p arrivalMs (performance.now) carrying the host's

@@ -169,6 +169,21 @@ struct SessionConfig
     /// only with fitRequestedBox.
     bool allowUpscale = false;
 
+    /// Put the display in the requested mode (`width` × `height`) for the
+    /// session, when its driver lists one: the client's "Match my screen",
+    /// which then gets its own pixels without a single scale. Best effort —
+    /// no listed mode of that size, or a refusal, leaves the display as it is
+    /// and the frame follows the box rule above. The original mode is put
+    /// back when the session ends. Read only with fitRequestedBox.
+    bool matchClientDisplay = false;
+
+    /// The size as the client asked it, before the Selector shaped `width` ×
+    /// `height` to the display: what matchClientDisplay looks a display mode
+    /// up for. Set by the engine on the resolved config a platform session
+    /// receives; zero on a config a caller built.
+    int requestedWidth = 0;
+    int requestedHeight = 0;
+
     // ── Bench-only, below this line ─────────────────────────────────────────
     //
     // Neither field is ever set by a session a browser started. They exist so

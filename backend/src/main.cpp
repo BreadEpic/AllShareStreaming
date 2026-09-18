@@ -2676,8 +2676,13 @@ int main(int argc, char* argv[])
         // host gets the explicit width and height above regardless.
         const bool reqFitBox = body["stream_fit_box"].toBool(false);
         const bool reqAllowUpscale = reqFitBox && body["stream_allow_upscale"].toBool(false);
+        // "Match my screen": the native host puts its display in that very
+        // mode for the session, when its driver lists one.
+        const bool reqMatchDisplay = reqFitBox && body["stream_match_display"].toBool(false);
         qInfo() << "[Session] Aspect" << reqAspect << "→" << reqWidth << "x" << reqHeight
-                << (reqFitBox ? (reqAllowUpscale ? "(box, may upscale)" : "(box)") : "");
+                << (reqMatchDisplay        ? "(box, the display's mode)"
+                    : reqFitBox            ? (reqAllowUpscale ? "(box, may upscale)" : "(box)")
+                                           : "");
         // Players joining this host's share inherit it (see g_HostAspect).
         if (reqAspect.contains(':')) g_HostAspect[host->uuid] = reqAspect;
 
@@ -3046,7 +3051,7 @@ int main(int argc, char* argv[])
             // The viewer's aspect is "Auto": a native stream follows the
             // display's shape when it changes. Absent → the size is kept.
             s->setFollowDisplayShape(body["follow_display_shape"].toBool(false));
-            s->setFrameFit(reqFitBox, reqAllowUpscale);
+            s->setFrameFit(reqFitBox, reqAllowUpscale, reqMatchDisplay);
             s->setClientKind(clientKind);
             // See the worker path: the administrator-window gate.
             s->setViewerAdmin(req.isLocal);
@@ -3177,6 +3182,7 @@ int main(int argc, char* argv[])
             cfg["followDisplayShape"] = body["follow_display_shape"].toBool(false);
             cfg["fitRequestedBox"] = reqFitBox;
             cfg["allowUpscale"] = reqAllowUpscale;
+            cfg["matchClientDisplay"] = reqMatchDisplay;
             // Whether this browser administers MoonlightWeb here (loopback, the
             // host-key session, or the LAN admin password). The native host
             // keeps everyone else out of windows that run as administrator.

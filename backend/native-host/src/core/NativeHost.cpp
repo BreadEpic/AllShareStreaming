@@ -99,6 +99,12 @@ std::unique_ptr<Session> NativeHost::createSession(const SessionConfig& config,
     resolved.displayId = selection.display->id;
     resolved.width = selection.width;
     resolved.height = selection.height;
+    // The request itself, kept beside the shaped frame: a session that puts
+    // its display in the client's mode ("Match my screen") looks that mode
+    // up by the size the client asked, not by the frame shaped to the mode
+    // the display had before.
+    resolved.requestedWidth = config.width;
+    resolved.requestedHeight = config.height;
     resolved.fps = selection.fps;
     resolved.hdr = selection.hdr;
     resolved.yuv444 = selection.yuv444;

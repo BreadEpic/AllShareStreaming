@@ -228,6 +228,10 @@ struct DisplayInfo
     /// only hashes it, so a card keeps the same picture for as long as the
     /// screen it stands for exists.
     std::string key;
+    /// The name the OS addresses a display mode change to: the GDI device
+    /// name on Windows ("\\.\DISPLAY3"). Empty on the other platforms, which
+    /// change no modes yet.
+    std::string osName;
 };
 
 /// Why the native engine cannot run here. The caller maps every one of these to

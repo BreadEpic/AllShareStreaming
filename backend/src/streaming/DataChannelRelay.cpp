@@ -1333,6 +1333,16 @@ void DataChannelRelay::onInputMessage(const std::string& message)
         return;
     }
 
+    if (type == "clientbitrate") {
+        // The viewer's automatic bitrate follows the frame the host really
+        // streams (its own display's size under Auto, a mode change): the
+        // ceiling moves between two frames, no relaunch. Native host only —
+        // a GameStream host takes a bitrate at launch and nowhere else.
+        if (auto* native = qobject_cast<NativeMediaEngine*>(m_Shim))
+            native->setClientBitrate(msg["kbps"].toInt(0));
+        return;
+    }
+
     if (type == "linkstats") {
         // The receiver's view of the link, twice a second: how much later
         // frames arrive than at the best of the session (the queue building

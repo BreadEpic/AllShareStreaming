@@ -1086,6 +1086,7 @@ void registerSystemRoutes(HttpServer& server, AppSettings& appSettings, AuthMana
         obj["stream_resolution"] = appSettings.streamResolution();
         obj["stream_custom_width"] = appSettings.streamCustomWidth();
         obj["stream_custom_height"] = appSettings.streamCustomHeight();
+        obj["stream_bitrate_auto"] = appSettings.streamBitrateAuto();
         obj["stream_aspect"] = appSettings.streamAspect();
         obj["stream_fps"] = appSettings.streamFps();
         obj["hdr_enabled"] = appSettings.hdrEnabled();
@@ -1176,6 +1177,13 @@ void registerSystemRoutes(HttpServer& server, AppSettings& appSettings, AuthMana
         if (body.contains("stream_resolution")) {
             appSettings.setStreamResolution(body["stream_resolution"].toString());
             obj["stream_resolution"] = appSettings.streamResolution();
+            obj["status"] = "saved";
+            hadChange = true;
+        }
+
+        if (body.contains("stream_bitrate_auto")) {
+            appSettings.setStreamBitrateAuto(body["stream_bitrate_auto"].toBool(true));
+            obj["stream_bitrate_auto"] = appSettings.streamBitrateAuto();
             obj["status"] = "saved";
             hadChange = true;
         }

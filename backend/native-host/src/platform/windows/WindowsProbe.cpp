@@ -483,6 +483,7 @@ Unavailability enumerate(Capabilities& caps)
             display.kind = mode.kind;
             display.model = mode.monitorName;
             display.key = mode.devicePath.empty() ? deviceName : mode.devicePath;
+            display.osName = deviceName;
 
             caps.displays.push_back(std::move(display));
             adapterDrivesADisplay = true;

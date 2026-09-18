@@ -20,23 +20,31 @@
  * asks for.
  *
  * Four ways to choose it (`stream_resolution`):
- *   - `fixed`  — one of the rungs (720p … 2160p) in `stream_height`; the width
- *                follows the host's shape (Auto ratio: measured, or stated by
- *                the native host). Today's behaviour, and the default.
- *   - `device` — this device's own screen, pixel for pixel: the stream is the
- *                screen's size, so a full-screen picture is shown 1:1. The one
- *                choice that may ask a host for MORE than its display has.
- *   - `host`   — the host display's own size. Only the native host can answer
- *                it; every other host streams 1080p under this choice, and the
- *                choice is kept, since the next session may well be native.
+ *   - `auto`   — the default. On the native host: the host display's own size
+ *                when it fits this screen, else the host's picture scaled DOWN
+ *                (on the host, its shape kept) to fit this screen — a 2560×1440
+ *                display on a 2000×1600 screen streams 2000×1125. The stream
+ *                follows both screens: the host changing its mode, this device
+ *                turning or moving to another monitor. On every other host,
+ *                which cannot say its display's size: 1080p, the width from
+ *                the Auto ratio (measured from Sunshine's bars).
+ *   - `device` — "Match my screen": this screen's size, pixel for pixel. The
+ *                native host is asked to put its display in that mode for the
+ *                session (when its driver lists one) and to upscale otherwise;
+ *                Sunshine and Apollo get the explicit size with GameStream's
+ *                optimal-settings flag, which lets them switch the host display
+ *                to it. The stream follows this screen's changes too.
  *   - `custom` — a width and a height typed in, each within
- *                [CUSTOM_SIZE_MIN, CUSTOM_SIZE_MAX].
+ *                [CUSTOM_SIZE_MIN, CUSTOM_SIZE_MAX]: the native host fits its
+ *                display's shape inside the box, never upscaled.
+ *   - `fixed`  — one of the rungs (720p … 2160p) in `stream_height`; the width
+ *                follows the host's shape (Auto ratio).
  *
- * Every choice but `fixed` fixes the shape too, so the ratio is Auto under all
- * of them and the aspect probe stays out of it — the size IS the request.
+ * Every choice but `fixed` (and `auto` off the native host) fixes the shape
+ * itself, so the aspect probe stays out of it — the size IS the request.
  */
 
-export const RESOLUTION_MODES = ['fixed', 'device', 'host', 'custom'];
+export const RESOLUTION_MODES = ['auto', 'device', 'custom', 'fixed'];
 
 /** Bounds of a custom width or height, in pixels. 360 is the smallest frame a
  *  hardware encoder is guaranteed to take; 4096 is DCI 4K, the widest level
@@ -44,8 +52,8 @@ export const RESOLUTION_MODES = ['fixed', 'device', 'host', 'custom'];
 export const CUSTOM_SIZE_MIN = 360;
 export const CUSTOM_SIZE_MAX = 4096;
 
-/** The height streamed under "Same as the remote PC" by a host that cannot say
- *  its display's size (Sunshine, Apollo, Wolf: serverinfo carries no mode). */
+/** The height streamed under `auto` by a host that cannot say its display's
+ *  size (Sunshine, Apollo, Wolf: serverinfo carries no mode). */
 export const HOST_FALLBACK_HEIGHT = 1080;
 
 /** The rungs of `fixed` — also the congestion ladder's steps. */
@@ -60,12 +68,13 @@ export function clampCustomSize(value, fallback) {
 
 /**
  * Read the resolution choice out of a settings object (localStorage or the
- * server's defaults), normalised: an unknown mode is `fixed`, a custom size
- * out of bounds is pinned, a missing one is 1920x1080.
+ * server's defaults), normalised: an unknown or missing mode is `auto` (so is
+ * the short-lived `host` of the 0.3.1 development builds, which `auto`
+ * covers), a custom size out of bounds is pinned, a missing one is 1920x1080.
  */
 export function readResolutionChoice(data) {
     const d = data || {};
-    const mode = RESOLUTION_MODES.includes(d.stream_resolution) ? d.stream_resolution : 'fixed';
+    const mode = RESOLUTION_MODES.includes(d.stream_resolution) ? d.stream_resolution : 'auto';
     return {
         mode,
         customWidth: clampCustomSize(d.stream_custom_width, 1920),
@@ -98,68 +107,86 @@ export function devicePixelSize(win) {
  * @param {{nativeHost:boolean, device?: {width:number,height:number}|null}} ctx
  *        whether the host is MoonlightWeb's own native host, and this screen
  *        (devicePixelSize() when omitted)
- * @returns {{height:number, aspect:string|null, fitBox:boolean, allowUpscale:boolean}}
+ * @returns {{height:number, aspect:string|null, fitBox:boolean, allowUpscale:boolean,
+ *            matchDisplay:boolean, followsScreen:boolean}}
  *        `height` 0 = the host display's own size (native host only);
  *        `aspect` "W:H" fixes the width, null leaves it to the Auto ratio
  *        (probe / memory / the native host's own shape); `fitBox` tells a
  *        native host to fit its display's shape inside W×H rather than keep
- *        the height; `allowUpscale` lets it exceed its display for that.
+ *        the height; `allowUpscale` lets it exceed its display for that;
+ *        `matchDisplay` asks it to put its display in that very mode;
+ *        `followsScreen` says a change of THIS screen changes the request.
  */
 export function resolveStreamSize(choice, ctx) {
     const c = choice || {};
     const nativeHost = !!(ctx && ctx.nativeHost);
-    const fixed = () => ({
-        height: c.height > 0 ? c.height : HOST_FALLBACK_HEIGHT,
+    const dev = ctx && ctx.device !== undefined ? ctx.device : devicePixelSize();
+    const plain = { fitBox: false, allowUpscale: false, matchDisplay: false, followsScreen: false };
+    const fixed = (height) => ({
+        height: height > 0 ? height : HOST_FALLBACK_HEIGHT,
         aspect: null,
-        fitBox: false,
-        allowUpscale: false,
+        ...plain,
     });
     switch (c.mode) {
-        case 'device': {
-            const dev = ctx && ctx.device !== undefined ? ctx.device : devicePixelSize();
-            if (!dev) return fixed();
+        case 'auto':
+            if (!nativeHost) return fixed(HOST_FALLBACK_HEIGHT);
+            // The host's own size, brought down to fit this screen — its
+            // shape kept, never upscaled (frameForDisplay's box rule). No
+            // screen to read: the host's own size, whatever it is.
+            if (!dev) return { height: 0, aspect: null, ...plain };
+            return {
+                height: dev.height,
+                aspect: dev.width + ':' + dev.height,
+                fitBox: true,
+                allowUpscale: false,
+                matchDisplay: false,
+                followsScreen: true,
+            };
+        case 'device':
+            if (!dev) return fixed(c.height);
             return {
                 height: dev.height,
                 aspect: dev.width + ':' + dev.height,
                 fitBox: true,
                 allowUpscale: true,
+                matchDisplay: true,
+                followsScreen: true,
             };
-        }
-        case 'host':
-            return nativeHost
-                ? { height: 0, aspect: null, fitBox: false, allowUpscale: false }
-                : {
-                      height: HOST_FALLBACK_HEIGHT,
-                      aspect: null,
-                      fitBox: false,
-                      allowUpscale: false,
-                  };
         case 'custom': {
             // Even sizes: what every encoder takes (4:2:0 chroma is half-size).
             const w = clampCustomSize(c.customWidth, 1920) & ~1;
             const h = clampCustomSize(c.customHeight, 1080) & ~1;
-            return { height: h, aspect: w + ':' + h, fitBox: true, allowUpscale: false };
+            return {
+                height: h,
+                aspect: w + ':' + h,
+                fitBox: true,
+                allowUpscale: false,
+                matchDisplay: false,
+                followsScreen: false,
+            };
         }
         default:
-            return fixed();
+            return fixed(c.height);
     }
 }
 
 /**
  * What the recommended-bitrate estimate should count for this choice: a
- * height and a "W:H" aspect (see util/AutoBitrate.js). `host` is unknown until
- * launch and counts as 1080p 16:9, the estimate's reference.
+ * height and a "W:H" aspect (see util/AutoBitrate.js). `auto` counts this
+ * screen — the most the native host will send under it — and 1080p 16:9 when
+ * the screen is unknown, the estimate's reference.
  */
 export function bitrateReference(choice, device) {
     const c = choice || {};
+    const dev = device !== undefined ? device : devicePixelSize();
     switch (c.mode) {
-        case 'device': {
-            const dev = device !== undefined ? device : devicePixelSize();
+        case 'auto':
+        case 'device':
             if (dev) return { height: dev.height, aspect: dev.width + ':' + dev.height };
-            return { height: c.height > 0 ? c.height : 1080, aspect: '16:9' };
-        }
-        case 'host':
-            return { height: 1080, aspect: '16:9' };
+            return {
+                height: c.mode === 'device' && c.height > 0 ? c.height : 1080,
+                aspect: '16:9',
+            };
         case 'custom': {
             const w = clampCustomSize(c.customWidth, 1920);
             const h = clampCustomSize(c.customHeight, 1080);
