@@ -48,6 +48,19 @@
  *
  * Every choice but `fixed` (and `auto` off the native host) fixes the shape
  * itself, so the aspect probe stays out of it — the size IS the request.
+ *
+ * ── "MoonlightWeb Virtual Display" ─────────────────────────────────────────
+ *
+ * A display that exists only for this stream is not something to fit into: it
+ * is made to measure, so on that one card every choice names an exact size and
+ * the display is created at it (`virtualDisplay` in the context). Auto and
+ * "Match my screen" both mean this screen, pixel for pixel, which is a
+ * fullscreen with no bars anywhere. Custom is the pair as typed, portrait
+ * included. A rung is that many lines at THIS screen's shape — 1080p on a
+ * 2532×1170 phone is 2336×1080, not 1920×1080 — because the shape of a
+ * display nobody sees has no reason to be anyone else's. Every one of them is
+ * held inside [MODE_SIZE_MIN, MODE_SIZE_MAX], the driver's and the decoders'
+ * limits, shrunk at its own shape when it does not fit.
  */
 
 export const RESOLUTION_MODES = ['auto', 'device', 'custom', 'fixed'];
@@ -70,6 +83,32 @@ export const FIXED_HEIGHTS = [720, 1080, 1440, 2160];
  *  down to 1440 (a phone decoding 4K heats up for pixels it cannot show),
  *  and nothing is ever reduced below 1080 that way. */
 export const MOBILE_AUTO_BOX = { width: CUSTOM_SIZE_MAX, height: 1440 };
+
+/** Bounds of a display mode made on demand — what the virtual display driver
+ *  will take, and what the decoder on the other side will. The floor is a
+ *  desktop still usable; the ceiling is DCI 4K. Mirrored in C++ by
+ *  VirtualDisplay::kModeMin / kModeMax, which pin the request again. */
+export const MODE_SIZE_MIN = 640;
+export const MODE_SIZE_MAX = CUSTOM_SIZE_MAX;
+
+/**
+ * A size a display can be made at: even, inside the mode bounds, and brought
+ * down at its own shape rather than squeezed when it is too big — a 2160p rung
+ * at a phone's 2.16 shape asks for 4676×2160 and gets 4096×1892.
+ */
+export function fitModeBounds(width, height) {
+    let w = Math.round(width);
+    let h = Math.round(height);
+    if (!(w > 0) || !(h > 0)) return null;
+    const over = Math.max(w / MODE_SIZE_MAX, h / MODE_SIZE_MAX);
+    if (over > 1) {
+        w = Math.round(w / over);
+        h = Math.round(h / over);
+    }
+    w = Math.max(MODE_SIZE_MIN, w) & ~1;
+    h = Math.max(MODE_SIZE_MIN, h) & ~1;
+    return { width: w, height: h };
+}
 
 /** Pin a typed size into its bounds; anything unreadable becomes `fallback`. */
 export function clampCustomSize(value, fallback) {
@@ -119,13 +158,38 @@ export function autoBox(device, touch) {
 }
 
 /**
+ * The size to make "MoonlightWeb Virtual Display" at for this choice, or null
+ * when this screen is unknown and there is nothing to measure against.
+ *
+ * Auto and "Match my screen" are the same thing here — this screen, pixel for
+ * pixel — because a display made to order has no size of its own to reconcile
+ * with. Custom is the typed pair, portrait included. A rung is its lines at
+ * this screen's shape.
+ */
+export function virtualDisplaySize(choice, device) {
+    const c = choice || {};
+    if (c.mode === 'custom')
+        return fitModeBounds(
+            clampCustomSize(c.customWidth, 1920),
+            clampCustomSize(c.customHeight, 1080),
+        );
+    if (!device || !(device.width > 0) || !(device.height > 0)) return null;
+    if (c.mode === 'auto' || c.mode === 'device') return fitModeBounds(device.width, device.height);
+    const lines = c.height > 0 ? c.height : HOST_FALLBACK_HEIGHT;
+    return fitModeBounds((lines * device.width) / device.height, lines);
+}
+
+/**
  * The size a launch asks for, from the choice and the host.
  *
  * @param {{mode:string, height:number, customWidth:number, customHeight:number}} choice
  *        the Settings choice; `height` is the `fixed` rung
- * @param {{nativeHost:boolean, touch?:boolean, device?: {width:number,height:number}|null}} ctx
+ * @param {{nativeHost:boolean, touch?:boolean, virtualDisplay?:boolean,
+ *          device?: {width:number,height:number}|null}} ctx
  *        whether the host is MoonlightWeb's own native host, whether this is a
- *        phone or a tablet, and this screen (devicePixelSize() when omitted)
+ *        phone or a tablet, whether the app launched is "MoonlightWeb Virtual
+ *        Display" (every choice then names an exact size, made to order — see
+ *        virtualDisplaySize), and this screen (devicePixelSize() when omitted)
  * @returns {{height:number, aspect:string|null, fitBox:boolean, allowUpscale:boolean,
  *            matchDisplay:boolean, followsScreen:boolean,
  *            fallback:{width:number,height:number}|null}}
@@ -143,6 +207,22 @@ export function resolveStreamSize(choice, ctx) {
     const nativeHost = !!(ctx && ctx.nativeHost);
     const touch = !!(ctx && ctx.touch);
     const dev = ctx && ctx.device !== undefined ? ctx.device : devicePixelSize();
+    if (nativeHost && ctx && ctx.virtualDisplay) {
+        const made = virtualDisplaySize(c, dev);
+        if (made)
+            return {
+                height: made.height,
+                aspect: made.width + ':' + made.height,
+                fitBox: true,
+                // The display IS that size, so there is nothing to scale; the
+                // flag only says the frame may reach the size asked for.
+                allowUpscale: true,
+                matchDisplay: true,
+                // Turned, or moved to another monitor: the display is remade.
+                followsScreen: true,
+                fallback: null,
+            };
+    }
     const plain = {
         fitBox: false,
         allowUpscale: false,

@@ -200,6 +200,66 @@ describe('resolveStreamSize', () => {
     });
 });
 
+// "MoonlightWeb Virtual Display": the screen is made for this stream, so
+// every choice names an exact size and the display is created at it. No
+// letterbox anywhere, and a rung takes THIS screen's shape.
+describe('resolveStreamSize on the virtual display', () => {
+    const phoneScreen = { width: 2532, height: 1170 };
+    const ask = (choice) =>
+        resolveStreamSize(choice, {
+            nativeHost: true,
+            touch: true,
+            virtualDisplay: true,
+            device: phoneScreen,
+        });
+
+    it('makes the display this screen for Auto and for "Match my screen" alike', () => {
+        for (const mode of ['auto', 'device']) {
+            const size = ask({ mode });
+            expect(size.aspect).toBe('2532:1170');
+            expect(size.height).toBe(1170);
+            expect(size.matchDisplay).toBe(true);
+            expect(size.followsScreen).toBe(true);
+            expect(size.fallback).toBeNull();
+        }
+    });
+
+    it('takes a custom pair as typed, portrait and all, even and in bounds', () => {
+        expect(ask({ mode: 'custom', customWidth: 1677, customHeight: 2043 }).aspect).toBe(
+            '1676:2042',
+        );
+        // Under the floor a display mode is not usable: it is raised to it.
+        expect(ask({ mode: 'custom', customWidth: 400, customHeight: 400 }).aspect).toBe('640:640');
+    });
+
+    it("gives a rung its lines at this screen's shape, shrunk when it overflows", () => {
+        // 1080 lines on a 2.165 screen: 2336×1080, not 1920×1080.
+        expect(ask({ mode: 'fixed', height: 1080 }).aspect).toBe('2336:1080');
+        expect(ask({ mode: 'fixed', height: 720 }).aspect).toBe('1558:720');
+        // 2160 lines would be 4676 wide — past what the driver and the
+        // decoders take, so the whole thing comes down at its own shape.
+        const tall = ask({ mode: 'fixed', height: 2160 });
+        expect(tall.aspect).toBe('4096:1892');
+        expect(tall.height).toBe(1892);
+        // A 16:9 laptop gets exactly the rung.
+        expect(
+            resolveStreamSize(
+                { mode: 'fixed', height: 1440 },
+                { nativeHost: true, virtualDisplay: true, device: { width: 1920, height: 1080 } },
+            ).aspect,
+        ).toBe('2560:1440');
+    });
+
+    it('is the ordinary choice again when this screen is unknown', () => {
+        const size = resolveStreamSize(
+            { mode: 'auto' },
+            { nativeHost: true, touch: true, virtualDisplay: true, device: null },
+        );
+        expect(size.aspect).toBe('4096:1440');
+        expect(size.matchDisplay).toBe(false);
+    });
+});
+
 describe('bitrateReference', () => {
     it('counts the pixels the choice stands for', () => {
         // Auto and "Match my screen": this screen, the most the host sends.

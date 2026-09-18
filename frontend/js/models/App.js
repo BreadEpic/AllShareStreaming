@@ -38,6 +38,17 @@ export class App {
         return this.name;
     }
 
+    /**
+     * Is this card "MoonlightWeb Virtual Display" — a screen made for the
+     * stream rather than one that was already there? The resolution choice
+     * means something else on it: the display is created at the size asked
+     * for (see util/StreamResolution.js). The key is the native host's, and
+     * no other backend sends one.
+     */
+    get isVirtualDisplay() {
+        return this.device?.key === 'moonlightweb-virtual-display';
+    }
+
     get boxArtUrl() {
         if (!this.hostUuid || !this.id || !this.hasBoxArt) return null;
         return `/api/hosts/${encodeURIComponent(this.hostUuid)}/appasset?appid=${this.id}`;

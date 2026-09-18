@@ -1900,10 +1900,18 @@ const MoonlightApp = {
                 customWidth: choice.customWidth,
                 customHeight: choice.customHeight,
             },
-            { nativeHost, touch: IS_MOBILE_OR_TABLET },
+            {
+                nativeHost,
+                touch: IS_MOBILE_OR_TABLET,
+                // "MoonlightWeb Virtual Display": the screen is made for this
+                // stream, so every choice names an exact size instead of a box
+                // to fit into (see util/StreamResolution.js).
+                virtualDisplay: app?.isVirtualDisplay === true,
+            },
         );
         this._applyResolvedSize(streamingSettings, size);
         this._sizeFollowsScreen = size.followsScreen;
+        this._sizeOnVirtualDisplay = app?.isVirtualDisplay === true;
         // The ladder's session-only rung and bitrate outrank the choice: a
         // relaunch through here (a codec fallback under congestion) keeps
         // what the ladder brought the stream down to.
@@ -2498,7 +2506,12 @@ const MoonlightApp = {
                 customWidth: choice.customWidth,
                 customHeight: choice.customHeight,
             },
-            { nativeHost: host.backendType === 'native', device, touch: IS_MOBILE_OR_TABLET },
+            {
+                nativeHost: host.backendType === 'native',
+                device,
+                touch: IS_MOBILE_OR_TABLET,
+                virtualDisplay: this._sizeOnVirtualDisplay === true,
+            },
         );
         if (size.height === settings.stream_height && size.aspect === settings.stream_aspect)
             return;
