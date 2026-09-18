@@ -484,9 +484,29 @@ bool writeSettings(int width, int height, bool* changed, QString* error)
         f.close();
         if (current == wanted) return true;
         if (!current.isEmpty() && !VirtualDisplay::isOurSettings(current)) {
-            Logger::info(
-                QStringLiteral("[vdisplay-apply] %1 belongs to another VDD — left as it is")
-                    .arg(path));
+            // Someone else's file — an owner's own VDD, or an install of ours
+            // from before the marker. It keeps every one of its modes; the
+            // client's is added to the list, and nothing else is touched.
+            bool added = false;
+            const QString grown = VirtualDisplay::settingsWithMode(current, width, height, &added);
+            if (!added) {
+                Logger::info(QStringLiteral("[vdisplay-apply] %1 belongs to another VDD — left as "
+                                            "it is")
+                                 .arg(path));
+                return true;
+            }
+            if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
+                *error = QStringLiteral("cannot write %1").arg(path);
+                return false;
+            }
+            f.write(grown.toUtf8());
+            f.close();
+            *changed = true;
+            Logger::info(QStringLiteral("[vdisplay-apply] %1x%2 added to another VDD's mode list "
+                                        "in %3 — its own modes kept")
+                             .arg(width)
+                             .arg(height)
+                             .arg(path));
             return true;
         }
     } else if (!QDir().mkpath(QFileInfo(path).absolutePath())) {

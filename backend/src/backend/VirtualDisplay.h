@@ -257,9 +257,17 @@ QByteArray toJson(const Result& res);
 /// did not write: an owner's own VDD configured that one (see isOurSettings).
 QString settingsXml(int width = 0, int height = 0);
 
-/// Does this vdd_settings.xml carry our marker, i.e. did we write it? A file
-/// that does not is left exactly as it is, mode on demand or not.
+/// Does this vdd_settings.xml carry our marker, i.e. did we write it?
 bool isOurSettings(const QString& xml);
+
+/// @p existing — a settings file someone else wrote — with @p width ×
+/// @p height added to its mode list, ahead of the rest, and everything else
+/// left exactly as it was. The one edit this project makes to a file it does
+/// not own: without the mode in that list the driver will not offer it, and
+/// "Match my screen" has nothing to switch to. Returns the file unchanged
+/// (@p changed false) when the mode is already listed, when there is no
+/// `<resolutions>` element to add it to, or when there is no mode to add.
+QString settingsWithMode(const QString& existing, int width, int height, bool* changed);
 
 // ── Paths ───────────────────────────────────────────────────────────────────
 

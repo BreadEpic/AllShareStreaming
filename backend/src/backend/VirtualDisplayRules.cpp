@@ -20,8 +20,10 @@
 #include "common/Edition.h"
 
 #include <QJsonDocument>
+#include <QRegularExpression>
 
 #include <algorithm>
+#include <cstring>
 
 // The platform-free half of VirtualDisplay: names, the request/result files,
 // the driver's settings XML. Kept apart from VirtualDisplay.cpp so the
@@ -178,6 +180,49 @@ static QString settingsMarker()
 bool isOurSettings(const QString& xml)
 {
     return xml.contains(settingsMarker());
+}
+
+/// One `<resolution>` block in the driver's own spelling: one refresh rate,
+/// ours, exactly as the file we write ourselves spells it — the shape the
+/// driver was seen to accept on the bench, and the only one to put in a file
+/// belonging to someone else.
+static QString resolutionBlock(int width, int height, const QString& indent)
+{
+    QString s;
+    s += indent + QStringLiteral("<resolution>\n");
+    s += indent + QStringLiteral("  <width>%1</width>\n").arg(width);
+    s += indent + QStringLiteral("  <height>%1</height>\n").arg(height);
+    s += indent + QStringLiteral("  <refresh_rate>%1</refresh_rate>\n").arg(kRefreshHz);
+    s += indent + QStringLiteral("</resolution>\n");
+    return s;
+}
+
+QString settingsWithMode(const QString& existing, int width, int height, bool* changed)
+{
+    *changed = false;
+    if (!normaliseMode(width, height)) return existing;
+    // Already offered: the driver lists this size, nothing to add. Both tags
+    // in the same block is what makes it this mode rather than two others
+    // that happen to share a number.
+    static const QRegularExpression block(QStringLiteral("<resolution>.*?</resolution>"),
+                                          QRegularExpression::DotMatchesEverythingOption);
+    const QString w = QStringLiteral("<width>%1</width>").arg(width);
+    const QString h = QStringLiteral("<height>%1</height>").arg(height);
+    auto it = block.globalMatch(existing);
+    while (it.hasNext()) {
+        const QString one =
+            it.next().captured(0).remove(QLatin1Char(' ')).remove(QLatin1Char('\t'));
+        if (one.contains(w) && one.contains(h)) return existing;
+    }
+    const int open = existing.indexOf(QStringLiteral("<resolutions>"));
+    if (open < 0) return existing;
+    const int after = open + int(strlen("<resolutions>"));
+    // The list is read in order and the first entry is the driver's default:
+    // ours goes first, which is the point of adding it at all.
+    QString out = existing;
+    out.insert(after, QLatin1Char('\n') + resolutionBlock(width, height, QStringLiteral("    ")));
+    *changed = true;
+    return out;
 }
 
 QString settingsXml(int width, int height)

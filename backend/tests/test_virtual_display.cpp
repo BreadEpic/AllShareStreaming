@@ -219,6 +219,43 @@ void run_virtual_display_tests()
         CHECK(!isOurSettings(QStringLiteral("<?xml version=\"1.0\"?><vdd_settings/>")));
     }
 
+    SECTION("VirtualDisplay — another VDD's mode list gains our size and keeps its own");
+    {
+        // A file the owner's own VDD wrote: their sizes, their refresh rates.
+        const QString theirs =
+            QStringLiteral("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<vdd_settings>\n"
+                           "  <resolutions>\n"
+                           "    <resolution>\n      <width>800</width>\n"
+                           "      <height>600</height>\n      <refresh_rate>30</refresh_rate>\n"
+                           "    </resolution>\n"
+                           "    <resolution>\n      <width>2560</width>\n"
+                           "      <height>1440</height>\n      <refresh_rate>244</refresh_rate>\n"
+                           "    </resolution>\n"
+                           "  </resolutions>\n</vdd_settings>\n");
+        bool changed = false;
+        const QString grown = settingsWithMode(theirs, 2532, 1170, &changed);
+        CHECK(changed);
+        // Ours is there, first — the driver reads the list in order.
+        const int mine = grown.indexOf(QStringLiteral("<width>2532</width>"));
+        CHECK(mine > 0);
+        CHECK(grown.indexOf(QStringLiteral("<width>800</width>")) > mine);
+        // And every one of theirs survived, refresh rates included.
+        CHECK(grown.contains(QStringLiteral("<refresh_rate>244</refresh_rate>")));
+        CHECK(grown.contains(QStringLiteral("<height>600</height>")));
+        CHECK(!isOurSettings(grown));
+        // A size the file already lists is added again to nobody.
+        settingsWithMode(grown, 2532, 1170, &changed);
+        CHECK(!changed);
+        settingsWithMode(theirs, 2560, 1440, &changed);
+        CHECK(!changed);
+        // Nothing to add, or nowhere to add it: the file comes back untouched.
+        CHECK_EQ(settingsWithMode(theirs, 0, 0, &changed), theirs);
+        CHECK(!changed);
+        const QString noList = QStringLiteral("<vdd_settings><options/></vdd_settings>");
+        CHECK_EQ(settingsWithMode(noList, 2532, 1170, &changed), noList);
+        CHECK(!changed);
+    }
+
     SECTION("VirtualDisplay — the bundled driver is pinned file by file");
     CHECK_EQ(int(driverFiles().size()), 3);
     bool inf = false, cat = false, dll = false;
