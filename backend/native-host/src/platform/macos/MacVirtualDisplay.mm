@@ -239,26 +239,46 @@ uint32_t mainDisplay()
 
 bool setMain(uint32_t displayId, std::string* error)
 {
-    // The main display is the one whose origin is (0,0): moving a display
-    // there is how BetterDisplay's "set as main" works too. A configuration
-    // scoped to the session, so a crash leaves nothing behind in the OS'
-    // preferences — the caller restores the previous main itself.
+    // The main display is the one whose origin is (0,0). Asking for that
+    // origin alone is not enough — the current main keeps (0,0) and wins —
+    // so every online display is moved by the same offset in one transaction,
+    // which lands ours on (0,0) and keeps the layout's shape (BetterDisplay's
+    // recipe). Scoped to the session: a crash leaves nothing in the OS'
+    // preferences, and the caller restores the previous main itself.
     if (CGDisplayIsMain(displayId)) return true;
+    CGDirectDisplayID ids[32];
+    uint32_t count = 0;
+    if (CGGetOnlineDisplayList(32, ids, &count) != kCGErrorSuccess) {
+        if (error) *error = "CGGetOnlineDisplayList failed";
+        return false;
+    }
+    const CGRect target = CGDisplayBounds(displayId);
     CGDisplayConfigRef config = nullptr;
     CGError err = CGBeginDisplayConfiguration(&config);
     if (err != kCGErrorSuccess) {
         if (error) *error = "CGBeginDisplayConfiguration failed: " + std::to_string(err);
         return false;
     }
-    err = CGConfigureDisplayOrigin(config, displayId, 0, 0);
-    if (err != kCGErrorSuccess) {
-        CGCancelDisplayConfiguration(config);
-        if (error) *error = "CGConfigureDisplayOrigin failed: " + std::to_string(err);
-        return false;
+    for (uint32_t i = 0; i < count; ++i) {
+        const CGRect b = CGDisplayBounds(ids[i]);
+        err = CGConfigureDisplayOrigin(config, ids[i],
+                                       static_cast<int32_t>(b.origin.x - target.origin.x),
+                                       static_cast<int32_t>(b.origin.y - target.origin.y));
+        if (err != kCGErrorSuccess) {
+            CGCancelDisplayConfiguration(config);
+            if (error)
+                *error = "CGConfigureDisplayOrigin(" + std::to_string(ids[i]) +
+                         ") failed: " + std::to_string(err);
+            return false;
+        }
     }
     err = CGCompleteDisplayConfiguration(config, kCGConfigureForSession);
     if (err != kCGErrorSuccess) {
         if (error) *error = "CGCompleteDisplayConfiguration failed: " + std::to_string(err);
+        return false;
+    }
+    if (!CGDisplayIsMain(displayId)) {
+        if (error) *error = "the OS kept its main display";
         return false;
     }
     log::info("[native] display " + std::to_string(displayId) + " is now the main display");

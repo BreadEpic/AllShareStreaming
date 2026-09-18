@@ -412,10 +412,11 @@ bool processElevated()
 
 bool isOurs(const mw::native::DisplayInfo& display)
 {
-    // The display this process created carries the name it was created
-    // with, and AppKit hands that name back as the screen's own.
+    // The display the server process created carries the name it was
+    // created with, and AppKit hands that name back as the screen's own.
+    // By name only: the stream worker is another process, which holds no
+    // display object of its own but must recognise the server's.
     if (display.kind != mw::native::DisplayKind::Virtual) return false;
-    if (!mw::native::vdisplay::isActive()) return false;
     return QString::fromStdString(display.model).compare(displayName(), Qt::CaseInsensitive) == 0;
 }
 

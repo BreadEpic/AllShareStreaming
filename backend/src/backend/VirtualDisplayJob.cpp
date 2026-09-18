@@ -324,18 +324,26 @@ void VirtualDisplayJob::applyInProcess()
         return;
     }
     if (m_Request.action != Action::Activate || mw::native::vdisplay::isOnline()) {
-        if (m_Request.action == Action::Activate) {
-            std::string error;
-            if (!mw::native::vdisplay::setMain(mw::native::vdisplay::displayId(), &error))
-                Logger::warning(QStringLiteral("[vdisplay] not made the main display: %1")
-                                    .arg(QString::fromStdString(error)));
-        }
+        if (m_Request.action == Action::Activate) makeMain();
         handleResult(res);
         return;
     }
     m_InProcessResult = res;
     m_Deadline.start(kOnlineTimeoutMs);
     m_Poll.start();
+}
+
+void VirtualDisplayJob::makeMain()
+{
+    // macOS: the created display takes the main display's role (menu bar,
+    // where new windows open) for the stream. Logged here, in the server's
+    // log: the native module's own lines do not reach it from this process.
+    std::string error;
+    if (mw::native::vdisplay::setMain(mw::native::vdisplay::displayId(), &error))
+        Logger::info(QStringLiteral("[vdisplay] the virtual display is now the main display"));
+    else
+        Logger::warning(QStringLiteral("[vdisplay] not made the main display: %1")
+                            .arg(QString::fromStdString(error)));
 }
 
 void VirtualDisplayJob::runTask()
@@ -428,10 +436,7 @@ void VirtualDisplayJob::pollResult()
         m_Deadline.stop();
         const VirtualDisplay::Result res = *m_InProcessResult;
         m_InProcessResult.reset();
-        std::string error;
-        if (!mw::native::vdisplay::setMain(mw::native::vdisplay::displayId(), &error))
-            Logger::warning(QStringLiteral("[vdisplay] not made the main display: %1")
-                                .arg(QString::fromStdString(error)));
+        makeMain();
         handleResult(res);
         return;
     }

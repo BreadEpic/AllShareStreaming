@@ -97,6 +97,7 @@ private:
 
     void dispatch();
     void applyInProcess();
+    void makeMain();
     void runHelper(const QStringList& args, bool inConsoleSession);
     void runTask();
     void pollResult();
