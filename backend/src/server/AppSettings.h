@@ -177,8 +177,10 @@ public:
 
     // ── Stream frame rate ─────────────────────────────────────────────────────
     //
-    // Target FPS. Stored as JSON int "stream_fps", default 60.
-    // Common values: 30, 60, 75, 90, 120, 144, 165, 240.
+    // Target FPS. Stored as JSON int "stream_fps", default 0 — "Auto", the
+    // rate the client's own screen refreshes at, resolved per launch from
+    // `client_refresh_mhz` (and 60 when the client measured none).
+    // Common fixed values: 30, 60, 75, 90, 120, 144, 165, 240.
 
     int streamFps() const;
     void setStreamFps(int fps);

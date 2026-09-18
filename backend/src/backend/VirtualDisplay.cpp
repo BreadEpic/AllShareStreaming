@@ -466,18 +466,20 @@ bool applyInProcess(const Request& req, Result* result)
             res.display = QStringLiteral("display %1").arg(mw::native::vdisplay::displayId());
             break;
         }
-        // CoreGraphics takes any size the client asks for, no driver and no
-        // mode list in between: "Match my screen" on macOS is simply a
-        // display created at that size.
+        // CoreGraphics takes any size and any rate the client asks for, no
+        // driver and no mode list in between: "Match my screen" on macOS is
+        // simply a display created at that size, at the client's own cadence.
         mw::native::vdisplay::Spec spec;
         int w = req.width, h = req.height;
         if (!normaliseMode(w, h)) {
             w = kWidth;
             h = kHeight;
         }
+        int hz = req.refresh;
+        if (!normaliseRate(hz)) hz = kRefreshHz;
         spec.width = w;
         spec.height = h;
-        spec.refreshHz = kRefreshHz;
+        spec.refreshHz = hz;
         spec.name = displayName().toStdString();
         res.previousPrimary = QString::number(mw::native::vdisplay::mainDisplay());
         std::string error;

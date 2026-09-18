@@ -2695,9 +2695,23 @@ int main(int argc, char* argv[])
         // Players joining this host's share inherit it (see g_HostAspect).
         if (reqAspect.contains(':')) g_HostAspect[host->uuid] = reqAspect;
 
-        int reqFps = body.contains("stream_fps") && body["stream_fps"].toInt() > 0
-                         ? body["stream_fps"].toInt()
-                         : appSettings.streamFps();
+        // The client's own screen, in whole frames per second: 59 940 mHz is
+        // 60, 164 800 is 165 (the browser measures it unrounded — see
+        // frontend/js/util/RefreshRate.js). 0 when it did not measure.
+        const auto clientFps = [](int milliHz) {
+            if (milliHz <= 0) return 0;
+            const int hz = (milliHz + 500) / 1000;
+            return hz < 24 ? 24 : hz > 240 ? 240 : hz;
+        };
+        const int reqClientFps = clientFps(body["client_refresh_mhz"].toInt(0));
+
+        // Frame rate. 0 — "Auto", the default — is the client's own screen
+        // rate: one frame per refresh of the screen the stream lands on, no
+        // more (wasted) and no less (judder). A client that measured nothing,
+        // or an older one that sends no rate at all, streams at 60.
+        int reqFps =
+            body.contains("stream_fps") ? body["stream_fps"].toInt() : appSettings.streamFps();
+        if (reqFps <= 0) reqFps = reqClientFps > 0 ? reqClientFps : 60;
 
         bool reqYuv444 = body.contains("chroma_444_enabled") ? body["chroma_444_enabled"].toBool()
                                                              : appSettings.chroma444Enabled();
@@ -3480,13 +3494,18 @@ int main(int argc, char* argv[])
             // passes 0 and takes the mode that is there.
             const int vdWidth = reqMatchDisplay ? reqWidth : 0;
             const int vdHeight = reqMatchDisplay ? reqHeight : 0;
+            // Its refresh rate is the client's own, whatever the resolution
+            // choice: a display nobody looks at has no reason to run at
+            // anything but the cadence of the screen the frames end up on.
+            // Unmeasured (0) leaves the display's default rate.
+            const int vdRefresh = reqClientFps;
             std::function<void()> readyThenStart = claimThenStart;
             if (host->backendType == NativeHostBackend::typeName() &&
                 appId == NativeHostBackend::virtualDisplayAppId()) {
                 readyThenStart = [claimThenStart, worker, respond, standby, reqSlot, generation,
-                                  vdWidth, vdHeight]() {
+                                  vdWidth, vdHeight, vdRefresh]() {
                     VirtualDisplayJob::instance().activate(
-                        vdWidth, vdHeight,
+                        vdWidth, vdHeight, vdRefresh,
                         [claimThenStart, worker, respond, standby, reqSlot,
                          generation](bool ok, const QString& error) {
                             if (g_SlotLaunchGeneration.value(reqSlot) != generation) {

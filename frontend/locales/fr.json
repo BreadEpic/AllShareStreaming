@@ -283,6 +283,8 @@
         "frameRate": "Fréquence d'images",
         "frameRateDesc": "Une fréquence d'images élevée aide à réduire la latence mais demande plus de bande passante.",
         "fpsSuffix": "{{fps}} FPS",
+        "fpsAuto": "Auto (la cadence de votre écran)",
+        "fpsAutoMeasured": "Auto ({{fps}} FPS, la cadence de votre écran)",
         "hdr": "HDR",
         "hdrDesc": "Plage dynamique étendue — couleurs et contraste plus riches. Un hôte natif MoonlightWeb ignore cette case : il diffuse en HDR dès que les deux écrans sont en HDR.",
         "hdrDeviceSdr": "Cet écran n'est pas en mode HDR pour le moment : les streams restent en SDR jusqu'à ce qu'il le soit.",

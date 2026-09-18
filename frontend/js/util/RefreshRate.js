@@ -127,6 +127,30 @@ export function currentRefreshMilliHz() {
     return _milliHz;
 }
 
+/** The lowest and highest frame rate "Auto" will ask a host for. */
+export const AUTO_FPS_MIN = 24;
+export const AUTO_FPS_MAX = 240;
+
+/**
+ * The frame rate "Auto" asks for: this screen's own, in whole frames per
+ * second. A stream at the screen's rate shows one frame per refresh — no
+ * frame encoded for nothing, and no refresh showing the previous one again.
+ *
+ * The measurement is unrounded on purpose (a 165 Hz panel may run at 164.8),
+ * so it is rounded here and nowhere else; 0 — nothing measured yet, a hidden
+ * tab at launch, a browser without rAF — answers 0 and the caller's default
+ * stands.
+ *
+ * @param {number} [milliHz] defaults to the last measurement
+ * @returns {number} frames per second, or 0 when unknown
+ */
+export function autoFps(milliHz) {
+    const mhz = milliHz === undefined ? _milliHz : milliHz;
+    if (!(mhz > 0)) return 0;
+    const fps = Math.round(mhz / 1000);
+    return Math.min(AUTO_FPS_MAX, Math.max(AUTO_FPS_MIN, fps));
+}
+
 /**
  * Be told when the rate changes by more than a percent — the window moved to
  * another screen, typically. Returns the unsubscribe function.

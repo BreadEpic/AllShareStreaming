@@ -468,14 +468,15 @@ void AppSettings::setStreamAspect(const QString& aspect)
 int AppSettings::streamFps() const
 {
     QJsonObject obj = readAll();
-    return obj.value("stream_fps").toInt(60);
+    return obj.value("stream_fps").toInt(0);
 }
 
 void AppSettings::setStreamFps(int fps)
 {
     QJsonObject obj = readAll();
-    // Clamp to allowed range (30–240) and round to nearest valid value
-    if (fps < 1) fps = 1;
+    // 0 is "Auto" — the client's own screen rate, resolved at launch. Any
+    // other value is a rate to hold, clamped to what an encoder will take.
+    if (fps < 0) fps = 0;
     if (fps > 240) fps = 240;
     obj["stream_fps"] = fps;
     writeAll(obj);

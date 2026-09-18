@@ -42,6 +42,7 @@ import {
     chroma444ClientCapability,
 } from '../util/BrowserDetect.js';
 import { aspectToNumber, computeAutoBitrate } from '../util/AutoBitrate.js';
+import { autoFps } from '../util/RefreshRate.js';
 import { ASPECT_VALUES, SCREEN_ASPECTS } from '../util/AspectRatio.js';
 import {
     CUSTOM_SIZE_MAX,
@@ -92,7 +93,8 @@ export class SettingsView {
         this._streamBitrateMbps = 20;
         this._streamHeight = 1080;
         this._streamAspect = 'auto';
-        this._streamFps = 60;
+        // 0 = Auto: this screen's own refresh rate, measured at launch.
+        this._streamFps = 0;
         this._hdrEnabled = false;
         this._chroma444 = false;
         this._muteHostAudio = true;
@@ -355,7 +357,9 @@ export class SettingsView {
         this._streamAspect = ASPECT_VALUES.includes(data.stream_aspect)
             ? data.stream_aspect
             : 'auto';
-        this._streamFps = data.stream_fps || 60;
+        // A stored 0 is Auto and must survive the read; a settings object
+        // from before Auto existed carries a rate of its own.
+        this._streamFps = Number.isFinite(data.stream_fps) ? Math.max(0, data.stream_fps) : 0;
         this._hdrEnabled = data.hdr_enabled === true;
         this._chroma444 = data.chroma_444_enabled === true;
         this._muteHostAudio = data.mute_host_audio !== false;
@@ -436,9 +440,12 @@ export class SettingsView {
                   this._streamAspect
                 : ref.aspect;
         const hdr = this.container.querySelector('#settings-hdr')?.checked ?? this._hdrEnabled;
+        // Auto (0) is estimated at the rate this screen runs at — what the
+        // stream will actually ask for — and at 60 when none was measured.
+        const chosen = isNaN(fps) ? this._streamFps : fps;
         return this._computeAutoBitrate(
             ref.height,
-            isNaN(fps) ? this._streamFps : fps,
+            chosen > 0 ? chosen : autoFps() || 60,
             aspect,
             chroma444,
             hdr,
@@ -664,9 +671,12 @@ export class SettingsView {
             const aspect =
                 this.container.querySelector('#settings-stream-aspect')?.value ||
                 this._streamAspect;
-            const fps =
-                parseInt(this.container.querySelector('#settings-stream-fps')?.value, 10) ||
-                this._streamFps;
+            const fpsRaw = parseInt(
+                this.container.querySelector('#settings-stream-fps')?.value,
+                10,
+            );
+            // 0 is Auto, a choice like any other — never a missing value.
+            const fps = Number.isNaN(fpsRaw) ? this._streamFps : fpsRaw;
             const hdr = this.container.querySelector('#settings-hdr')?.checked ?? this._hdrEnabled;
             const chroma444 =
                 this.container.querySelector('#settings-chroma-444')?.checked ?? this._chroma444;
@@ -737,7 +747,7 @@ export class SettingsView {
         this._customHeight = 1080;
         this._bitrateAuto = true;
         this._streamAspect = 'auto';
-        this._streamFps = 60;
+        this._streamFps = 0;
         this._hdrEnabled = false;
         this._chroma444 = false;
         this._muteHostAudio = true;
@@ -1037,12 +1047,23 @@ export class SettingsView {
                     </div>`
             : '';
 
-        // FPS options
+        // FPS options. Auto first and default: the rate this very screen
+        // refreshes at, which is also what the native host's virtual display
+        // is created at — one streamed frame per refresh, neither judder nor
+        // frames encoded for nothing. Its label names the measured rate when
+        // there is one.
+        const measured = autoFps();
         const fpsValues = [15, 30, 60, 75, 90, 120, 144, 165, 240];
-        const fpsOptions = fpsValues
-            .map(
-                (f) =>
-                    `<option value="${f}" ${f === this._streamFps ? 'selected' : ''}>${this.esc(t('settings.fpsSuffix', { fps: f }))}</option>`,
+        const fpsOptions = [
+            `<option value="0" ${this._streamFps > 0 ? '' : 'selected'}>${this.esc(
+                measured ? t('settings.fpsAutoMeasured', { fps: measured }) : t('settings.fpsAuto'),
+            )}</option>`,
+        ]
+            .concat(
+                fpsValues.map(
+                    (f) =>
+                        `<option value="${f}" ${f === this._streamFps ? 'selected' : ''}>${this.esc(t('settings.fpsSuffix', { fps: f }))}</option>`,
+                ),
             )
             .join('');
 

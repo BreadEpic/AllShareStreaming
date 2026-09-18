@@ -233,7 +233,7 @@ void run_virtual_display_tests()
                            "    </resolution>\n"
                            "  </resolutions>\n</vdd_settings>\n");
         bool changed = false;
-        const QString grown = settingsWithMode(theirs, 2532, 1170, &changed);
+        const QString grown = settingsWithMode(theirs, 2532, 1170, 120, &changed);
         CHECK(changed);
         // Ours is there, first — the driver reads the list in order.
         const int mine = grown.indexOf(QStringLiteral("<width>2532</width>"));
@@ -243,17 +243,75 @@ void run_virtual_display_tests()
         CHECK(grown.contains(QStringLiteral("<refresh_rate>244</refresh_rate>")));
         CHECK(grown.contains(QStringLiteral("<height>600</height>")));
         CHECK(!isOurSettings(grown));
-        // A size the file already lists is added again to nobody.
-        settingsWithMode(grown, 2532, 1170, &changed);
+        // A size the file already lists AT THAT RATE is added again to
+        // nobody.
+        settingsWithMode(grown, 2532, 1170, 120, &changed);
         CHECK(!changed);
-        settingsWithMode(theirs, 2560, 1440, &changed);
-        CHECK(!changed);
+        // The same size at another rate is another mode: the driver will not
+        // offer a rate it does not list, and the next client's screen may
+        // well run at 60 where this one ran at 120.
+        const QString slower = settingsWithMode(grown, 2532, 1170, 60, &changed);
+        CHECK(changed);
+        CHECK(slower.contains(QStringLiteral("<refresh_rate>60</refresh_rate>")));
+        CHECK(slower.contains(QStringLiteral("<refresh_rate>244</refresh_rate>")));
         // Nothing to add, or nowhere to add it: the file comes back untouched.
-        CHECK_EQ(settingsWithMode(theirs, 0, 0, &changed), theirs);
+        CHECK_EQ(settingsWithMode(theirs, 0, 0, 120, &changed), theirs);
         CHECK(!changed);
         const QString noList = QStringLiteral("<vdd_settings><options/></vdd_settings>");
-        CHECK_EQ(settingsWithMode(noList, 2532, 1170, &changed), noList);
+        CHECK_EQ(settingsWithMode(noList, 2532, 1170, 120, &changed), noList);
         CHECK(!changed);
+    }
+
+    SECTION("VirtualDisplay — the client's refresh rate travels and fills the mode list");
+    {
+        // Pinned into bounds, never refused — a launch must not fail over a
+        // rate — and 0 means "the default rate".
+        int hz = 165;
+        CHECK(normaliseRate(hz));
+        CHECK_EQ(hz, 165);
+        hz = 1000;
+        CHECK(normaliseRate(hz));
+        CHECK_EQ(hz, kRateMax);
+        hz = 1;
+        CHECK(normaliseRate(hz));
+        CHECK_EQ(hz, kRateMin);
+        hz = 0;
+        CHECK(!normaliseRate(hz));
+        CHECK_EQ(hz, 0);
+        hz = -60;
+        CHECK(!normaliseRate(hz));
+        CHECK_EQ(hz, 0);
+
+        // It reaches the elevated helper with the request, junk and absence
+        // both meaning "the default rate".
+        const auto req = parseRequest("{\"action\":\"activate\",\"refresh\":165}", &err);
+        CHECK(req.has_value());
+        if (req) CHECK_EQ(req->refresh, 165);
+        const auto none = parseRequest("{\"action\":\"activate\"}", &err);
+        CHECK(none.has_value());
+        if (none) CHECK_EQ(none->refresh, 0);
+        const auto bad = parseRequest("{\"action\":\"activate\",\"refresh\":\"fast\"}", &err);
+        CHECK(bad.has_value());
+        if (bad) CHECK_EQ(bad->refresh, 0);
+        Request r;
+        r.action = Request::Action::Activate;
+        r.refresh = 60;
+        const auto back = parseRequest(toJson(r), &err);
+        CHECK(back.has_value());
+        if (back) CHECK_EQ(back->refresh, 60);
+        CHECK(!toJson(Request{}).contains("refresh"));
+
+        // Every mode in the file we write carries it — the display exists to
+        // show frames at the client's cadence, whatever the size — and the
+        // driver's global list leads with it.
+        const QString xml = settingsXml(0, 0, 60);
+        CHECK_EQ(xml.count(QStringLiteral("<refresh_rate>120</refresh_rate>")), 0);
+        CHECK(xml.count(QStringLiteral("<refresh_rate>60</refresh_rate>")) >= 4);
+        CHECK(xml.indexOf(QStringLiteral("<g_refresh_rate>60</g_refresh_rate>")) <
+              xml.indexOf(QStringLiteral("<g_refresh_rate>144</g_refresh_rate>")));
+        // No rate measured: the default stands, and the file is the one the
+        // installer has always written.
+        CHECK_EQ(settingsXml(0, 0, 0), settingsXml());
     }
 
     SECTION("VirtualDisplay — the bundled driver is pinned file by file");

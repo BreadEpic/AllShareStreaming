@@ -114,6 +114,8 @@ std::optional<Request> parseRequest(const QByteArray& json, QString* error)
     req.width = obj.value(QLatin1String("width")).toInt(0);
     req.height = obj.value(QLatin1String("height")).toInt(0);
     normaliseMode(req.width, req.height);
+    req.refresh = obj.value(QLatin1String("refresh")).toInt(0);
+    normaliseRate(req.refresh);
     return req;
 }
 
@@ -126,6 +128,7 @@ QByteArray toJson(const Request& req)
         obj["width"] = req.width;
         obj["height"] = req.height;
     }
+    if (req.refresh > 0) obj["refresh"] = req.refresh;
     return QJsonDocument(obj).toJson(QJsonDocument::Compact);
 }
 
@@ -138,6 +141,16 @@ bool normaliseMode(int& width, int& height)
     const auto pin = [](int v) { return std::min(kModeMax, std::max(kModeMin, v)) & ~1; };
     width = pin(width);
     height = pin(height);
+    return true;
+}
+
+bool normaliseRate(int& hz)
+{
+    if (hz <= 0) {
+        hz = 0;
+        return false;
+    }
+    hz = std::min(kRateMax, std::max(kRateMin, hz));
     return true;
 }
 
@@ -183,36 +196,40 @@ bool isOurSettings(const QString& xml)
 }
 
 /// One `<resolution>` block in the driver's own spelling: one refresh rate,
-/// ours, exactly as the file we write ourselves spells it — the shape the
-/// driver was seen to accept on the bench, and the only one to put in a file
-/// belonging to someone else.
-static QString resolutionBlock(int width, int height, const QString& indent)
+/// the one this activation wants, exactly as the file we write ourselves
+/// spells it — the shape the driver was seen to accept on the bench, and the
+/// only one to put in a file belonging to someone else.
+static QString resolutionBlock(int width, int height, int refresh, const QString& indent)
 {
     QString s;
     s += indent + QStringLiteral("<resolution>\n");
     s += indent + QStringLiteral("  <width>%1</width>\n").arg(width);
     s += indent + QStringLiteral("  <height>%1</height>\n").arg(height);
-    s += indent + QStringLiteral("  <refresh_rate>%1</refresh_rate>\n").arg(kRefreshHz);
+    s += indent + QStringLiteral("  <refresh_rate>%1</refresh_rate>\n").arg(refresh);
     s += indent + QStringLiteral("</resolution>\n");
     return s;
 }
 
-QString settingsWithMode(const QString& existing, int width, int height, bool* changed)
+QString settingsWithMode(const QString& existing, int width, int height, int refresh, bool* changed)
 {
     *changed = false;
     if (!normaliseMode(width, height)) return existing;
-    // Already offered: the driver lists this size, nothing to add. Both tags
-    // in the same block is what makes it this mode rather than two others
-    // that happen to share a number.
+    if (!normaliseRate(refresh)) refresh = kRefreshHz;
+    // Already offered: the driver lists this size AT this rate, nothing to
+    // add. All three tags in the same block is what makes it this mode rather
+    // than others that happen to share a number — and a size listed at
+    // another rate still needs its own entry, since the rate is half of what
+    // the client asked for.
     static const QRegularExpression block(QStringLiteral("<resolution>.*?</resolution>"),
                                           QRegularExpression::DotMatchesEverythingOption);
     const QString w = QStringLiteral("<width>%1</width>").arg(width);
     const QString h = QStringLiteral("<height>%1</height>").arg(height);
+    const QString r = QStringLiteral("<refresh_rate>%1</refresh_rate>").arg(refresh);
     auto it = block.globalMatch(existing);
     while (it.hasNext()) {
         const QString one =
             it.next().captured(0).remove(QLatin1Char(' ')).remove(QLatin1Char('\t'));
-        if (one.contains(w) && one.contains(h)) return existing;
+        if (one.contains(w) && one.contains(h) && one.contains(r)) return existing;
     }
     const int open = existing.indexOf(QStringLiteral("<resolutions>"));
     if (open < 0) return existing;
@@ -220,12 +237,13 @@ QString settingsWithMode(const QString& existing, int width, int height, bool* c
     // The list is read in order and the first entry is the driver's default:
     // ours goes first, which is the point of adding it at all.
     QString out = existing;
-    out.insert(after, QLatin1Char('\n') + resolutionBlock(width, height, QStringLiteral("    ")));
+    out.insert(after,
+               QLatin1Char('\n') + resolutionBlock(width, height, refresh, QStringLiteral("    ")));
     *changed = true;
     return out;
 }
 
-QString settingsXml(int width, int height)
+QString settingsXml(int width, int height, int refresh)
 {
     // The layout the driver ships (its own sample, verified on the bench):
     //   <monitors><count>, <gpu><friendlyname>, <global><g_refresh_rate>*,
@@ -233,7 +251,9 @@ QString settingsXml(int width, int height)
     // Our mode goes first — the driver takes the first as the default — then
     // the common sizes, so a later mode change needs no driver reload.
     // A client size comes ahead of all of them: it is the mode this
-    // activation exists for, and the desktop must come up at it.
+    // activation exists for, and the desktop must come up at it. Every size
+    // carries the client's own refresh rate, since that is the cadence the
+    // frames this display exists to produce will be shown at.
     struct Size
     {
         int w, h;
@@ -241,6 +261,7 @@ QString settingsXml(int width, int height)
     static const Size sizes[] = {{1280, 720}, {2560, 1440}, {3840, 2160}};
     static const int rates[] = {60, 90, 144};
     const bool custom = normaliseMode(width, height);
+    if (!normaliseRate(refresh)) refresh = kRefreshHz;
 
     QString xml;
     xml += QStringLiteral("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
@@ -249,17 +270,20 @@ QString settingsXml(int width, int height)
     xml += QStringLiteral("  <monitors>\n    <count>1</count>\n  </monitors>\n");
     xml += QStringLiteral("  <gpu>\n    <friendlyname>default</friendlyname>\n  </gpu>\n");
     xml += QStringLiteral("  <global>\n");
-    xml += QStringLiteral("    <g_refresh_rate>%1</g_refresh_rate>\n").arg(kRefreshHz);
+    xml += QStringLiteral("    <g_refresh_rate>%1</g_refresh_rate>\n").arg(refresh);
     for (const int hz : rates)
-        xml += QStringLiteral("    <g_refresh_rate>%1</g_refresh_rate>\n").arg(hz);
+        if (hz != refresh)
+            xml += QStringLiteral("    <g_refresh_rate>%1</g_refresh_rate>\n").arg(hz);
+    if (refresh != kRefreshHz)
+        xml += QStringLiteral("    <g_refresh_rate>%1</g_refresh_rate>\n").arg(kRefreshHz);
     xml += QStringLiteral("  </global>\n  <resolutions>\n");
-    const auto one = [&xml](int w, int h) {
+    const auto one = [&xml, refresh](int w, int h) {
         xml += QStringLiteral("    <resolution>\n      <width>%1</width>\n"
                               "      <height>%2</height>\n      <refresh_rate>%3</refresh_rate>\n"
                               "    </resolution>\n")
                    .arg(w)
                    .arg(h)
-                   .arg(kRefreshHz);
+                   .arg(refresh);
     };
     if (custom) one(width, height);
     if (!custom || width != kWidth || height != kHeight) one(kWidth, kHeight);

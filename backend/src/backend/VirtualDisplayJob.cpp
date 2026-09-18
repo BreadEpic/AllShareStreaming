@@ -119,10 +119,11 @@ QJsonObject VirtualDisplayJob::statusJson() const
 
 // ── Entry points ────────────────────────────────────────────────────────────
 
-void VirtualDisplayJob::activate(int width, int height, Callback cb)
+void VirtualDisplayJob::activate(int width, int height, int refresh, Callback cb)
 {
     m_Release.stop();
     VirtualDisplay::normaliseMode(width, height);
+    VirtualDisplay::normaliseRate(refresh);
     // Already on and seen by the engine: nothing to wait for. (A running
     // operation is asked first — its outcome is what the caller wants.)
     if (!running() && m_Queue.isEmpty()) {
@@ -138,15 +139,17 @@ void VirtualDisplayJob::activate(int width, int height, Callback cb)
                               .arg(VirtualDisplay::displayName()));
             return;
         }
-        // On already — and, when a size was asked for, on at that size. The
-        // size this process last applied is the only one it can vouch for:
-        // after a restart it knows none, and the operation runs again.
-        if (st.active && (width == 0 || (width == m_ActiveWidth && height == m_ActiveHeight))) {
+        // On already — and, when a size or a rate was asked for, on in that
+        // mode. The mode this process last applied is the only one it can
+        // vouch for: after a restart it knows none, and the operation runs
+        // again.
+        if (st.active && (width == 0 || (width == m_ActiveWidth && height == m_ActiveHeight)) &&
+            (refresh == 0 || refresh == m_ActiveRefresh)) {
             if (cb) cb(true, QString());
             return;
         }
     }
-    enqueue(Action::Activate, width, height, std::move(cb));
+    enqueue(Action::Activate, width, height, refresh, std::move(cb));
 }
 
 void VirtualDisplayJob::deactivate(Callback cb)
@@ -160,7 +163,7 @@ void VirtualDisplayJob::deactivate(Callback cb)
             return;
         }
     }
-    enqueue(Action::Deactivate, 0, 0, std::move(cb));
+    enqueue(Action::Deactivate, 0, 0, 0, std::move(cb));
 }
 
 void VirtualDisplayJob::releaseSoon()
@@ -168,18 +171,18 @@ void VirtualDisplayJob::releaseSoon()
     m_Release.start();
 }
 
-void VirtualDisplayJob::enqueue(Action action, int width, int height, Callback cb)
+void VirtualDisplayJob::enqueue(Action action, int width, int height, int refresh, Callback cb)
 {
-    // The same verb AND the same size as the running or last queued
-    // operation: join it. A different size is a different operation, and it
+    // The same verb AND the same mode as the running or last queued
+    // operation: join it. A different mode is a different operation, and it
     // waits its turn rather than riding on one that will not deliver it.
     if (running() && m_Request.action == action && m_Request.width == width &&
-        m_Request.height == height && m_Queue.isEmpty()) {
+        m_Request.height == height && m_Request.refresh == refresh && m_Queue.isEmpty()) {
         if (cb) m_Callbacks.append(std::move(cb));
         return;
     }
     if (!m_Queue.isEmpty() && m_Queue.last().action == action && m_Queue.last().width == width &&
-        m_Queue.last().height == height) {
+        m_Queue.last().height == height && m_Queue.last().refresh == refresh) {
         if (cb) {
             Callback prev = m_Queue.last().cb;
             m_Queue.last().cb = [prev, cb](bool ok, const QString& err) {
@@ -189,7 +192,7 @@ void VirtualDisplayJob::enqueue(Action action, int width, int height, Callback c
         }
         return;
     }
-    m_Queue.append(Pending{action, width, height, std::move(cb)});
+    m_Queue.append(Pending{action, width, height, refresh, std::move(cb)});
     if (!running()) startNext();
 }
 
@@ -201,6 +204,7 @@ void VirtualDisplayJob::startNext()
     m_Request.action = next.action;
     m_Request.width = next.width;
     m_Request.height = next.height;
+    m_Request.refresh = next.refresh;
     m_Callbacks.clear();
     if (next.cb) m_Callbacks.append(std::move(next.cb));
     m_Error.clear();
@@ -272,12 +276,14 @@ void VirtualDisplayJob::succeed(const VirtualDisplay::Result& res)
             rec["width"] = m_Request.width;
             rec["height"] = m_Request.height;
         }
+        if (m_Request.refresh > 0) rec["refresh"] = m_Request.refresh;
         settings.setVirtualDisplay(rec);
         m_ActiveWidth = m_Request.width;
         m_ActiveHeight = m_Request.height;
+        m_ActiveRefresh = m_Request.refresh;
     } else if (m_Request.action == Action::Deactivate) {
         settings.clearVirtualDisplay();
-        m_ActiveWidth = m_ActiveHeight = 0;
+        m_ActiveWidth = m_ActiveHeight = m_ActiveRefresh = 0;
     }
     setState(State::Done);
     settle(true, QString());

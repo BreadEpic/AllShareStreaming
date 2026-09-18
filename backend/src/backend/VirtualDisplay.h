@@ -96,6 +96,14 @@ struct DisplayInfo;
  * out-of-bounds size, or a machine whose settings file belongs to someone
  * else's VDD, quietly keeps 1080p — the mode stage is never fatal.
  *
+ * The rate travels the same way, and always: a display nobody looks at has no
+ * reason to refresh at anything but the rate of the screen the stream lands
+ * on. The browser measures it (util/RefreshRate.js) and it reaches the
+ * Activate request through /start's `client_refresh_mhz`, so a 60 Hz laptop
+ * gets a 60 Hz desktop and a 165 Hz panel a 165 Hz one, each frame the host
+ * paints having somewhere to go. No measurement — an old client, a hidden
+ * tab at launch — keeps the 120 Hz default.
+ *
  * Everything in this header that has no OS dependency (the request parser,
  * the settings XML, the names) is pure and covered by
  * tests/test_virtual_display.cpp on every platform.
@@ -139,10 +147,20 @@ constexpr int kRefreshHz = 120;
 constexpr int kModeMin = 640;
 constexpr int kModeMax = 4096;
 
+/// What a requested refresh rate may be. The floor is a cadence a desktop is
+/// still usable at, the ceiling is the fastest panel a client can hold; the
+/// driver itself goes to 500 Hz.
+constexpr int kRateMin = 24;
+constexpr int kRateMax = 240;
+
 /// The mode a request asks for, pinned into bounds and made even. Returns
 /// false — and leaves 0×0 — when there is nothing usable to ask for, which is
 /// the normal case: the default mode then applies.
 bool normaliseMode(int& width, int& height);
+
+/// The refresh rate a request asks for, pinned into bounds. Returns false —
+/// and leaves 0 — when there is none, in which case kRefreshHz applies.
+bool normaliseRate(int& hz);
 
 // ── The bundled driver (Windows x64) ───────────────────────────────────────
 //
@@ -220,6 +238,10 @@ struct Request
     /// [kModeMin, kModeMax] and even once parsed.
     int width = 0;
     int height = 0;
+    /// Activate: the rate the client's own screen refreshes at, measured by
+    /// the browser (util/RefreshRate.js). 0 — no measurement — is kRefreshHz.
+    /// Always within [kRateMin, kRateMax] once parsed.
+    int refresh = 0;
 };
 
 /// Parse and validate a request. The file is read by an elevated process, so
@@ -250,24 +272,28 @@ QByteArray toJson(const Result& res);
 /// The driver's vdd_settings.xml: a single monitor, our mode first (the
 /// driver picks the first as default), the common sizes after it, SDR. A
 /// @p width × @p height of 0 is the default 1920×1080; anything else is the
-/// client's own size, added ahead of the list.
+/// client's own size, added ahead of the list. @p refresh of 0 is kRefreshHz;
+/// anything else is the rate the client's screen runs at, which every mode in
+/// the file is then offered at.
 ///
 /// Written when none exists, and rewritten — with the node restarted so the
-/// driver re-reads it — when the size changes. Never over a file this project
+/// driver re-reads it — when the mode changes. Never over a file this project
 /// did not write: an owner's own VDD configured that one (see isOurSettings).
-QString settingsXml(int width = 0, int height = 0);
+QString settingsXml(int width = 0, int height = 0, int refresh = 0);
 
 /// Does this vdd_settings.xml carry our marker, i.e. did we write it?
 bool isOurSettings(const QString& xml);
 
 /// @p existing — a settings file someone else wrote — with @p width ×
-/// @p height added to its mode list, ahead of the rest, and everything else
-/// left exactly as it was. The one edit this project makes to a file it does
-/// not own: without the mode in that list the driver will not offer it, and
-/// "Match my screen" has nothing to switch to. Returns the file unchanged
-/// (@p changed false) when the mode is already listed, when there is no
-/// `<resolutions>` element to add it to, or when there is no mode to add.
-QString settingsWithMode(const QString& existing, int width, int height, bool* changed);
+/// @p height at @p refresh Hz added to its mode list, ahead of the rest, and
+/// everything else left exactly as it was. The one edit this project makes to
+/// a file it does not own: without the mode in that list the driver will not
+/// offer it, and "Match my screen" has nothing to switch to. Returns the file
+/// unchanged (@p changed false) when that very size and rate are already
+/// listed, when there is no `<resolutions>` element to add them to, or when
+/// there is no size to add.
+QString settingsWithMode(const QString& existing, int width, int height, int refresh,
+                         bool* changed);
 
 // ── Paths ───────────────────────────────────────────────────────────────────
 

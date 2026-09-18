@@ -472,11 +472,11 @@ void deletePackage()
 /// is — the display then comes up at whatever that file lists. Ours is
 /// rewritten whenever the wanted mode changes, and @p changed says so, since
 /// the driver only reads this file when the device starts.
-bool writeSettings(int width, int height, bool* changed, QString* error)
+bool writeSettings(int width, int height, int refresh, bool* changed, QString* error)
 {
     *changed = false;
     const QString path = VirtualDisplay::settingsXmlPath();
-    const QString wanted = VirtualDisplay::settingsXml(width, height);
+    const QString wanted = VirtualDisplay::settingsXml(width, height, refresh);
     QFile f(path);
     if (f.exists()) {
         QString current;
@@ -488,7 +488,8 @@ bool writeSettings(int width, int height, bool* changed, QString* error)
             // from before the marker. It keeps every one of its modes; the
             // client's is added to the list, and nothing else is touched.
             bool added = false;
-            const QString grown = VirtualDisplay::settingsWithMode(current, width, height, &added);
+            const QString grown =
+                VirtualDisplay::settingsWithMode(current, width, height, refresh, &added);
             if (!added) {
                 Logger::info(QStringLiteral("[vdisplay-apply] %1 belongs to another VDD — left as "
                                             "it is")
@@ -502,10 +503,11 @@ bool writeSettings(int width, int height, bool* changed, QString* error)
             f.write(grown.toUtf8());
             f.close();
             *changed = true;
-            Logger::info(QStringLiteral("[vdisplay-apply] %1x%2 added to another VDD's mode list "
-                                        "in %3 — its own modes kept")
+            Logger::info(QStringLiteral("[vdisplay-apply] %1x%2 at %3 Hz added to another VDD's "
+                                        "mode list in %4 — its own modes kept")
                              .arg(width)
                              .arg(height)
+                             .arg(refresh > 0 ? refresh : VirtualDisplay::kRefreshHz)
                              .arg(path));
             return true;
         }
@@ -520,10 +522,10 @@ bool writeSettings(int width, int height, bool* changed, QString* error)
     f.write(wanted.toUtf8());
     f.close();
     *changed = true;
-    if (width > 0 && height > 0)
-        Logger::info(QStringLiteral("[vdisplay-apply] mode list rewritten with %1x%2 first")
-                         .arg(width)
-                         .arg(height));
+    Logger::info(QStringLiteral("[vdisplay-apply] mode list rewritten with %1x%2 at %3 Hz first")
+                     .arg(width > 0 ? width : VirtualDisplay::kWidth)
+                     .arg(height > 0 ? height : VirtualDisplay::kHeight)
+                     .arg(refresh > 0 ? refresh : VirtualDisplay::kRefreshHz));
     return true;
 }
 
@@ -567,7 +569,7 @@ int stageDriver(Context& ctx)
         // wrote any. An owner's own VDD configured that file, and ours takes
         // the modes it lists.
         bool wrote = false;
-        if (!writeSettings(0, 0, &wrote, &error)) return failAt(ctx, stage, error);
+        if (!writeSettings(0, 0, 0, &wrote, &error)) return failAt(ctx, stage, error);
 
         PublisherTrust trust;
         if (!trustCatalogSigner(catPath, trust, &error)) return failAt(ctx, stage, error);
@@ -638,7 +640,8 @@ int stageDriver(Context& ctx)
         // on by a stream that just ended — is what a restart is for.
         if (enable) {
             bool listChanged = false;
-            if (!writeSettings(ctx.request.width, ctx.request.height, &listChanged, &error)) {
+            if (!writeSettings(ctx.request.width, ctx.request.height, ctx.request.refresh,
+                               &listChanged, &error)) {
                 Logger::warning(
                     QStringLiteral("[vdisplay-apply] %1 — the default mode stands").arg(error));
             } else if (listChanged && nodeIsEnabled(*ours)) {
@@ -977,10 +980,11 @@ int pathIndexFor(const std::vector<DISPLAYCONFIG_PATH_INFO>& paths, const QStrin
 }
 
 /// Our mode on the display at @p devicePath: the source (desktop) size, and
-/// the target left to the driver at the wanted refresh. @p width × @p height
-/// is the client's size when it asked for one, the default mode otherwise —
-/// either way the driver's list holds it by now (writeSettings()).
-bool setMode(const QString& devicePath, int width, int height, QString* error)
+/// the target left to the driver at @p refresh Hz. @p width × @p height is
+/// the client's size when it asked for one, the default mode otherwise, and
+/// @p refresh its screen's rate or the default — either way the driver's list
+/// holds the pair by now (writeSettings()).
+bool setMode(const QString& devicePath, int width, int height, int refresh, QString* error)
 {
     return applyDisplayConfig(
         [&](std::vector<DISPLAYCONFIG_PATH_INFO>& paths,
@@ -999,7 +1003,7 @@ bool setMode(const QString& devicePath, int width, int height, QString* error)
             modes[src].sourceMode.width = UINT32(width);
             modes[src].sourceMode.height = UINT32(height);
             p.targetInfo.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
-            p.targetInfo.refreshRate.Numerator = UINT32(VirtualDisplay::kRefreshHz);
+            p.targetInfo.refreshRate.Numerator = UINT32(refresh);
             p.targetInfo.refreshRate.Denominator = 1;
             p.targetInfo.scanLineOrdering = DISPLAYCONFIG_SCANLINE_ORDERING_PROGRESSIVE;
             p.targetInfo.scaling = DISPLAYCONFIG_SCALING_IDENTITY;
@@ -1223,35 +1227,48 @@ int stageMode(Context& ctx)
         if (auto again = findOurTarget()) target = again;
     }
 
-    // The client's own size when it asked for one, the default mode when it
-    // did not — and the default mode again if that size is refused, so a
-    // display that cannot take a phone's shape still streams.
+    // The client's own size and its screen's rate when it asked for them, the
+    // default mode when it did not — and the default mode again if that one
+    // is refused, so a display that cannot take a phone's shape, or a rate
+    // the driver did not list, still streams.
     int wantW = ctx.request.width, wantH = ctx.request.height;
     if (!VirtualDisplay::normaliseMode(wantW, wantH)) {
         wantW = VirtualDisplay::kWidth;
         wantH = VirtualDisplay::kHeight;
     }
-    if (setMode(target->devicePath, wantW, wantH, &error)) {
+    int wantHz = ctx.request.refresh;
+    if (!VirtualDisplay::normaliseRate(wantHz)) wantHz = VirtualDisplay::kRefreshHz;
+    if (setMode(target->devicePath, wantW, wantH, wantHz, &error)) {
         Logger::info(QStringLiteral("[vdisplay-apply] %1 set to %2x%3@%4")
                          .arg(target->gdiName)
                          .arg(wantW)
                          .arg(wantH)
-                         .arg(VirtualDisplay::kRefreshHz));
+                         .arg(wantHz));
     } else {
         // Not fatal: the display exists and streams at whatever mode it has.
         Logger::warning(QStringLiteral("[vdisplay-apply] mode %1x%2@%3 refused on %4: %5")
                             .arg(wantW)
                             .arg(wantH)
-                            .arg(VirtualDisplay::kRefreshHz)
+                            .arg(wantHz)
                             .arg(target->gdiName, error));
-        if (wantW != VirtualDisplay::kWidth || wantH != VirtualDisplay::kHeight) {
+        // The size first — a rate the client's screen runs at is worth more
+        // than its shape — then the default mode entirely.
+        const struct
+        {
+            int w, h, hz;
+        } fallbacks[] = {
+            {VirtualDisplay::kWidth, VirtualDisplay::kHeight, wantHz},
+            {VirtualDisplay::kWidth, VirtualDisplay::kHeight, VirtualDisplay::kRefreshHz}};
+        for (const auto& f : fallbacks) {
+            if (f.w == wantW && f.h == wantH && f.hz == wantHz) continue;
             QString again;
-            if (setMode(target->devicePath, VirtualDisplay::kWidth, VirtualDisplay::kHeight,
-                        &again))
-                Logger::info(QStringLiteral("[vdisplay-apply] %1 fell back to %2x%3")
-                                 .arg(target->gdiName)
-                                 .arg(VirtualDisplay::kWidth)
-                                 .arg(VirtualDisplay::kHeight));
+            if (!setMode(target->devicePath, f.w, f.h, f.hz, &again)) continue;
+            Logger::info(QStringLiteral("[vdisplay-apply] %1 fell back to %2x%3@%4")
+                             .arg(target->gdiName)
+                             .arg(f.w)
+                             .arg(f.h)
+                             .arg(f.hz));
+            break;
         }
     }
 

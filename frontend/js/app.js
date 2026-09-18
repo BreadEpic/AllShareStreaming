@@ -63,7 +63,7 @@ import {
     hdrClientCapability,
     chroma444ClientCapability,
 } from './util/BrowserDetect.js';
-import { startRefreshRateMonitor, currentRefreshMilliHz } from './util/RefreshRate.js';
+import { startRefreshRateMonitor, currentRefreshMilliHz, autoFps } from './util/RefreshRate.js';
 import { computeAutoBitrate } from './util/AutoBitrate.js';
 import { DEFAULT_ASPECT, loadHostAspect, saveHostAspect } from './util/AspectRatio.js';
 import { readResolutionChoice, resolveStreamSize } from './util/StreamResolution.js';
@@ -1888,6 +1888,10 @@ const MoonlightApp = {
         // display to the size, for "Match my screen" only). Auto and "Match my
         // screen" follow this screen: turned or moved to another monitor, the
         // stream is relaunched at the new size (_onClientScreenChanged).
+        //
+        // The frame rate is resolved first, since the automatic bitrate the
+        // size brings counts frames per second.
+        this._applyResolvedFps(streamingSettings);
         const choice = readResolutionChoice(streamingSettings);
         const size = resolveStreamSize(
             {
@@ -2413,6 +2417,28 @@ const MoonlightApp = {
                 size.aspect || '16:9',
             );
         }
+    },
+
+    /**
+     * Write the frame rate this launch asks for: "Auto" (stream_fps 0, the
+     * default) is this screen's own refresh rate, measured by the browser
+     * (util/RefreshRate.js) — one streamed frame per refresh, which is also
+     * the cadence the native host's virtual display is created at, since the
+     * same measurement travels with /start. A screen that could not be
+     * measured, and every fixed choice, is left exactly as it is: the backend
+     * reads a 0 it still gets as 60.
+     *
+     * The stored preference is untouched — this is the launch's copy — and
+     * the rate is resolved once per launch, not followed mid-stream: the host
+     * is told of a change through `clientrefresh` and paces to it without a
+     * relaunch.
+     */
+    _applyResolvedFps(settings) {
+        if (settings.stream_fps > 0) return;
+        const fps = autoFps();
+        if (!fps) return;
+        console.log('[MW] Auto frame rate: this screen refreshes at ' + fps + ' Hz');
+        settings.stream_fps = fps;
     },
 
     /** The estimate's bitrate, in kbps, for a frame of that size. */
