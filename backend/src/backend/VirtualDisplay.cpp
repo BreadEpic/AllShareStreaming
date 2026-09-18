@@ -248,8 +248,8 @@ bool hasHardwareId(DEVINST inst, const QString& wanted)
         size == 0)
         return false;
     std::vector<wchar_t> ids(size / sizeof(wchar_t) + 1, 0);
-    if (CM_Get_DevNode_Registry_PropertyW(inst, CM_DRP_HARDWAREID, nullptr, ids.data(), &size,
-                                          0) != CR_SUCCESS)
+    if (CM_Get_DevNode_Registry_PropertyW(inst, CM_DRP_HARDWAREID, nullptr, ids.data(), &size, 0) !=
+        CR_SUCCESS)
         return false;
     for (const wchar_t* h = ids.data(); *h; h += wcslen(h) + 1)
         if (QString::fromWCharArray(h).compare(wanted, Qt::CaseInsensitive) == 0) return true;
@@ -466,9 +466,17 @@ bool applyInProcess(const Request& req, Result* result)
             res.display = QStringLiteral("display %1").arg(mw::native::vdisplay::displayId());
             break;
         }
+        // CoreGraphics takes any size the client asks for, no driver and no
+        // mode list in between: "Match my screen" on macOS is simply a
+        // display created at that size.
         mw::native::vdisplay::Spec spec;
-        spec.width = kWidth;
-        spec.height = kHeight;
+        int w = req.width, h = req.height;
+        if (!normaliseMode(w, h)) {
+            w = kWidth;
+            h = kHeight;
+        }
+        spec.width = w;
+        spec.height = h;
         spec.refreshHz = kRefreshHz;
         spec.name = displayName().toStdString();
         res.previousPrimary = QString::number(mw::native::vdisplay::mainDisplay());

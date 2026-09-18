@@ -144,6 +144,81 @@ void run_virtual_display_tests()
               xml.indexOf(QStringLiteral("<g_refresh_rate>60</g_refresh_rate>")));
     }
 
+    SECTION("VirtualDisplay — a client size is pinned, made even, or is no size at all");
+    {
+        int w = 2532, h = 1170;
+        CHECK(normaliseMode(w, h));
+        CHECK_EQ(w, 2532);
+        CHECK_EQ(h, 1170);
+        // Odd is rounded down: a display mode is whole macroblocks to the
+        // encoder that follows it.
+        w = 1365;
+        h = 767;
+        CHECK(normaliseMode(w, h));
+        CHECK_EQ(w, 1364);
+        CHECK_EQ(h, 766);
+        // Out of bounds is pinned, never refused: a launch must not fail here.
+        w = 99999;
+        h = 12;
+        CHECK(normaliseMode(w, h));
+        CHECK_EQ(w, kModeMax);
+        CHECK_EQ(h, kModeMin);
+        // Nothing asked for: the default mode, and 0×0 says so.
+        w = 0;
+        h = 1080;
+        CHECK(!normaliseMode(w, h));
+        CHECK_EQ(w, 0);
+        CHECK_EQ(h, 0);
+        w = -1920;
+        h = -1080;
+        CHECK(!normaliseMode(w, h));
+        CHECK_EQ(w, 0);
+    }
+
+    SECTION("VirtualDisplay — the size travels with the request and leads the mode list");
+    {
+        // "Match my screen" on a phone: the size reaches the elevated helper.
+        const auto req =
+            parseRequest("{\"action\":\"activate\",\"width\":2532,\"height\":1170}", &err);
+        CHECK(req.has_value());
+        if (req) {
+            CHECK_EQ(req->width, 2532);
+            CHECK_EQ(req->height, 1170);
+        }
+        // Junk and absence both mean "the mode that is there".
+        const auto none = parseRequest("{\"action\":\"activate\"}", &err);
+        CHECK(none.has_value());
+        if (none) CHECK_EQ(none->width, 0);
+        const auto bad =
+            parseRequest("{\"action\":\"activate\",\"width\":\"big\",\"height\":8}", &err);
+        CHECK(bad.has_value());
+        if (bad) CHECK_EQ(bad->width, 0);
+        Request r;
+        r.action = Request::Action::Activate;
+        r.width = 2532;
+        r.height = 1170;
+        const auto back = parseRequest(toJson(r), &err);
+        CHECK(back.has_value());
+        if (back) CHECK_EQ(back->height, 1170);
+        CHECK(!toJson(Request{}).contains("width"));
+
+        // The list the driver reads: the client's size first — it is the one
+        // the desktop must come up at — then ours, then the common ones, each
+        // listed once.
+        const QString xml = settingsXml(2532, 1170);
+        const int phone = xml.indexOf(QStringLiteral("<width>2532</width>"));
+        CHECK(phone > 0);
+        CHECK(xml.indexOf(QStringLiteral("<width>1920</width>")) > phone);
+        CHECK(xml.contains(QStringLiteral("<height>1170</height>")));
+        CHECK_EQ(settingsXml(1920, 1080).count(QStringLiteral("<width>1920</width>")), 1);
+        CHECK_EQ(settingsXml(2560, 1440).count(QStringLiteral("<width>2560</width>")), 1);
+        // A file we wrote is ours to rewrite; anyone else's VDD settings are
+        // left exactly as they are.
+        CHECK(isOurSettings(settingsXml()));
+        CHECK(isOurSettings(settingsXml(2532, 1170)));
+        CHECK(!isOurSettings(QStringLiteral("<?xml version=\"1.0\"?><vdd_settings/>")));
+    }
+
     SECTION("VirtualDisplay — the bundled driver is pinned file by file");
     CHECK_EQ(int(driverFiles().size()), 3);
     bool inf = false, cat = false, dll = false;

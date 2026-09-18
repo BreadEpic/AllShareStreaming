@@ -21,6 +21,8 @@
 
 #include <QJsonDocument>
 
+#include <algorithm>
+
 // The platform-free half of VirtualDisplay: names, the request/result files,
 // the driver's settings XML. Kept apart from VirtualDisplay.cpp so the
 // security test target can link it without SetupAPI, the probe service or a
@@ -105,6 +107,11 @@ std::optional<Request> parseRequest(const QByteArray& json, QString* error)
             return std::nullopt;
         }
     }
+    // The size the client asks for. Out of bounds is pinned, not refused: a
+    // launch must never fail over it, and the default mode is always there.
+    req.width = obj.value(QLatin1String("width")).toInt(0);
+    req.height = obj.value(QLatin1String("height")).toInt(0);
+    normaliseMode(req.width, req.height);
     return req;
 }
 
@@ -113,7 +120,23 @@ QByteArray toJson(const Request& req)
     QJsonObject obj;
     obj["action"] = toString(req.action);
     if (!req.restorePrimary.isEmpty()) obj["restore_primary"] = req.restorePrimary;
+    if (req.width > 0 && req.height > 0) {
+        obj["width"] = req.width;
+        obj["height"] = req.height;
+    }
     return QJsonDocument(obj).toJson(QJsonDocument::Compact);
+}
+
+bool normaliseMode(int& width, int& height)
+{
+    if (width <= 0 || height <= 0) {
+        width = height = 0;
+        return false;
+    }
+    const auto pin = [](int v) { return std::min(kModeMax, std::max(kModeMin, v)) & ~1; };
+    width = pin(width);
+    height = pin(height);
+    return true;
 }
 
 std::optional<Result> parseResult(const QByteArray& json)
@@ -145,22 +168,39 @@ QByteArray toJson(const Result& res)
     return QJsonDocument(obj).toJson(QJsonDocument::Compact) + '\n';
 }
 
-QString settingsXml()
+/// The line that makes the settings file ours. A VDD the owner installed
+/// before us wrote a file without it, and that file is never touched.
+static QString settingsMarker()
+{
+    return QStringLiteral("<!-- written by MoonlightWeb — do not edit, it is rewritten -->");
+}
+
+bool isOurSettings(const QString& xml)
+{
+    return xml.contains(settingsMarker());
+}
+
+QString settingsXml(int width, int height)
 {
     // The layout the driver ships (its own sample, verified on the bench):
     //   <monitors><count>, <gpu><friendlyname>, <global><g_refresh_rate>*,
     //   <resolutions><resolution>{width,height,refresh_rate}*, <options>.
     // Our mode goes first — the driver takes the first as the default — then
     // the common sizes, so a later mode change needs no driver reload.
+    // A client size comes ahead of all of them: it is the mode this
+    // activation exists for, and the desktop must come up at it.
     struct Size
     {
         int w, h;
     };
     static const Size sizes[] = {{1280, 720}, {2560, 1440}, {3840, 2160}};
     static const int rates[] = {60, 90, 144};
+    const bool custom = normaliseMode(width, height);
 
     QString xml;
-    xml += QStringLiteral("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<vdd_settings>\n");
+    xml += QStringLiteral("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+    xml += settingsMarker() + QLatin1Char('\n');
+    xml += QStringLiteral("<vdd_settings>\n");
     xml += QStringLiteral("  <monitors>\n    <count>1</count>\n  </monitors>\n");
     xml += QStringLiteral("  <gpu>\n    <friendlyname>default</friendlyname>\n  </gpu>\n");
     xml += QStringLiteral("  <global>\n");
@@ -176,9 +216,10 @@ QString settingsXml()
                    .arg(h)
                    .arg(kRefreshHz);
     };
-    one(kWidth, kHeight);
+    if (custom) one(width, height);
+    if (!custom || width != kWidth || height != kHeight) one(kWidth, kHeight);
     for (const Size& s : sizes)
-        one(s.w, s.h);
+        if (!custom || s.w != width || s.h != height) one(s.w, s.h);
     xml += QStringLiteral("  </resolutions>\n  <options>\n");
     xml += QStringLiteral("    <CustomEdid>false</CustomEdid>\n"
                           "    <PreventSpoof>false</PreventSpoof>\n"

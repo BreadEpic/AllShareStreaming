@@ -3473,12 +3473,20 @@ int main(int argc, char* argv[])
             // on its card turns it on first — enable, mode, primary — and the
             // worker is spawned once the engine can see it. Several viewers
             // opening it at once share the one operation.
+            //
+            // "Match my screen" is the one choice that names a size for it:
+            // a display nobody sees can be made at the client's own, phone
+            // shape and all, instead of the 1080p default. Every other choice
+            // passes 0 and takes the mode that is there.
+            const int vdWidth = reqMatchDisplay ? reqWidth : 0;
+            const int vdHeight = reqMatchDisplay ? reqHeight : 0;
             std::function<void()> readyThenStart = claimThenStart;
             if (host->backendType == NativeHostBackend::typeName() &&
                 appId == NativeHostBackend::virtualDisplayAppId()) {
-                readyThenStart = [claimThenStart, worker, respond, standby, reqSlot,
-                                  generation]() {
+                readyThenStart = [claimThenStart, worker, respond, standby, reqSlot, generation,
+                                  vdWidth, vdHeight]() {
                     VirtualDisplayJob::instance().activate(
+                        vdWidth, vdHeight,
                         [claimThenStart, worker, respond, standby, reqSlot,
                          generation](bool ok, const QString& error) {
                             if (g_SlotLaunchGeneration.value(reqSlot) != generation) {

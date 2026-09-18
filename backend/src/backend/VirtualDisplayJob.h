@@ -66,8 +66,16 @@ public:
     };
 
     /// Turn the display on (enable, mode, primary). Answers at once when it
-    /// is already on. Cancels a pending releaseSoon().
-    void activate(Callback cb);
+    /// is already on AT THAT SIZE. Cancels a pending releaseSoon().
+    ///
+    /// @p width × @p height is the size the client asked the display to have
+    /// ("Match my screen"); 0×0 takes whatever mode is there, which is what
+    /// every other resolution choice does. A display already on at another
+    /// size is put through the operation again — the driver's mode list is
+    /// rewritten and the node restarted — because a size that is not the
+    /// client's is the one thing this choice cannot live with.
+    void activate(int width, int height, Callback cb);
+    void activate(Callback cb) { activate(0, 0, std::move(cb)); }
 
     /// Turn it off (previous primary back, disable). @p cb may be null.
     void deactivate(Callback cb);
@@ -86,10 +94,12 @@ private:
     struct Pending
     {
         VirtualDisplay::Request::Action action;
+        int width = 0;
+        int height = 0;
         Callback cb;
     };
 
-    void enqueue(VirtualDisplay::Request::Action action, Callback cb);
+    void enqueue(VirtualDisplay::Request::Action action, int width, int height, Callback cb);
     void startNext();
     void setState(State s);
     void fail(const QString& error);
@@ -110,6 +120,10 @@ private:
     QList<Pending> m_Queue;      ///< what comes after it
     QString m_Error;
     QString m_Display;
+    /// The size the display was last turned on at by this process, so a
+    /// second viewer asking for the same one joins instead of switching it.
+    int m_ActiveWidth = 0;
+    int m_ActiveHeight = 0;
     QDateTime m_StartedAt;
     QDateTime m_FinishedAt;
 

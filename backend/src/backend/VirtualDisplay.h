@@ -85,7 +85,16 @@ struct DisplayInfo;
  *
  * 1920×1080 at 120 Hz, SDR, on every platform: 120 Hz because the capture
  * cadence is what bounds the latency, 1080p because every encoder on every
- * bench carries it at that rate. A mode per client is a later strategy.
+ * bench carries it at that rate.
+ *
+ * A client that asks for "Match my screen" gets its own size instead, made on
+ * demand: the size travels with the Activate request, the driver's mode list
+ * is rewritten with it first (the file is ours — see settingsXml()), and the
+ * driver reads that list when the device starts, which is exactly what
+ * turning the display on does. A phone held in the hand therefore streams a
+ * 2532×1170 desktop that no monitor on the market has. An unknown or
+ * out-of-bounds size, or a machine whose settings file belongs to someone
+ * else's VDD, quietly keeps 1080p — the mode stage is never fatal.
  *
  * Everything in this header that has no OS dependency (the request parser,
  * the settings XML, the names) is pure and covered by
@@ -122,6 +131,18 @@ inline QString applyArgument()
 constexpr int kWidth = 1920;
 constexpr int kHeight = 1080;
 constexpr int kRefreshHz = 120;
+
+/// What a requested mode may be. The floor is a size a desktop is still
+/// usable at, the ceiling is what the driver and every encoder on the bench
+/// carry; odd sizes are rounded down because a display mode is made of whole
+/// macroblocks on the encoder that follows it.
+constexpr int kModeMin = 640;
+constexpr int kModeMax = 4096;
+
+/// The mode a request asks for, pinned into bounds and made even. Returns
+/// false — and leaves 0×0 — when there is nothing usable to ask for, which is
+/// the normal case: the default mode then applies.
+bool normaliseMode(int& width, int& height);
 
 // ── The bundled driver (Windows x64) ───────────────────────────────────────
 //
@@ -194,6 +215,11 @@ struct Request
     /// Deactivate: the display to make primary again, as Activate reported
     /// it (Result::previousPrimary). Empty: leave the choice to the OS.
     QString restorePrimary;
+    /// Activate: the size the client asked the display to have ("Match my
+    /// screen"). 0×0 — the usual case — is the default mode. Always within
+    /// [kModeMin, kModeMax] and even once parsed.
+    int width = 0;
+    int height = 0;
 };
 
 /// Parse and validate a request. The file is read by an elevated process, so
@@ -221,10 +247,19 @@ struct Result
 std::optional<Result> parseResult(const QByteArray& json);
 QByteArray toJson(const Result& res);
 
-/// The driver's vdd_settings.xml, written only when none exists: a single
-/// monitor, our mode first (the driver picks the first as default), the
-/// common sizes after it, SDR.
-QString settingsXml();
+/// The driver's vdd_settings.xml: a single monitor, our mode first (the
+/// driver picks the first as default), the common sizes after it, SDR. A
+/// @p width × @p height of 0 is the default 1920×1080; anything else is the
+/// client's own size, added ahead of the list.
+///
+/// Written when none exists, and rewritten — with the node restarted so the
+/// driver re-reads it — when the size changes. Never over a file this project
+/// did not write: an owner's own VDD configured that one (see isOurSettings).
+QString settingsXml(int width = 0, int height = 0);
+
+/// Does this vdd_settings.xml carry our marker, i.e. did we write it? A file
+/// that does not is left exactly as it is, mode on demand or not.
+bool isOurSettings(const QString& xml);
 
 // ── Paths ───────────────────────────────────────────────────────────────────
 
