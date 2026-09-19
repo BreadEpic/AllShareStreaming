@@ -95,11 +95,12 @@ public:
     // physical POSITION is sent and the host's own layout decides the character.
     //
     // File-only setting (no UI, no write route): stored as JSON bool
-    // "keyboard_layout_fidelity", DEFAULT true, read at each stream start. The
-    // escape hatch matters for one case: on a Sunshine host, a divergent key
-    // that is not a letter is typed as text and so carries no key state, which a
-    // game reading the raw keyboard cannot see. Turn it off and every keystroke
-    // is a key press again, at the cost of the wrong characters.
+    // "keyboard_layout_fidelity", DEFAULT false, read at each stream start. A
+    // fresh installation keeps the historical behaviour because of one case: on
+    // a Sunshine host, a divergent key that is not a letter is typed as text and
+    // so carries no key state, which a game reading the raw keyboard cannot see.
+    // Turn it on and the characters are the viewer's own, at the cost of that
+    // key state on the keys the two layouts disagree about.
 
     bool keyboardLayoutFidelity() const;
 

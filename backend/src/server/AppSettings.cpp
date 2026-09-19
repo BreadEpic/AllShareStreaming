@@ -332,7 +332,7 @@ void AppSettings::seedDocumentedDefaults()
         changed = true;
     }
     if (!obj.contains("keyboard_layout_fidelity")) {
-        obj["keyboard_layout_fidelity"] = true;
+        obj["keyboard_layout_fidelity"] = false;
         changed = true;
     }
     if (!obj.contains("stream_worker_enabled")) {
@@ -568,7 +568,7 @@ bool AppSettings::latencyFlagEnabled() const
 bool AppSettings::keyboardLayoutFidelity() const
 {
     QJsonObject obj = readAll();
-    return obj.value("keyboard_layout_fidelity").toBool(true);
+    return obj.value("keyboard_layout_fidelity").toBool(false);
 }
 
 bool AppSettings::keyboardDebug() const

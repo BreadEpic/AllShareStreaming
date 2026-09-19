@@ -74,7 +74,7 @@ if (-not (Test-Path $SettingsPath)) {
 }
 $originalSettings = [System.IO.File]::ReadAllText($SettingsPath)
 $settings = $originalSettings | ConvertFrom-Json
-$fidelity = [bool](Get-Prop $settings 'keyboard_layout_fidelity' $true)
+$fidelity = [bool](Get-Prop $settings 'keyboard_layout_fidelity' $false)
 $debugOn = [bool](Get-Prop $settings 'keyboard_debug' $false)
 $restore = $false
 
