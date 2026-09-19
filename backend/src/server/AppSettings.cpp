@@ -29,6 +29,7 @@
 #include <QJsonObject>
 #include <QRandomGenerator>
 #include <QRegularExpression>
+#include <QSaveFile>
 #include <QStandardPaths>
 
 #ifdef Q_OS_WIN
@@ -57,13 +58,24 @@ QJsonObject AppSettings::readAll() const
 
 void AppSettings::writeAll(const QJsonObject& obj)
 {
-    QFile file(m_FilePath);
-    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        file.write(QJsonDocument(obj).toJson(QJsonDocument::Indented));
-        file.close();
-    } else {
+    // QSaveFile, not a plain truncate-and-rewrite: this file is read by other
+    // processes while we run — the Windows installer reads it to decide which
+    // wizard pages are already answered — and a truncating write leaves it empty
+    // for as long as the write takes. A reader landing in that window sees a
+    // settings file with nothing in it and concludes the settings are not there.
+    // The same window is what a crash or a power cut turns into a permanent loss
+    // of every setting. QSaveFile writes a sibling temporary file and renames it
+    // over this one, so the path never holds anything but a complete document.
+    QSaveFile file(m_FilePath);
+    if (!file.open(QIODevice::WriteOnly)) {
         Logger::warning("[AppSettings] Failed to write " + m_FilePath);
+        return;
     }
+    file.write(QJsonDocument(obj).toJson(QJsonDocument::Indented));
+    // commit() is where the rename happens; without it the destructor cancels
+    // the write and the file is silently left untouched.
+    if (!file.commit())
+        Logger::warning("[AppSettings] Failed to write " + m_FilePath + ": " + file.errorString());
 }
 
 // ── HTTP port ──────────────────────────────────────────────────────────────────
