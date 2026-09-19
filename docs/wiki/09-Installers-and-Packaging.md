@@ -110,7 +110,7 @@ The same file is compiled into the repository index below, so the software-centr
 
 ### Signed APT & DNF repositories
 
-`backend/packaging/linux/make-repo.sh <deb> <rpm> <version> <site-dir> <gpg-key-id>` turns the two packages into a static, signed repository tree served at **`https://linckosz.github.io/moonlight-web/`**. That is what upgrades a one-off download into a managed install: `apt install moonlightweb` / `dnf install moonlightweb`, updates through the system's own updater, and an entry in the software centre.
+`backend/packaging/linux/make-repo.sh <deb> <rpm> <version> <site-dir> <gpg-key-id>` turns the two packages into a static, signed repository tree served at **`https://packages.moonlightweb.top/`** — not a Pages site: `pages.yml` already owns the one Pages site this repository has (the bootstrap), so `release.yml` only attaches the tree to the release and `deploy/powerdns/deploy-packages.sh` ships it to that host by hand. **Until that script has run for a tag, there is no repository at all**, and `install.sh` falls back to the release `.deb`/`.rpm` (issue #21). That is what upgrades a one-off download into a managed install: `apt install moonlightweb` / `dnf install moonlightweb`, updates through the system's own updater, and an entry in the software centre.
 
 | Piece | How |
 |---|---|

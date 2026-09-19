@@ -31,10 +31,11 @@
 #    MW_VERSION=0.2.4   pin a version (macOS and the AppImage fallback only;
 #                       apt/dnf always resolve the newest in the repository)
 #    MW_REPO=owner/name install from a fork
-#    MW_PAGES=<url>     take the apt/dnf repository from somewhere other than
-#                       that fork's Pages site — how a repository built from an
-#                       unpublished CI run is tried out, see
-#                       backend/packaging/linux/try-install.sh
+#    MW_PACKAGES=<url>  take the apt/dnf repository from somewhere other than
+#                       packages.moonlightweb.top — how a repository built from
+#                       an unpublished CI run is tried out, see
+#                       backend/packaging/linux/try-install.sh. MW_PAGES is
+#                       still read, under its old name.
 #    MW_INTERNET=1|0    answer the Internet Access question up front (default:
 #                       0 — LAN only — whenever there is no terminal to ask on)
 #
@@ -43,12 +44,24 @@
 set -eu
 
 REPO="${MW_REPO:-linckosz/moonlight-web}"
-# Where the `linux-repo` job publishes the signed apt/dnf repositories: the
-# Pages site of $REPO, so MW_REPO redirects the packages as well as the release
-# downloads rather than sending a fork's user back to this repository. Pages
-# host names are lower-case; the path keeps the repository's own spelling.
+# Where the signed apt/dnf repositories built by the `linux-repo` job are
+# served from. Not a Pages site any more: Pages is one site per repository and
+# the bootstrap already owns it — the package tree raced it after every tag
+# and won (2026-09-14) — so release.yml only attaches the tree to the release
+# and deploy/powerdns/deploy-packages.sh ships it to this host by hand.
+#
+# A fork has no such host, so MW_REPO keeps the old Pages convention unless it
+# says otherwise: Pages host names are lower-case, the path keeps the
+# repository's own spelling.
 _owner="$(printf '%s' "${REPO%%/*}" | tr '[:upper:]' '[:lower:]')"
-PAGES="${MW_PAGES:-https://$_owner.github.io/${REPO#*/}}"
+PACKAGES="${MW_PACKAGES:-${MW_PAGES:-}}"
+if [ -z "$PACKAGES" ]; then
+    if [ "$REPO" = "linckosz/moonlight-web" ]; then
+        PACKAGES="https://packages.moonlightweb.top"
+    else
+        PACKAGES="https://$_owner.github.io/${REPO#*/}"
+    fi
+fi
 
 bold=""; dim=""; red=""; reset=""
 if [ -t 1 ]; then
@@ -435,24 +448,135 @@ install_macos() {
     say ""
 }
 
+# ── Linux: the signed repository, and what to do without one ───────────────
+# `curl … | sudo tee … || die` reports *tee's* exit status, not curl's: a 404
+# body is happily written out, tee exits 0, and die never fires — leaving an
+# empty keyring and an empty source under /etc, and surfacing twenty lines
+# later as "Package moonlightweb not found" (issue #21). So every repository
+# file is fetched to a temp file and checked before anything under /etc is
+# touched — and a repository that is not there is not fatal at all: the
+# release carries the very same .deb and .rpm.
+fetch_repo_file() { # url dest
+    curl -fsSL -o "$2" "$1" || return 1
+    # A 200 with an empty body is no better here than a 404.
+    [ -s "$2" ] || return 1
+}
+
+# What an earlier run of the broken version left behind, empty. apt-get update
+# chokes on a source whose Signed-By keyring is unreadable, and nothing else
+# would ever clear them — only ever removes a file that holds nothing.
+clean_empty() {
+    for _f in "$@"; do
+        if [ -e "$_f" ] && [ ! -s "$_f" ]; then $SUDO rm -f "$_f"; fi
+    done
+    return 0
+}
+
+repo_missing_note() {
+    say ""
+    say "  ${dim}No package repository at $PACKAGES — installing the package from${reset}"
+    say "  ${dim}the release instead. Same package, same service, but the system${reset}"
+    say "  ${dim}updater will not see it: re-run this script to upgrade.${reset}"
+    say ""
+}
+
+# The same .deb/.rpm the repository would have served, taken straight from the
+# GitHub release. The package manager still installs it — dependencies and
+# postinstall included — only the automatic updates are lost.
+install_release_package() { # deb|rpm [manager]
+    _ext=$1 _mgr=${2:-}
+    VERSION="${MW_VERSION:-}"
+    if [ -z "$VERSION" ]; then
+        say "${dim}Looking up the latest release…${reset}"
+        VERSION="$(latest_version)"
+    fi
+    PKG="moonlightweb-${VERSION}-linux-x64.${_ext}"
+    URL="https://github.com/$REPO/releases/download/v${VERSION}/${PKG}"
+
+    _tmp="$(mktemp -d "${TMPDIR:-/tmp}/moonlightweb.XXXXXX")"
+    say "${bold}Downloading MoonlightWeb ${VERSION}${reset}"
+    curl -fL --progress-bar -o "$_tmp/$PKG" "$URL" \
+        || { rm -rf "$_tmp"; die "download failed: $URL"; }
+
+    # A 404 page or a truncated transfer would otherwise reach dpkg/rpm and
+    # fail there with a much less obvious message. Every .deb is an ar
+    # archive; every .rpm starts with its own four-byte magic.
+    _magic_ok=no
+    case "$_ext" in
+        deb) [ "$(head -c 7 "$_tmp/$PKG" 2>/dev/null)" = '!<arch>' ] && _magic_ok=yes ;;
+        rpm) [ "$(head -c 4 "$_tmp/$PKG" 2>/dev/null | od -An -tx1 | tr -d ' \n')" \
+               = "edabeedb" ] && _magic_ok=yes ;;
+    esac
+    [ "$_magic_ok" = yes ] \
+        || { rm -rf "$_tmp"; die "the downloaded file is not a valid .$_ext — check $URL"; }
+
+    say "${bold}Installing${reset}"
+    need_root
+    case "$_ext" in
+        deb)
+            # A local .deb still resolves its dependencies through apt — but
+            # only against an index this machine already has; refresh it and
+            # retry once rather than fail on a package list from last month.
+            if ! DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y "$_tmp/$PKG"; then
+                $SUDO apt-get update || true
+                DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y "$_tmp/$PKG" \
+                    || { rm -rf "$_tmp"; die "installing $PKG failed"; }
+            fi ;;
+        rpm)
+            # The release packages are signed, but the public key only ever
+            # reaches the system with the repository — which is what is
+            # missing here, so the one-off check has to be waived.
+            case "$_mgr" in
+                zypper) $SUDO zypper --non-interactive install --allow-unsigned-rpm "$_tmp/$PKG" \
+                            || { rm -rf "$_tmp"; die "installing $PKG failed"; } ;;
+                *) $SUDO "${_mgr:-dnf}" install -y --nogpgcheck "$_tmp/$PKG" \
+                            || { rm -rf "$_tmp"; die "installing $PKG failed"; } ;;
+            esac ;;
+    esac
+    rm -rf "$_tmp"
+    MW_CLI=moonlightweb
+}
+
 # ── Linux: APT (Debian, Ubuntu, Mint, Pop!_OS) ─────────────────────────────
 install_apt() {
     say "${bold}Adding the MoonlightWeb APT repository${reset}"
     need_root
+    clean_empty /etc/apt/keyrings/moonlightweb.gpg \
+                /etc/apt/sources.list.d/moonlightweb.sources
+
+    _tmp="$(mktemp -d "${TMPDIR:-/tmp}/moonlightweb.XXXXXX")"
+    if ! fetch_repo_file "$PACKAGES/moonlightweb.gpg" "$_tmp/moonlightweb.gpg" \
+    || ! fetch_repo_file "$PACKAGES/moonlightweb.sources" "$_tmp/moonlightweb.sources" \
+    || ! grep -q '^Types:' "$_tmp/moonlightweb.sources"; then
+        rm -rf "$_tmp"
+        repo_missing_note
+        install_release_package deb
+        return 0
+    fi
+
     # A dearmored keyring, so gnupg does not have to be installed. Scoped to
     # this one source via Signed-By — never added to the global trusted set.
     $SUDO install -d -m 0755 /etc/apt/keyrings
-    curl -fsSL "$PAGES/moonlightweb.gpg" \
-        | $SUDO tee /etc/apt/keyrings/moonlightweb.gpg > /dev/null \
-        || die "could not fetch the repository signing key"
-    $SUDO chmod 0644 /etc/apt/keyrings/moonlightweb.gpg
-    curl -fsSL "$PAGES/moonlightweb.sources" \
-        | $SUDO tee /etc/apt/sources.list.d/moonlightweb.sources > /dev/null \
-        || die "could not fetch the repository definition"
+    $SUDO install -m 0644 "$_tmp/moonlightweb.gpg" /etc/apt/keyrings/moonlightweb.gpg
+    $SUDO install -m 0644 "$_tmp/moonlightweb.sources" \
+        /etc/apt/sources.list.d/moonlightweb.sources
+    rm -rf "$_tmp"
 
     say "${bold}Installing${reset}"
-    $SUDO apt-get update
-    DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y moonlightweb
+    # Not gated on apt-get update's exit status: it is non-zero when *any*
+    # source fails, and a user with one broken third-party repository would
+    # lose ours over it. What matters is whether the package installs.
+    $SUDO apt-get update || true
+    if ! DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y moonlightweb; then
+        # The repository answered, but it carries nothing this machine can
+        # install. Take the source back out rather than leave every later
+        # apt-get run complaining about it.
+        $SUDO rm -f /etc/apt/sources.list.d/moonlightweb.sources \
+                    /etc/apt/keyrings/moonlightweb.gpg
+        repo_missing_note
+        install_release_package deb
+        return 0
+    fi
     MW_CLI=moonlightweb
 }
 
@@ -461,16 +585,35 @@ install_rpm() {
     _mgr=$1 _dir=$2
     say "${bold}Adding the MoonlightWeb repository${reset}"
     need_root
-    curl -fsSL "$PAGES/moonlightweb.repo" | $SUDO tee "$_dir/moonlightweb.repo" > /dev/null \
-        || die "could not fetch the repository definition"
+    clean_empty "$_dir/moonlightweb.repo"
+
+    _tmp="$(mktemp -d "${TMPDIR:-/tmp}/moonlightweb.XXXXXX")"
+    if ! fetch_repo_file "$PACKAGES/moonlightweb.repo" "$_tmp/moonlightweb.repo" \
+    || ! grep -q '^baseurl=' "$_tmp/moonlightweb.repo"; then
+        rm -rf "$_tmp"
+        repo_missing_note
+        install_release_package rpm "$_mgr"
+        return 0
+    fi
+    $SUDO install -m 0644 "$_tmp/moonlightweb.repo" "$_dir/moonlightweb.repo"
+    rm -rf "$_tmp"
 
     say "${bold}Installing${reset}"
+    _failed=0
     case "$_mgr" in
         # -y also accepts the one-time import of the repository signing key.
-        dnf|yum) $SUDO "$_mgr" install -y moonlightweb ;;
-        zypper)  $SUDO zypper --non-interactive --gpg-auto-import-keys refresh
-                 $SUDO zypper --non-interactive install moonlightweb ;;
+        dnf|yum) $SUDO "$_mgr" install -y moonlightweb || _failed=1 ;;
+        zypper)  $SUDO zypper --non-interactive --gpg-auto-import-keys refresh || _failed=1
+                 if [ "$_failed" = 0 ]; then
+                     $SUDO zypper --non-interactive install moonlightweb || _failed=1
+                 fi ;;
     esac
+    if [ "$_failed" = 1 ]; then
+        $SUDO rm -f "$_dir/moonlightweb.repo"
+        repo_missing_note
+        install_release_package rpm "$_mgr"
+        return 0
+    fi
     MW_CLI=moonlightweb
 }
 

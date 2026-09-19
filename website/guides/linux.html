@@ -94,12 +94,12 @@
   <p data-i18n="repo.manual">Rather do it by hand? Those are exactly these steps:</p>
   <pre><code># Debian / Ubuntu / Mint / Pop!_OS
 sudo install -d /etc/apt/keyrings
-curl -fsSL https://linckosz.github.io/moonlight-web/moonlightweb.gpg | sudo tee /etc/apt/keyrings/moonlightweb.gpg > /dev/null
-curl -fsSL https://linckosz.github.io/moonlight-web/moonlightweb.sources | sudo tee /etc/apt/sources.list.d/moonlightweb.sources > /dev/null
+sudo curl -fsSL -o /etc/apt/keyrings/moonlightweb.gpg https://packages.moonlightweb.top/moonlightweb.gpg
+sudo curl -fsSL -o /etc/apt/sources.list.d/moonlightweb.sources https://packages.moonlightweb.top/moonlightweb.sources
 sudo apt update &amp;&amp; sudo apt install moonlightweb
 
 # Fedora / RHEL / Rocky / Alma / Nobara / openSUSE
-sudo curl -fsSL -o /etc/yum.repos.d/moonlightweb.repo https://linckosz.github.io/moonlight-web/moonlightweb.repo
+sudo curl -fsSL -o /etc/yum.repos.d/moonlightweb.repo https://packages.moonlightweb.top/moonlightweb.repo
 sudo dnf install moonlightweb
 
 # Arch / Manjaro / EndeavourOS

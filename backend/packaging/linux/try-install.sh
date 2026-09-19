@@ -13,21 +13,22 @@
 #     curl -fsSL https://moonlightweb.top/install.sh | bash
 #
 # and on Linux that reaches for two things this repository only produces at
-# release time: the signed apt/dnf repository on GitHub Pages (the `linux-repo`
-# job is gated on refs/tags) and, for the AppImage fallback, a published
-# release. So there is nothing to install from until the moment it is too late
-# to find out that the installer is broken.
+# release time: the signed apt/dnf repository on packages.moonlightweb.top
+# (the `linux-repo` job is gated on refs/tags, and deploy-packages.sh ships
+# its output by hand) and, for the fallback, a published release. So there is
+# nothing to install from until the moment it is too late to find out that the
+# installer is broken.
 #
 # This rebuilds that missing half locally, from the artifacts of any CI run:
 #
 #   1. downloads moonlightweb-linux-x64-* from the run (gh)
 #   2. runs make-repo.sh over the .deb and .rpm — the same script the release
 #      workflow runs — signed with a throwaway key generated on the spot, and
-#      pointed at http://repo instead of the Pages site (MW_BASEURL)
+#      pointed at http://repo instead of packages.moonlightweb.top (MW_BASEURL)
 #   3. serves that tree, plus website/install.sh, from an nginx container
 #   4. drops you into a fresh distro container that pipes the served install.sh
-#      into bash exactly as a user would, with MW_PAGES pointing at the local
-#      repository
+#      into bash exactly as a user would, with MW_PACKAGES pointing at the
+#      local repository
 #
 # Everything but the two URLs is the real thing: the real packages, the real
 # postinstall, the real repository metadata, the real signature check.
@@ -189,7 +190,7 @@ elif command -v dnf > /dev/null; then
     dnf install -y -q curl > /dev/null
 fi
 printf '\n\033[1m$ curl -fsSL https://moonlightweb.top/install.sh | bash\033[0m\n'
-curl -fsSL http://repo/install.sh | MW_PAGES=http://repo bash || printf '\n\033[31minstall.sh exited %s\033[0m\n' "$?"
+curl -fsSL http://repo/install.sh | MW_PACKAGES=http://repo bash || printf '\n\033[31minstall.sh exited %s\033[0m\n' "$?"
 printf '\n\033[2mShell in the test container. `exit` tears everything down.\033[0m\n'
 exec "$(command -v bash || command -v sh)"
 TRY

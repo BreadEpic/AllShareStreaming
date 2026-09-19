@@ -43,7 +43,7 @@ ORIGIN=moonlightweb
 # The URL the generated .sources/.repo point back at. Overridable so the very
 # same repository can be built against a local http server and installed from
 # there before anything is published — see try-install.sh in this directory.
-BASEURL=${MW_BASEURL:-https://linckosz.github.io/moonlight-web}
+BASEURL=${MW_BASEURL:-https://packages.moonlightweb.top}
 
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
@@ -198,8 +198,8 @@ cat > "$SITE/index.html" <<EOF
 
 <h2>Debian, Ubuntu, Mint, Pop!_OS</h2>
 <pre><code>sudo install -d /etc/apt/keyrings
-curl -fsSL $BASEURL/moonlightweb.gpg | sudo tee /etc/apt/keyrings/moonlightweb.gpg > /dev/null
-curl -fsSL $BASEURL/moonlightweb.sources | sudo tee /etc/apt/sources.list.d/moonlightweb.sources > /dev/null
+sudo curl -fsSL -o /etc/apt/keyrings/moonlightweb.gpg $BASEURL/moonlightweb.gpg
+sudo curl -fsSL -o /etc/apt/sources.list.d/moonlightweb.sources $BASEURL/moonlightweb.sources
 sudo apt update &amp;&amp; sudo apt install moonlightweb</code></pre>
 
 <h2>Fedora, RHEL, openSUSE, Nobara</h2>
