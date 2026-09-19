@@ -62,6 +62,7 @@ export class SetupView {
         this._nativePossible = false;
         this._nativeAvailable = false;
         this._nativeNeedsPermission = false;
+        this._nativeNeedsInput = false;
         this._sunshineInstalled = false;
         this._sunshinePaired = false;
         this._autostartInstalled = false;
@@ -142,6 +143,7 @@ export class SetupView {
             this._nativePossible = !!(status.native && status.native.possible);
             this._nativeAvailable = !!(status.native && status.native.available);
             this._nativeNeedsPermission = !!(status.native && status.native.needs_permission);
+            this._nativeNeedsInput = !!(status.native && status.native.needs_input_permission);
             this._nativeNeedsDisplay = !!(status.native && status.native.needs_display);
             this._sunshineInstalled = !!(status.sunshine && status.sunshine.installed);
             this._sunshinePaired = !!(status.sunshine && status.sunshine.paired);
@@ -380,17 +382,36 @@ export class SetupView {
     // every user that almost none of them has any reason to make, and the one
     // who does is not looking for it in a first-run wizard.
     _renderNativeBlock() {
-        if (this._nativeAvailable) return this._okNote(t('setup.hostNative'));
+        // Accessibility is orthogonal to everything below: the engine can be
+        // perfectly available and still be unable to move the pointer, so this
+        // line is appended to whatever the capture side has to say rather than
+        // competing with it.
+        const input = this._nativeNeedsInput
+            ? `<p class="setup-note setup-warn">${t('setup.hostInputPermission')}
+                   ${this._permButton('accessibility', 'setup.openAccessibility')}</p>`
+            : '';
+        if (this._nativeAvailable) return this._okNote(t('setup.hostNative')) + input;
         if (this._nativeNeedsPermission)
-            return `<p class="setup-note setup-warn">${t('setup.hostPermission')}</p>`;
+            return (
+                `<p class="setup-note setup-warn">${t('setup.hostPermission')}
+                     ${this._permButton('screen', 'setup.openScreenRecording')}</p>` + input
+            );
         // Nothing plugged in. The hosts page offers the virtual display on the
         // card itself; here it is enough to say that this is the missing step
         // — not to send the machine off to install a second streaming server.
         if (this._nativeNeedsDisplay)
-            return `<p class="setup-note setup-warn">${t('setup.hostNeedsDisplay')}</p>`;
+            return `<p class="setup-note setup-warn">${t('setup.hostNeedsDisplay')}</p>` + input;
         // `possible` without either flag is the Windows service case, which this
         // wizard never runs in. Say nothing rather than guess.
-        return '';
+        return input;
+    }
+
+    // One button, one macOS privacy pane. The permission itself was already
+    // asked for by the probe at startup; this is for the person who dismissed
+    // that prompt — macOS never shows it twice.
+    _permButton(pane, key) {
+        return `<button type="button" class="btn btn-secondary setup-perm-btn"
+                        data-pane="${pane}">${t(key)}</button>`;
     }
 
     _renderSunshineBlock() {
@@ -493,13 +514,21 @@ export class SetupView {
         let permsLine = '';
         if (this._os === 'macOS') {
             if (this._nativePossible && this._nativeNeedsPermission)
-                permsLine = `<p class="setup-note setup-warn">${t('setup.donePermissionsNative')}</p>`;
+                permsLine = `<p class="setup-note setup-warn">${t('setup.donePermissionsNative')}
+                        ${this._permButton('screen', 'setup.openScreenRecording')}</p>`;
             else if (
                 !this._nativePossible &&
                 (this._activeSteps.includes('install') || this._activeSteps.includes('pairing'))
             )
                 permsLine = `<p class="setup-note setup-warn">${t('setup.donePermissions')}</p>`;
         }
+        // The input grant is its own line and its own pane, on the done page
+        // too: the picture and the pointer are granted in two different places,
+        // and someone who has ticked one is exactly the person about to believe
+        // they are finished.
+        if (this._os === 'macOS' && this._nativePossible && this._nativeNeedsInput)
+            permsLine += `<p class="setup-note setup-warn">${t('setup.donePermissionsInput')}
+                    ${this._permButton('accessibility', 'setup.openAccessibility')}</p>`;
         // The display setting is silent when it worked (the checkbox said what it
         // would do) but must speak up when it didn't: the user would otherwise
         // hit the 503 capture dialog later believing it was handled.
@@ -606,9 +635,11 @@ export class SetupView {
 
             const start = this.container.querySelector('#btn-setup-start');
             if (start) start.addEventListener('click', () => this._apply());
+            this._bindPermButtons();
         } else if (this._step === 'done') {
             const finish = this.container.querySelector('#btn-setup-finish');
             if (finish) finish.addEventListener('click', () => this._finish());
+            this._bindPermButtons();
             // Written straight to the OS through the same route the admin page
             // uses; the box follows the server's answer, not the click, so a
             // login item the OS refused to write never shows as written.
@@ -630,6 +661,24 @@ export class SetupView {
         } else if (this._step === 'error') {
             const retry = this.container.querySelector('#btn-setup-retry');
             if (retry) retry.addEventListener('click', () => this.start());
+        }
+    }
+
+    // Both privacy panes are opened through the same host-side route family,
+    // which is localhost-only: this wizard runs on the machine being set up, so
+    // that is exactly where the click comes from. A failure is reported and
+    // nothing else happens — the note above still says which box to tick.
+    _bindPermButtons() {
+        for (const btn of this.container.querySelectorAll('.setup-perm-btn')) {
+            btn.addEventListener('click', async () => {
+                const accessibility = btn.dataset.pane === 'accessibility';
+                try {
+                    if (accessibility) await BackendClient.openAccessibilitySettings();
+                    else await BackendClient.openScreenRecordingSettings();
+                } catch (err) {
+                    console.warn('[Setup] Failed to open the privacy pane:', err);
+                }
+            });
         }
     }
 

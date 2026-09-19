@@ -170,6 +170,28 @@ void run_native_capabilities_json_tests()
         CHECK(!out.available);
     }
 
+    SECTION("NativeCapabilitiesJson — a missing input permission travels, an absent key does not "
+            "invent one");
+    {
+        // macOS Accessibility: the grant whose refusal is silent. A machine
+        // that streams a picture nobody can drive is still `available`, so the
+        // flag is the ONLY thing carrying that state across the pipe.
+        Capabilities in = sample();
+        in.inputPermission = false;
+        Capabilities out;
+        CHECK(NativeCapabilitiesJson::fromJson(NativeCapabilitiesJson::toJson(in), out));
+        CHECK(out.available);
+        CHECK(!out.inputPermission);
+
+        // An older probe binary answering a newer server says nothing about it.
+        // "Nothing to report" is the right reading: every platform but macOS
+        // asks nobody, and a warning invented here would show on every PC.
+        QJsonObject older = NativeCapabilitiesJson::toJson(in);
+        older.remove("inputPermission");
+        CHECK(NativeCapabilitiesJson::fromJson(older, out));
+        CHECK(out.inputPermission);
+    }
+
     SECTION("NativeCapabilitiesJson — one compact line, as the pipe carries it");
     {
         const QByteArray line =

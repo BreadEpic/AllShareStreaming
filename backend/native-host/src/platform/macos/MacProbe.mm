@@ -24,6 +24,7 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 
+#include <CoreGraphics/CGRemoteOperation.h>
 #include <CoreGraphics/CoreGraphics.h>
 #include <IOKit/ps/IOPSKeys.h>
 #include <IOKit/ps/IOPowerSources.h>
@@ -47,12 +48,25 @@
 // Windows. MoonlightWeb runs as a LaunchAgent (com.moonlightweb.agent), which
 // IS the console session; a test binary started from SSH is not, and says so.
 //
-// ── Permission ──────────────────────────────────────────────────────────────
+// ── Permissions, both of them ───────────────────────────────────────────────
 //
-// Screen Recording is the one thing the OS will not let the program grant
-// itself. The probe asks the system to show its prompt once per process and
-// reports CapturePermission until the switch is on — which takes a restart of
-// the program, as macOS applies the grant only to processes started after it.
+// Two grants the OS will not let the program give itself, and the probe asks
+// for both here so they reach the user at the same moment — the install's
+// first launch — instead of one at startup and the other halfway into a
+// stream:
+//
+//   Screen Recording  the picture. Reported as CapturePermission until the
+//                     switch is on, which takes a restart of the program:
+//                     macOS applies the grant only to processes started after
+//                     it.
+//   Accessibility     the keyboard and the mouse. NOT an Unavailability — a
+//                     Mac that can be watched and not driven is still a host,
+//                     and `inputPermission` is how it says what it is missing.
+//                     Refusal is silent at the API (every CGEventPost is
+//                     accepted and dropped), so the preflight is the only
+//                     thing that knows.
+//
+// The OS prompt for either is requested once per process.
 
 namespace mw::native::platform {
 
@@ -310,6 +324,29 @@ Unavailability enumerate(Capabilities& caps)
 
     caps.capture = CaptureApi::ScreenCaptureKit;
     caps.hasBattery = hasInternalBattery();
+
+    // Accessibility, asked HERE and not where it is used. CgInput needs it to
+    // post a click, but a permission asked at the first click is a permission
+    // asked halfway into a stream — from a machine the user has very possibly
+    // walked away from, and against a picture that shows perfectly while
+    // nothing responds. Asked from the probe it lands at the install's first
+    // launch, next to Screen Recording, while they are still sitting there.
+    //
+    // Not a reason to declare the engine unavailable: capture is one grant,
+    // input another, and a Mac that can only be watched is still a Mac the
+    // list must show — with `inputPermission` false, which is what the hosts
+    // page and the wizard say out loud.
+    caps.inputPermission = CGPreflightPostEventAccess();
+    if (!caps.inputPermission) {
+        static bool askedInput = false;
+        if (!askedInput) {
+            askedInput = true;
+            CGRequestPostEventAccess();
+        }
+        log::warning("[native] Accessibility is not granted to this program — the picture will "
+                     "stream but keyboard and mouse will not reach the desktop until it is "
+                     "allowed in System Settings › Privacy & Security › Accessibility");
+    }
 
     // The permission, checked once here so the host list can say why rather
     // than a session failing at the click. The OS prompt is requested once

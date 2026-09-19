@@ -331,6 +331,7 @@ void registerSystemRoutes(HttpServer& server, AppSettings& appSettings, AuthMana
                 nat["enabled"] = false;
                 nat["reason"] = QStringLiteral("Disabled");
                 nat["needs_permission"] = false;
+                nat["needs_input_permission"] = false;
                 nat["possible"] = false;
             } else {
                 const mw::native::Capabilities caps = NativeProbeService::instance().snapshot();
@@ -339,6 +340,12 @@ void registerSystemRoutes(HttpServer& server, AppSettings& appSettings, AuthMana
                 nat["reason"] = QString::fromUtf8(mw::native::toString(caps.reason));
                 nat["needs_permission"] =
                     caps.reason == mw::native::Unavailability::CapturePermission;
+                // macOS Accessibility, asked by the probe at startup (§20.7).
+                // Reported beside the capture grant and never folded into it:
+                // the two are granted in two different panes, and a machine
+                // that has one and not the other is the common case on an
+                // update from an ad-hoc-signed build. False everywhere else.
+                nat["needs_input_permission"] = !caps.inputPermission;
                 // A machine with nothing attached is one virtual display away
                 // from hosting itself: possible, and the wizard says which
                 // step is missing rather than sending it to install Sunshine.
@@ -637,6 +644,10 @@ void registerSystemRoutes(HttpServer& server, AppSettings& appSettings, AuthMana
         // Where the engine lives, so the page can say "log in at the PC" rather
         // than "unsupported" when that is the actual state.
         obj["remote_session"] = NativeProbeService::instance().remote();
+        // Reported whether or not the engine is available: a Mac missing BOTH
+        // grants must not answer "Screen Recording" alone and let the second
+        // one be discovered at the first click of the first stream.
+        obj["input_permission"] = caps.inputPermission;
         if (NativeProbeService::instance().remote()) {
             const ConsoleSession::Info console = NativeProbeService::instance().console();
             obj["user_present"] = console.userPresent;
@@ -708,11 +719,12 @@ void registerSystemRoutes(HttpServer& server, AppSettings& appSettings, AuthMana
     });
 
     // POST /api/system/open-screen-recording — open macOS' Screen Recording
-    // privacy pane so the user can grant Sunshine capture permission. Sunshine
-    // can't stream without it (its log: "No screen capture permission!"), and
-    // macOS forbids granting it programmatically (TCC). Localhost-only + macOS-
-    // only: it acts on the host, and only someone physically at that Mac can use
-    // the pane it opens.
+    // privacy pane. For whichever program is going to capture this screen: the
+    // app itself when it hosts this Mac, or a local Sunshine when it does not
+    // (Sunshine's log says "No screen capture permission!"). macOS forbids
+    // granting it programmatically (TCC). Localhost-only + macOS-only: it acts
+    // on the host, and only someone physically at that Mac can use the pane it
+    // opens.
     server.router()->post("/api/system/open-screen-recording", [&](const HttpRequest& req) {
         if (!req.isLocal) return HttpResponse::error(403, "Only available from localhost");
 #if defined(Q_OS_MACOS)
@@ -720,6 +732,28 @@ void registerSystemRoutes(HttpServer& server, AppSettings& appSettings, AuthMana
             QStringLiteral("/usr/bin/open"),
             {QStringLiteral(
                 "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")});
+        QJsonObject obj;
+        obj["status"] = "opened";
+        return HttpResponse::json(obj);
+#else
+        return HttpResponse::error(400, "Only available on macOS");
+#endif
+    });
+
+    // POST /api/system/open-accessibility — the other half of the pair above:
+    // macOS' Accessibility pane, the grant that lets the host post keyboard and
+    // mouse events. Asked for by the probe at startup so the question arrives
+    // with the install, but a prompt that was dismissed never comes back — this
+    // is how the wizard and the hosts page can still walk someone to the switch.
+    // Same guard, same reason: it acts on the host, and only someone at that Mac
+    // can use the pane it opens.
+    server.router()->post("/api/system/open-accessibility", [&](const HttpRequest& req) {
+        if (!req.isLocal) return HttpResponse::error(403, "Only available from localhost");
+#if defined(Q_OS_MACOS)
+        QProcess::startDetached(
+            QStringLiteral("/usr/bin/open"),
+            {QStringLiteral(
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")});
         QJsonObject obj;
         obj["status"] = "opened";
         return HttpResponse::json(obj);

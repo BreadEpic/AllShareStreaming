@@ -462,9 +462,18 @@ export class BackendClient {
     }
 
     // Open macOS' Screen Recording privacy pane on the host so the user can
-    // grant Sunshine capture permission (localhost + macOS only backend-side).
+    // grant capture permission — to this app when it hosts the Mac, or to a
+    // local Sunshine (localhost + macOS only backend-side).
     static async openScreenRecordingSettings() {
         return this.post('/api/system/open-screen-recording');
+    }
+
+    // The other macOS grant: Accessibility, which is what lets the host post
+    // keyboard and mouse events. Without it a stream shows and does not answer,
+    // and macOS says nothing — so the pane is one click away wherever we can
+    // tell it is missing.
+    static async openAccessibilitySettings() {
+        return this.post('/api/system/open-accessibility');
     }
 
     // Stop the local Sunshine server on the host (localhost-only backend-side).

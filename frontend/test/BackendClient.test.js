@@ -289,6 +289,12 @@ const POST_ROUTES = [
         '/api/system/open-screen-recording',
         {},
     ],
+    [
+        'openAccessibilitySettings',
+        () => BackendClient.openAccessibilitySettings(),
+        '/api/system/open-accessibility',
+        {},
+    ],
     ['stopSunshine', () => BackendClient.stopSunshine(), '/api/system/stop-sunshine', {}],
     ['startSunshine', () => BackendClient.startSunshine(), '/api/system/start-sunshine', {}],
     ['regeneratePin', () => BackendClient.regeneratePin(), '/api/auth/regenerate', {}],

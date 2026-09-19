@@ -48,7 +48,7 @@ A per-user LaunchAgent (`com.moonlightweb.agent`) provides start-at-login. The I
 
 ### The manual steps macOS keeps for itself
 
-A macOS install is the only one of the three that cannot be finished by the installer alone. In order, what the person in front of the Mac is asked:
+A macOS install is the only one of the three that cannot be finished by the installer alone. Both TCC grants are asked for at the **first launch** — the one `postinstall` triggers while the user is still sitting there — rather than one at startup and the other at the first stream (§20.15 of the native design doc). In order, what the person in front of the Mac is asked:
 
 | Asked by | What it is | Consequence of not granting it |
 | --- | --- | --- |
@@ -56,7 +56,7 @@ A macOS install is the only one of the three that cannot be finished by the inst
 | Installer.app | *"This package will run a program to determine if the software can be installed"* → **Allow** — that program is our own Internet pane. Observed 09/09/2026: a run driven over SSH sat on this modal and produced four convergent "the pane is broken" signals that were one blocked dialog. | The install stops on its first screen. |
 | Installer.app | The **administrator password** (the app is copied to `/Applications`). | No install. |
 | The app, on first launch | **Screen Recording** (`kTCCServiceScreenCapture`). `MacProbe` calls `CGRequestScreenCaptureAccess()` once per process, which is why `postinstall` launches the app in the user's session rather than leaving it for the next login. The grant applies **only to a process started after it** → quit and reopen. | `available: false — screen capture permission not granted`. The hosts page and the wizard (`setup.hostPermission`, `native.needs_permission`) say exactly which box to tick, and `/api/system/open-screen-recording` opens the pane. This machine cannot stream itself; it can still play the LAN's other hosts. |
-| The app, at the **first stream** | **Accessibility** (`kTCCServicePostEvent`). `CgInput::start` preflights with `CGPreflightPostEventAccess()` and asks once. | The nastiest of the set: every `CGEventPost` is accepted and dropped **in silence** — a stream that shows and does not answer. Only the host log warns. |
+| The app, on first launch | **Accessibility** (`kTCCServicePostEvent`), asked by the same probe so both questions arrive together (§20.15). `CgInput::start` still preflights at every session, which is what makes the answer true rather than remembered. | The nastiest of the set: every `CGEventPost` is accepted and dropped **in silence** — a stream that shows and does not answer. Reported as `native.needs_input_permission` (setup status) and `input_permission` (`/api/native/status`); the wizard names it and opens the pane through `/api/system/open-accessibility`. |
 
 Nothing else is asked: `postinstall` adds the app to the application firewall itself (`socketfilterfw --add/--unblockapp`, per-app, so every port the server ever binds is covered), and no streaming server is installed, so there is no `sunshine --creds` and no plaintext credential on disk.
 

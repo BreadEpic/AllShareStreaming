@@ -3197,6 +3197,46 @@ que la pièce entend.
 **Reste** : Linux (rien — `HostMute` n'est inclus que par les sessions Windows
 et macOS), et un worker tué de force laisse le mute posé, comme sous Windows.
 
+### 20.15 Les deux autorisations sont demandées ensemble, à l'installation (19/09/2026)
+
+Demande de Bruno : « est-ce qu'il est possible de forcer la demande de toutes les
+autorisations lors de l'installation et pas uniquement quand on doit lancer un
+stream ? » — oui, et rien ne l'empêchait : c'est **où** on appelait l'API qui
+décidait du moment.
+
+Screen Recording était déjà demandée au démarrage (`MacProbe::enumerate`, §20.5),
+donc au premier lancement que le `postinstall` provoque. Accessibility, elle,
+n'était demandée que par `CgInput::start` — c'est-à-dire **à l'ouverture d'une
+session**, la seule des deux que l'utilisateur ne voit pas venir : une boîte de
+dialogue au milieu d'un stream, sur une machine dont il s'est souvent déjà
+éloigné, et contre une image qui s'affiche parfaitement pendant que rien ne
+répond. `CGPreflightPostEventAccess()` + `CGRequestPostEventAccess()` sont donc
+appelés dans la sonde, à côté de la capture, une fois par processus.
+
+⚠️ **Accessibility n'est pas un `Unavailability`**, et ce choix est le cœur du
+correctif. Un Mac qu'on peut regarder sans le piloter **est** un hôte : le
+déclarer indisponible le retirerait de la liste, donc retirerait aussi l'endroit
+où dire ce qui manque. C'est un champ à part, `Capabilities::inputPermission`
+(vrai partout ailleurs : Windows et Linux ne demandent rien à personne), porté
+par `NativeCapabilitiesJson` — une sonde plus ancienne qui n'écrit pas la clé est
+lue comme « rien à signaler », jamais comme un refus — et rendu par
+`/api/setup/status` (`native.needs_input_permission`) et `/api/native/status`
+(`input_permission`, publié **même quand le moteur est indisponible** : un Mac
+neuf à qui il manque les deux ne doit pas répondre « Screen Recording » seule).
+
+L'assistant de première configuration dit les deux, séparément, avec un bouton
+par panneau (`/api/system/open-screen-recording` existait, `open-accessibility`
+est son jumeau, même garde localhost) : le prompt du système n'est montré
+**qu'une fois**, donc celui qui l'a écarté n'a plus que ce chemin-là. Les deux
+lignes coexistent sur la dernière page — l'installation fraîche, c'est
+exactement les deux à la fois.
+
+Ce que ça ne répare pas, et qu'il faut dire : macOS n'applique Screen Recording
+qu'au **prochain** démarrage du programme (§20.5) ; demander plus tôt ne change
+rien à ça, ça change seulement le moment où on pose la question. Reste ouvert :
+prévenir aussi **pendant** un stream si l'octroi a disparu entre-temps (une
+mise à jour signée autrement, §20.7) — aujourd'hui seul le log le dit.
+
 ## 21. Intel Quick Sync : la première exécution, et ce qu'elle a cassé (07/09/2026)
 
 Le banc `bench-intel` (Intel N95, UHD Graphics 24 EU, pilote 32.0.101.7088,

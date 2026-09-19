@@ -237,6 +237,60 @@ describe('SetupView — a machine that streams itself', () => {
         expect(view._installSunshine).toBe(true);
     });
 
+    it('names the Accessibility grant on its own, even when capture is fine', async () => {
+        // The grant macOS refuses SILENTLY: the engine is available, the host
+        // card appears, the stream shows — and every click is dropped. The
+        // wizard is the only thing that can say so, so an available engine must
+        // not swallow the warning.
+        await start(
+            status({
+                os: 'macOS',
+                native: {
+                    available: true,
+                    reason: 'available',
+                    needs_permission: false,
+                    needs_input_permission: true,
+                    possible: true,
+                },
+            }),
+        );
+
+        expect(html()).toContain('text:setup.hostNative');
+        expect(html()).toContain('text:setup.hostInputPermission');
+        // One click to the pane it names — the startup prompt is shown once and
+        // whoever dismissed it never sees it again.
+        expect(
+            container.querySelector('.setup-perm-btn[data-pane="accessibility"]'),
+        ).not.toBeNull();
+
+        // …and it survives to the last page, beside the capture line when both
+        // are missing, which is what a fresh install actually looks like.
+        view._nativeAvailable = false;
+        view._nativeNeedsPermission = true;
+        view._step = 'done';
+        view.render();
+        expect(html()).toContain('text:setup.donePermissionsNative');
+        expect(html()).toContain('text:setup.donePermissionsInput');
+    });
+
+    it('says nothing about Accessibility where nothing asks for it', async () => {
+        // Windows and Linux grant it to everyone: the flag is absent from the
+        // status, and a warning invented here would be a warning on every PC.
+        await start(
+            status({
+                native: {
+                    available: true,
+                    reason: 'available',
+                    needs_permission: false,
+                    possible: true,
+                },
+            }),
+        );
+
+        expect(html()).not.toContain('text:setup.hostInputPermission');
+        expect(container.querySelector('.setup-perm-btn')).toBeNull();
+    });
+
     it('treats a status with no native object as "cannot host itself"', async () => {
         // An older server, or a probe that answered nothing: offer help rather
         // than withhold it.

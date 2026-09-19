@@ -53,7 +53,7 @@
       "step": [
         {"@type": "HowToStep", "name": "Download the installer", "text": "Download the Apple Silicon .pkg from the MoonlightWeb releases page.", "url": "https://moonlightweb.top/guides/macos.html#step-download"},
         {"@type": "HowToStep", "name": "Run the guided installer", "text": "Run the .pkg on the Mac that runs your games. The setup wizard walks you through the configuration, including one-click Internet access.", "url": "https://moonlightweb.top/guides/macos.html#step-install"},
-        {"@type": "HowToStep", "name": "Grant the two macOS permissions", "text": "macOS asks you to allow Screen Recording (so this Mac can stream its own screen) and, at your first stream, Accessibility (so your clicks and keystrokes reach it). Tick both in System Settings, Privacy & Security, then quit and reopen MoonlightWeb.", "url": "https://moonlightweb.top/guides/macos.html#permissions"},
+        {"@type": "HowToStep", "name": "Grant the two macOS permissions", "text": "At its first launch MoonlightWeb asks for both macOS permissions at once: Screen Recording, so this Mac can stream its own screen, and Accessibility, so your clicks and keystrokes reach it. Tick both in System Settings, Privacy & Security, then quit and reopen MoonlightWeb.", "url": "https://moonlightweb.top/guides/macos.html#permissions"},
         {"@type": "HowToStep", "name": "Open a browser on any device", "text": "Go to https://localhost on the Mac itself, or your LAN IP from another device on your network.", "url": "https://moonlightweb.top/guides/macos.html#step-open"},
         {"@type": "HowToStep", "name": "Your Mac is already there", "text": "The Mac is listed straight away, with one card per screen — no pairing, no PIN. Other hosts on the network (Sunshine, Wolf, MultiSeat) are discovered too and pair with a PIN.", "url": "https://moonlightweb.top/guides/macos.html#step-pair"},
         {"@type": "HowToStep", "name": "Press play", "text": "Pick a game or the full desktop and play from any browser in the house — or anywhere.", "url": "https://moonlightweb.top/guides/macos.html#step-play"}
@@ -121,15 +121,17 @@
 
   <h2 id="permissions" data-i18n="perm.h">What macOS asks you to allow</h2>
   <p data-i18n-html="perm.p">Apple lets no installer grant these on your behalf — every streaming server on macOS asks for the
-     same ones. There are <strong>two</strong>, and the app asks for each at the moment it needs it:</p>
+     same ones. There are <strong>two</strong>, and MoonlightWeb asks for both at its first launch — right after
+     the install, while you are still in front of the Mac:</p>
   <ul>
     <li data-i18n-html="perm.1"><strong>Screen Recording</strong>, on the first launch. Tick <em>MoonlightWeb</em> in
       <strong>System Settings → Privacy &amp; Security → Screen Recording</strong> (named <em>Screen &amp; System Audio Recording</em> on macOS 15 and newer), then <strong>quit and reopen
       MoonlightWeb</strong> — macOS only applies this permission to a program started after you granted it. Until then
       the hosts page shows this Mac as unavailable and says exactly this.</li>
-    <li data-i18n-html="perm.2"><strong>Accessibility</strong>, the first time you actually stream. This is what lets
-      your clicks and keystrokes reach the Mac. Tick <em>MoonlightWeb</em> in <strong>System Settings → Privacy &amp;
-      Security → Accessibility</strong>. Without it the picture arrives and nothing responds.</li>
+    <li data-i18n-html="perm.2"><strong>Accessibility</strong>, asked in the same breath. This is what lets your
+      clicks and keystrokes reach the Mac. Tick <em>MoonlightWeb</em> in <strong>System Settings → Privacy &amp;
+      Security → Accessibility</strong>. Without it the picture arrives and nothing responds — and macOS gives no
+      warning of its own, which is why the setup page says so and offers to open the pane for you.</li>
   </ul>
   <p data-i18n-html="perm.rest">Along the way the installer also asks for your <strong>administrator password</strong>
      (the app goes into <code>/Applications</code>) and, on its first page, an <strong>Allow</strong> on “this package
@@ -223,9 +225,9 @@ window.MW_DICTS = {
     'step5.p':'Choisissez un écran, un jeu ou le bureau complet. iPhone, iPad, un autre ordinateur portable, une TV — tout ce qui a un navigateur devient un client.',
     'dl.btn':'⬇ Télécharger pour macOS',
     'perm.h':'Ce que macOS vous demande d’autoriser',
-    'perm.p':'Apple n’autorise aucun installateur à les accorder à votre place — tous les serveurs de streaming sur macOS demandent les mêmes. Il y en a <strong>deux</strong>, et l’application demande chacune au moment où elle en a besoin :',
+    'perm.p':'Apple n’autorise aucun installateur à les accorder à votre place — tous les serveurs de streaming sur macOS demandent les mêmes. Il y en a <strong>deux</strong>, et MoonlightWeb les demande toutes les deux à son premier lancement, juste après l’installation, pendant que vous êtes encore devant le Mac :',
     'perm.1':'L’<strong>enregistrement de l’écran</strong>, au premier lancement. Cochez <em>MoonlightWeb</em> dans <strong>Réglages Système → Confidentialité et sécurité → Enregistrement de l’écran</strong> (nommé <em>Enregistrement de l’écran et du son système</em> sur macOS 15 et plus récent), puis <strong>quittez et rouvrez MoonlightWeb</strong> — macOS n’applique cette autorisation qu’à un programme démarré après son octroi. D’ici là, la page des hôtes affiche ce Mac comme indisponible et le dit mot pour mot.',
-    'perm.2':'L’<strong>accessibilité</strong>, à votre premier stream. C’est elle qui permet à vos clics et à vos frappes d’atteindre le Mac. Cochez <em>MoonlightWeb</em> dans <strong>Réglages Système → Confidentialité et sécurité → Accessibilité</strong>. Sans elle, l’image arrive et rien ne répond.',
+    'perm.2':'L’<strong>accessibilité</strong>, demandée dans la foulée. C’est elle qui permet à vos clics et à vos frappes d’atteindre le Mac. Cochez <em>MoonlightWeb</em> dans <strong>Réglages Système → Confidentialité et sécurité → Accessibilité</strong>. Sans elle, l’image arrive et rien ne répond — et macOS ne prévient de rien, c’est pourquoi la page de configuration le dit et propose d’ouvrir le panneau pour vous.',
     'perm.rest':'En chemin, l’installateur demande aussi votre <strong>mot de passe administrateur</strong> (l’application va dans <code>/Applications</code>) et, sur sa première page, un <strong>Autoriser</strong> pour « ce paquet va exécuter un programme afin de déterminer si le logiciel peut être installé » — ce programme est la page Internet de l’installateur lui-même. Rien d’autre : l’installateur autorise déjà MoonlightWeb dans le pare-feu macOS, aucune demande de connexion entrante n’apparaît donc, et aucun second serveur de streaming n’est installé.',
     'perm.note':'<strong>Accordées une fois, conservées ensuite.</strong> Les versions publiées sont signées avec un certificat stable : une mise à jour de MoonlightWeb ne redemande pas ces autorisations.',
     'cli.h':'Une seule commande — et plus d’avertissement',
@@ -275,9 +277,9 @@ window.MW_DICTS = {
     'step5.p':'选择一块屏幕、一款游戏或完整桌面。iPhone、iPad、另一台笔记本、一台电视——任何带浏览器的东西都能成为客户端。',
     'dl.btn':'⬇ 下载 macOS 版',
     'perm.h':'macOS 会请你允许什么',
-    'perm.p':'苹果不允许任何安装程序代你授予这些权限——macOS 上的每个串流服务器都要求同样的权限。一共<strong>两项</strong>，应用会在真正需要时各自请求：',
+    'perm.p':'苹果不允许任何安装程序代你授予这些权限——macOS 上的每个串流服务器都要求同样的权限。一共<strong>两项</strong>，MoonlightWeb 会在安装后的首次启动时一次性请求两项，那时你还坐在这台 Mac 前面：',
     'perm.1':'<strong>屏幕录制</strong>，在首次启动时。在<strong>系统设置 → 隐私与安全性 → 屏幕录制</strong>（macOS 15 及更新版本中名为<em>屏幕与系统音频录制</em>）中勾选 <em>MoonlightWeb</em>，然后<strong>退出并重新打开 MoonlightWeb</strong>——macOS 只对授权之后启动的程序应用该权限。在此之前，主机页面会把这台 Mac 显示为不可用，并原样说明这一点。',
-    'perm.2':'<strong>辅助功能</strong>，在你第一次串流时。正是它让你的点击和按键到达这台 Mac。请在<strong>系统设置 → 隐私与安全性 → 辅助功能</strong>中勾选 <em>MoonlightWeb</em>。没有它，画面会出现而一切都没有反应。',
+    'perm.2':'<strong>辅助功能</strong>，紧接着一并请求。正是它让你的点击和按键到达这台 Mac。请在<strong>系统设置 → 隐私与安全性 → 辅助功能</strong>中勾选 <em>MoonlightWeb</em>。没有它，画面会出现而一切都没有反应——而且 macOS 自己不会给出任何提示，所以配置页面会说明这一点，并可以帮你打开该面板。',
     'perm.rest':'过程中，安装程序还会要求你的<strong>管理员密码</strong>（应用安装到 <code>/Applications</code>），并在第一页要求对“此软件包将运行一个程序以确定该软件能否安装”点击<strong>允许</strong>——那个程序就是安装程序自己的互联网页面。除此之外没有别的：安装程序已经在 macOS 防火墙中放行了 MoonlightWeb，因此不会出现传入连接的提示，也不会安装第二个串流服务器。',
     'perm.note':'<strong>授予一次，此后保留。</strong>发布版本使用稳定证书签名，因此更新 MoonlightWeb 不会再次索要这些权限。',
     'cli.h':'一条命令搞定——而且没有警告',

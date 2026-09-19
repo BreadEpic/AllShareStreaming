@@ -200,8 +200,14 @@ bool CgInput::start(std::string& error)
     if (m_Started) return true;
 
     // Accessibility. Without it every CGEventPost is accepted and ignored,
-    // which from the browser is a stream that shows but does not answer. The
-    // OS prompt is asked for once; the switch itself is the user's to flip
+    // which from the browser is a stream that shows but does not answer.
+    //
+    // The QUESTION is no longer asked here first: MacProbe asks it at startup,
+    // so it reaches the user with the install rather than mid-stream (§20.15).
+    // This is the check that tells the truth about THIS session — a grant can
+    // have been revoked, or lost to a signature change, since the probe last
+    // looked — and asking again costs nothing: macOS shows its prompt once per
+    // program, ever. The switch itself is the user's to flip
     // (System Settings → Privacy & Security → Accessibility).
     if (!CGPreflightPostEventAccess()) {
         CGRequestPostEventAccess();

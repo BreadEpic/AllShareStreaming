@@ -281,6 +281,20 @@ struct Capabilities
     /// the picture on the card. A UPS or a wireless mouse is not one.
     bool hasBattery = false;
 
+    /// Whether the OS lets this program post keyboard and mouse events.
+    ///
+    /// macOS alone can say no (Accessibility, `kTCCServicePostEvent`), and it
+    /// says it in the worst way there is: every `CGEventPost` is accepted and
+    /// dropped, so the stream shows and does not answer. It is NOT an
+    /// `Unavailability` — a host that streams a picture nobody can drive is
+    /// still a host, and the machine must keep appearing in the list saying
+    /// what it needs. The probe asks the OS for the grant so the question
+    /// reaches the user at the install's first launch, beside Screen
+    /// Recording, rather than at the first click of the first stream.
+    ///
+    /// True on every other platform: Windows and Linux ask nobody.
+    bool inputPermission = true;
+
     const GpuInfo* gpuFor(const DisplayInfo& display) const;
 
     /// Whether any GPU can genuinely encode — an encoder API AND a codec it can

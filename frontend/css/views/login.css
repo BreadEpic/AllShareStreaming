@@ -258,6 +258,15 @@
 .setup-ok-check {
     font-weight: 700;
 }
+/* The button that opens a macOS privacy pane, inside the warning note that
+   named it. Small and inline: it is a shortcut to a switch the user still has
+   to flip themselves, not a step of the wizard. */
+.setup-perm-btn {
+    display: inline-block;
+    margin-top: var(--space-1);
+    padding: 4px 10px;
+    font-size: var(--fs-xs);
+}
 .setup-check {
     display: flex;
     align-items: flex-start;

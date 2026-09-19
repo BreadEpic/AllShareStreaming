@@ -99,6 +99,7 @@ QJsonObject toJson(const Capabilities& caps)
     }
     obj["displays"] = displays;
     obj["hasBattery"] = caps.hasBattery;
+    obj["inputPermission"] = caps.inputPermission;
     return obj;
 }
 
@@ -152,6 +153,10 @@ bool fromJson(const QJsonObject& obj, Capabilities& out)
         out.displays.push_back(std::move(d));
     }
     out.hasBattery = obj["hasBattery"].toBool(false);
+    // Absent (an older probe binary answering a newer server) means "nothing
+    // to report": the platforms that ask nobody are the majority, and inventing
+    // a missing grant would put a warning in front of a Windows user.
+    out.inputPermission = obj["inputPermission"].toBool(true);
     return true;
 }
 
