@@ -599,6 +599,15 @@ if(WIN32)
     # "MoonlightWeb Virtual Display": the bundled IddCx driver package (MIT,
     # SignPath-signed; pinned by SHA-256 in src/backend/VirtualDisplay.h) that
     # the installer's elevated helper installs from {app}\drivers\vdd.
+    # The helper refuses any file it cannot match against its pinned hash, so an
+    # incomplete package has to stop the build here rather than ship an
+    # installer whose driver stage fails on the user's machine.
+    foreach(_mw_vdd_file IN ITEMS MttVDD.inf mttvdd.cat MttVDD.dll)
+        if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/installer/drivers/vdd/${_mw_vdd_file}")
+            message(FATAL_ERROR "Virtual display driver payload incomplete: "
+                                "installer/drivers/vdd/${_mw_vdd_file} is missing")
+        endif()
+    endforeach()
     install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/installer/drivers/vdd" DESTINATION drivers)
 endif()
 

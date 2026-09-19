@@ -8,6 +8,9 @@ build-*/
 # Exception: prebuilt OpenSSL runtime DLLs are a committed dependency (shipped
 # next to mw-server.exe; required by CI artifacts which checkout clean).
 !backend/libs/windows/lib/**/*.dll
+# Exception: the virtual display driver the installer embeds. CI checks out
+# clean, so a DLL missing here ships an installer whose driver stage fails.
+!backend/installer/drivers/vdd/*.dll
 *.so
 *.dylib
 moc_*.cpp
