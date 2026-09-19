@@ -91,7 +91,7 @@ Known limitations are detected and reported in the UI: UPnP disabled (manual for
 ### First-run setup
 
 - **Windows**: the Inno Setup installer wizard collects the Internet-access consent, then drops a `provisioning.json` the server consumes on first boot (see [Installers](09-Installers-and-Packaging.md)). Since September 2026 it no longer installs Sunshine — the app hosts the machine itself.
-- **macOS / Linux**: an in-app **setup wizard** (`/setup`) opens automatically on first launch and performs the same steps via `/api/setup/{status,apply}`. It asks about Sunshine **only** on a machine that cannot host itself (`status.native.possible` is the whole switch); on macOS it points at the Screen Recording permission instead.
+- **macOS / Linux**: an in-app **setup wizard** (`/setup`) opens automatically on first launch and performs the same steps via `/api/setup/{status,apply}`. It asks about Sunshine **only** on a machine that cannot host itself (`status.native.possible` is the whole switch); on macOS it points at the Screen Recording permission instead — the first of the two TCC grants only the user can give, Accessibility being the other ([§9.2](09-Installers-and-Packaging.md)).
 
 ### Day-2 operations
 
