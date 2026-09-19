@@ -2684,14 +2684,14 @@ int main(int argc, char* argv[])
         const auto boxSide = [&body](const char* key) {
             const int v = body[QLatin1String(key)].toInt(0);
             return v >= AppSettings::kCustomSizeMin && v <= AppSettings::kCustomSizeMax ? v & ~1
-                                                                                          : 0;
+                                                                                        : 0;
         };
         const int reqFallbackW = reqMatchDisplay ? boxSide("stream_fallback_width") : 0;
         const int reqFallbackH = reqMatchDisplay ? boxSide("stream_fallback_height") : 0;
         qInfo() << "[Session] Aspect" << reqAspect << "→" << reqWidth << "x" << reqHeight
-                << (reqMatchDisplay        ? "(box, the display's mode)"
-                    : reqFitBox            ? (reqAllowUpscale ? "(box, may upscale)" : "(box)")
-                                           : "");
+                << (reqMatchDisplay ? "(box, the display's mode)"
+                    : reqFitBox     ? (reqAllowUpscale ? "(box, may upscale)" : "(box)")
+                                    : "");
         // Players joining this host's share inherit it (see g_HostAspect).
         if (reqAspect.contains(':')) g_HostAspect[host->uuid] = reqAspect;
 
@@ -3074,8 +3074,7 @@ int main(int argc, char* argv[])
             // The viewer's aspect is "Auto": a native stream follows the
             // display's shape when it changes. Absent → the size is kept.
             s->setFollowDisplayShape(body["follow_display_shape"].toBool(false));
-            s->setFrameFit(reqFitBox, reqAllowUpscale, reqMatchDisplay, reqFallbackW,
-                           reqFallbackH);
+            s->setFrameFit(reqFitBox, reqAllowUpscale, reqMatchDisplay, reqFallbackW, reqFallbackH);
             s->setClientKind(clientKind);
             // See the worker path: the administrator-window gate.
             s->setViewerAdmin(req.isLocal);
@@ -3517,9 +3516,8 @@ int main(int argc, char* argv[])
                                 worker->deleteLater();
                                 if (standby) {
                                     respond(HttpResponse::json(
-                                        QJsonObject{
-                                            {"status", QStringLiteral("dual_unavailable")},
-                                            {"reason", error}},
+                                        QJsonObject{{"status", QStringLiteral("dual_unavailable")},
+                                                    {"reason", error}},
                                         200));
                                 } else {
                                     respond(HttpResponse::error(
@@ -4345,9 +4343,8 @@ int main(int argc, char* argv[])
                 }
                 g_LiveSunshineUids.remove(uid);
                 SessionPool::Slot& sl = g_Pool.at(slot);
-                const bool onVirtualDisplay =
-                    host->backendType == NativeHostBackend::typeName() &&
-                    sl.appId == NativeHostBackend::virtualDisplayAppId();
+                const bool onVirtualDisplay = host->backendType == NativeHostBackend::typeName() &&
+                                              sl.appId == NativeHostBackend::virtualDisplayAppId();
                 if (sl.worker == worker) {
                     sl.worker = nullptr;
                     sl.clientUniqueId.clear();
