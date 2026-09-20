@@ -442,8 +442,16 @@ bool compileScale(bool horizontal, bool decode, int length, int output, int fixe
 {
     const double dilate = std::max(1.0, static_cast<double>(length) / output);
     const int taps = static_cast<int>(std::ceil(4.0 * dilate)) + 1;
-    char dilateText[32];
-    std::snprintf(dilateText, sizeof(dilateText), "%.9f", dilate);
+    // The dilation goes in as the ratio it is, never as a formatted double:
+    // "%f" follows LC_NUMERIC, and a host whose region writes decimals with a
+    // comma would emit `1,166667` — which HLSL reads as two arguments and the
+    // compile fails, with an error about Lanczos2 that says nothing about the
+    // locale. The ratio is also exact where nine digits are not.
+    char dilateText[48];
+    if (length <= output)
+        std::snprintf(dilateText, sizeof(dilateText), "1.0");
+    else
+        std::snprintf(dilateText, sizeof(dilateText), "(%d.0 / %d.0)", length, output);
     const std::string tapsText = std::to_string(taps);
     const std::string lengthText = std::to_string(length) + ".0";
     const std::string fixedText = std::to_string(fixed) + ".0";

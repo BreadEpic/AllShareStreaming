@@ -56,6 +56,7 @@
 #include <termios.h>
 #endif
 #include <array>
+#include <clocale>
 #include <functional>
 #include <memory>
 #include <utility>
@@ -1304,6 +1305,13 @@ int main(int argc, char* argv[])
 #endif
 
     QApplication app(argc, argv);
+    // Qt calls setlocale(LC_ALL, "") on Unix, so from here on the C library
+    // formats and parses numbers the way the user's region does. A host in
+    // fr_FR then writes "1,166667" where every machine-readable consumer —
+    // shader #defines above all, and every printf that ends up in a protocol —
+    // expects a dot, and the reader sees two values separated by a comma. Qt's
+    // own QLocale is unaffected and still speaks to the user in their language.
+    std::setlocale(LC_NUMERIC, "C");
     // The plugin that actually loaded is the last word on whether Qt can draw:
     // it overrides the environment probe for the tray, the browser auto-open,
     // the Sunshine installer and the `headless` flag the API reports.

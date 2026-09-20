@@ -185,12 +185,23 @@ std::string scaleShader(bool horizontal, bool decode, bool encode, int length, i
 {
     const double dilate = std::max(1.0, static_cast<double>(length) / output);
     const int taps = static_cast<int>(std::ceil(4.0 * dilate)) + 1;
+    // The dilation goes in as the ratio it is, never as a formatted double:
+    // "%f" follows LC_NUMERIC, and a host whose region writes decimals with a
+    // comma would emit `1,166667` — which GLSL reads as two arguments and the
+    // compile fails, with an error about lanczos2 that says nothing about the
+    // locale. The ratio is also exact where nine digits are not.
+    char dilateText[48];
+    if (length <= output)
+        std::snprintf(dilateText, sizeof(dilateText), "1.0");
+    else
+        std::snprintf(dilateText, sizeof(dilateText), "(%d.0 / %d.0)", length, output);
     char text[512];
     std::snprintf(text, sizeof(text),
                   "#version 300 es\n#define MW_HORIZONTAL %d\n#define MW_DECODE %d\n"
-                  "#define MW_ENCODE %d\n#define MW_DILATE %.9f\n#define MW_TAPS %d\n"
+                  "#define MW_ENCODE %d\n#define MW_DILATE %s\n#define MW_TAPS %d\n"
                   "#define MW_LEN %d.0\n#define MW_FIXED %d.0\n",
-                  horizontal ? 1 : 0, decode ? 1 : 0, encode ? 1 : 0, dilate, taps, length, fixed);
+                  horizontal ? 1 : 0, decode ? 1 : 0, encode ? 1 : 0, dilateText, taps, length,
+                  fixed);
     return std::string(text) + kScaleBody;
 }
 
