@@ -150,6 +150,11 @@ export class PipelineDiag {
         if (bytes !== undefined) this._frameBytes.push(bytes, Infinity);
     }
 
+    /** Average interval between frames over the window, 0 before the second. */
+    get arrivalAvgMs() {
+        return this._arrival.avg;
+    }
+
     /** VideoDecoder.decodeQueueSize, sampled at decode() submit. */
     noteDecodeQueue(size) {
         this._decodeQueue.push(size);

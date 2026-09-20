@@ -55,6 +55,7 @@ import {
 } from '../util/Av1Utils.js';
 import { createVideoRenderer } from './renderers/createRenderer.js';
 import { PipelineDiag } from './PipelineDiag.js';
+import { shouldFlushAtKeyframe } from './DecodeQueuePolicy.js';
 import { EnhancerGovernor } from './EnhancerGovernor.js';
 import { drawCapFor } from './RenderPacing.js';
 import { FramePacer } from './FramePacer.js';
@@ -125,6 +126,7 @@ const S = {
 
     // tunables (match StreamView)
     DECODE_QUEUE_MAX: 8,
+    _lastQueueFlushMs: -Infinity, // see DecodeQueuePolicy
     QUEUE_STALL_MS: 200,
     QUEUE_RESET_MS: 1000,
     MAX_RECOVERY_ATTEMPTS: 10,
@@ -663,6 +665,8 @@ function flushDecodeQueue() {
     S._chunkSubmitTimes.clear();
     S.stats.dropped += queued;
     S.diag.noteDrop('backpressure', queued);
+    S.diag.noteRecovery('flush');
+    S._lastQueueFlushMs = performance.now();
     console.warn('[VideoWorker] Decode queue flushed at the keyframe: ' + queued + ' stale');
     return true;
 }
@@ -720,7 +724,16 @@ function decodeFrame(data, isKeyframe, backendTs, arrivalAbs) {
 
     // A keyframe behind a saturated queue recovers nothing: it would wait its
     // turn after every stale frame already submitted. Flush them first.
-    if (isKeyframe && S.decoder.decodeQueueSize >= S.DECODE_QUEUE_MAX) flushDecodeQueue();
+    if (
+        isKeyframe &&
+        shouldFlushAtKeyframe({
+            queued: S.decoder.decodeQueueSize,
+            arrivalMs: S.diag.arrivalAvgMs,
+            sinceLastFlushMs: performance.now() - S._lastQueueFlushMs,
+        })
+    ) {
+        flushDecodeQueue();
+    }
 
     try {
         const chunk = new EncodedVideoChunk({ type, timestamp, duration: 16667, data: avccData });

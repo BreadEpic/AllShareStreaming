@@ -75,6 +75,7 @@ import {
     formatDiag,
     formatMainThread,
 } from '../stream/PipelineDiag.js';
+import { shouldFlushAtKeyframe } from '../stream/DecodeQueuePolicy.js';
 import { EnhancerGovernor } from '../stream/EnhancerGovernor.js';
 import { drawCapFor } from '../stream/RenderPacing.js';
 import { LatencyProbe } from '../stream/LatencyProbe.js';
@@ -1392,6 +1393,7 @@ export class StreamView {
         this.QUEUE_STALL_MS = 200;
         this.QUEUE_RESET_MS = 1000;
         this._queueStallStart = 0;
+        this._lastQueueFlushMs = -Infinity; // see DecodeQueuePolicy
         // Last config applied to the decoder, re-applied after a queue flush.
         this._activeDecoderCfg = null;
         // Last EncodedVideoChunk timestamp (µs) — enforces monotonicity.
@@ -3181,7 +3183,16 @@ export class StreamView {
         // A keyframe behind a saturated queue recovers nothing: it would wait
         // its turn after every stale frame already submitted, and the latency
         // they built up stays. Flush them — the keyframe needs none of them.
-        if (isKeyframe && this.decoder.decodeQueueSize >= this.DECODE_QUEUE_MAX) {
+        // When they are worth it, that is: see DecodeQueuePolicy for the loop a
+        // flush per keyframe made at 120fps.
+        if (
+            isKeyframe &&
+            shouldFlushAtKeyframe({
+                queued: this.decoder.decodeQueueSize,
+                arrivalMs: this._diag.arrivalAvgMs,
+                sinceLastFlushMs: performance.now() - this._lastQueueFlushMs,
+            })
+        ) {
             this._flushDecodeQueue();
         }
 
@@ -3254,6 +3265,7 @@ export class StreamView {
         this.stats.dropped += queued;
         this._diag.noteDrop('backpressure', queued);
         this._diag.noteRecovery('flush');
+        this._lastQueueFlushMs = performance.now();
         console.warn('[StreamView] Decode queue flushed at the keyframe: ' + queued + ' stale');
         return true;
     }
