@@ -267,6 +267,10 @@ export class Canvas2DRenderer extends VideoRenderer {
 
             // Force GPU sync on the first frames to flush stale compositor caches;
             // per-frame readback would cost ~1-3ms, so only the first 30.
+            // Chrome answers these reads with a "set willReadFrequently" notice:
+            // do NOT. That flag moves the canvas to CPU memory, and every
+            // drawImage(VideoFrame) above would then have to read the frame
+            // back from the GPU — the per-frame copy this path exists to avoid.
             if (this._rendered < 30) {
                 try {
                     this.ctx.getImageData(0, 0, 1, 1);
