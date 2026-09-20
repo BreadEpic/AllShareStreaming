@@ -27,10 +27,18 @@
 //     seconds of the same footage. Without that the comparison between two
 //     settings is a comparison between two different explosions.
 //
-// ?t=<seconds> moves the start, ?src=<url> points at a different file.
+// ?t=<seconds> moves the start, ?src=<url> points at a different file,
+// ?rate=<n> changes the playback speed.
+//
+// rate is how a 60 fps clip feeds a 120 fps test: at ×2 the decoder emits 120
+// distinct frames per second, so every frame the encoder is asked for has new
+// pixels in it. A 60 fps source played at ×1 on a 120 Hz screen would hand the
+// encoder each frame twice, and half the measurement would be about how cheap
+// a duplicate is to encode.
 const v = document.getElementById("v");
 const q = new URLSearchParams(location.search);
 const start = Number(q.get("t") ?? 37);
+const rate = Number(q.get("rate") ?? 1);
 // The clip is ~260 MB and does not belong in a git repository: fetch-content.ps1
 // puts it in the local cache and passes its file:// URL here.
 v.src = q.get("src") ?? "cod.webm";
@@ -44,7 +52,13 @@ v.addEventListener("error", () => {
   e.style.display = "grid";
   e.textContent = "No clip at " + v.src + " — run fetch-content.ps1 first.";
 });
-setTimeout(() => v.play().catch(e => console.log("play refused: " + e)), 3000);
+// Set on every play: a seek or a loop restart resets playbackRate on some
+// builds, and a pass that silently drops back to ×1 halfway through is worse
+// than one that never sped up at all.
+const applyRate = () => { if (v.playbackRate !== rate) v.playbackRate = rate; };
+v.addEventListener("play", applyRate);
+v.addEventListener("ratechange", applyRate);
+setTimeout(() => { applyRate(); v.play().catch(e => console.log("play refused: " + e)); }, 3000);
 </script>
 <script src="escape.js"></script>
 </body>
