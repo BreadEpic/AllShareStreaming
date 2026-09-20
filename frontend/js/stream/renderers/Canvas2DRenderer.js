@@ -205,36 +205,43 @@ export class Canvas2DRenderer extends VideoRenderer {
             this.videoCodec === CODEC_HEVC && frame.format === 'NV12' && this.isChromeWindowsHevc;
 
         if (isHevcNv12) {
-            // ── HEVC NV12: createImageBitmap(VideoFrame) PRIMARY + 'copy' ─────
-            // Keeps NV12→RGBA conversion on the GPU (alpha=255 everywhere); the
-            // await must precede any canvas mutation. 'copy' replaces all pixels.
-            //   1. createImageBitmap(VideoFrame) → drawImage(bitmap, 'copy')
-            //   2. ctx.drawImage(VideoFrame, 'copy')          (some Safari)
+            // ── HEVC NV12: drawImage(VideoFrame) PRIMARY + 'copy' ─────────────
+            // 'copy' replaces all pixels (alpha=255 everywhere).
+            //   1. ctx.drawImage(VideoFrame, 'copy')
+            //   2. createImageBitmap(VideoFrame) → drawImage(bitmap, 'copy')
             //   3. copyTo(RGBA) → ImageData → putImageData     (last resort)
-            let bitmap = null;
-            const bitmapStart = performance.now();
-            try {
-                bitmap = await createImageBitmap(frame);
-            } catch (e) {}
-            waitMs += performance.now() - bitmapStart;
-
+            // The bitmap used to come first. Its per-frame GPU copy holds the
+            // decoder's output surfaces: measured on an Arc A380, the picture
+            // topped out near 170 Mpx/s (1440p at 45 fps) with the decode engine
+            // at 6 %, and the frames the decoder could not retire piled up in
+            // its queue — seconds of latency. H.264 drew direct and ran at 89.
             this.ctx.save();
             this.ctx.globalCompositeOperation = 'copy';
 
             let success = false;
-            if (bitmap) {
-                this.ctx.drawImage(bitmap, 0, 0, this.canvas.width, this.canvas.height);
-                bitmap.close();
+            let bitmap = null;
+            let direct = false;
+            try {
+                this.ctx.drawImage(frame, 0, 0, this.canvas.width, this.canvas.height);
                 success = true;
+                direct = true;
+            } catch (e) {
+                console.warn('[Canvas2DRenderer] ctx.drawImage(VideoFrame) failed: ' + e.message);
             }
             if (!success) {
+                // The await leaves the canvas state to other draws: re-arm 'copy'.
+                this.ctx.restore();
+                const bitmapStart = performance.now();
                 try {
-                    this.ctx.drawImage(frame, 0, 0, this.canvas.width, this.canvas.height);
+                    bitmap = await createImageBitmap(frame);
+                } catch (e) {}
+                waitMs += performance.now() - bitmapStart;
+                this.ctx.save();
+                this.ctx.globalCompositeOperation = 'copy';
+                if (bitmap) {
+                    this.ctx.drawImage(bitmap, 0, 0, this.canvas.width, this.canvas.height);
+                    bitmap.close();
                     success = true;
-                } catch (e) {
-                    console.warn(
-                        '[Canvas2DRenderer] ctx.drawImage(VideoFrame) failed: ' + e.message,
-                    );
                 }
             }
             if (!success) {
@@ -269,7 +276,11 @@ export class Canvas2DRenderer extends VideoRenderer {
             if (this._probeActive) this._readProbePixels();
             frame.close();
             this._rendered++;
-            this._noteDraw(drawStart, waitMs, bitmap ? 'nv12-bitmap' : 'nv12-fallback');
+            this._noteDraw(
+                drawStart,
+                waitMs,
+                bitmap ? 'nv12-bitmap' : direct ? 'nv12-direct' : 'nv12-fallback',
+            );
             return;
         }
 
