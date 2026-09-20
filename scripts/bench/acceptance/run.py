@@ -1,0 +1,491 @@
+"""The acceptance run: install on the fleet, then stream one factor at a time.
+
+    python run.py --plan-only                 print both matrices, run nothing
+    python run.py --chapter 1 --package <dir> install and update everywhere
+    python run.py --chapter 2                 DualRTX host, DualRTX client
+    python run.py --chapter 3                 every other host, DualRTX client
+    python run.py --only mw-mac               restrict to one machine
+    python run.py --pass default              restrict to one pass
+
+Results are appended to bench-out/acceptance/results/, screenshots land under
+bench-out/acceptance/screens/<machine>/<chapter>/<pass>.png, and report.py
+turns the two into one HTML page. Nothing here is ever committed.
+"""
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
+OUT = os.path.join(REPO, "bench-out", "acceptance")
+RESULTS = os.path.join(OUT, "results")
+SCREENS = os.path.join(OUT, "screens")
+
+sys.path.insert(0, HERE)
+import drive  # noqa: E402
+import fleet  # noqa: E402
+import install as installer  # noqa: E402
+
+CHROME = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+PROFILE = os.path.join(os.path.dirname(HERE), ".chrome-client")
+DEBUG_PORT = 9333
+
+
+def load_matrix():
+    with open(os.path.join(HERE, "matrix.json"), encoding="utf-8") as f:
+        return json.load(f)
+
+
+def append(name, obj):
+    os.makedirs(RESULTS, exist_ok=True)
+    with open(os.path.join(RESULTS, name), "a", encoding="utf-8") as f:
+        f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+
+
+# ── the measuring browser ───────────────────────────────────────────────────
+
+def kiosk_start(url):
+    """A Chrome of its own, with a debugging port and no certificate fuss.
+
+    Not the Chrome extension: it emulates a fixed viewport, its synthetic
+    clicks carry no user activation so requestFullscreen is refused, and its
+    tab stays visibilityState=hidden, which freezes rAF.
+    """
+    subprocess.run(["powershell", "-NoProfile", "-Command",
+                    "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | "
+                    "Where-Object { $_.CommandLine -like '*%s*' } | "
+                    "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
+                    % os.path.basename(PROFILE)],
+                   capture_output=True, text=True)
+    time.sleep(2)
+    subprocess.Popen([CHROME,
+                      "--user-data-dir=" + PROFILE,
+                      "--no-first-run", "--no-default-browser-check",
+                      "--disable-infobars",
+                      "--autoplay-policy=no-user-gesture-required",
+                      "--remote-debugging-port=%d" % DEBUG_PORT,
+                      "--ignore-certificate-errors",
+                      "--window-position=0,0", "--window-size=1920,1200",
+                      url])
+    # Wait for the debugging port to answer rather than for a fixed delay: on a
+    # busy machine Chrome takes longer than eight seconds to open it, and the
+    # first CDP call then fails with ECONNREFUSED before anything has run.
+    import urllib.request
+    for _ in range(40):
+        try:
+            with urllib.request.urlopen(
+                    "http://localhost:%d/json/version" % DEBUG_PORT, timeout=2):
+                time.sleep(2)
+                return
+        except Exception:
+            time.sleep(1)
+    time.sleep(5)
+
+
+def kiosk_stop():
+    subprocess.run(["powershell", "-NoProfile", "-File",
+                    os.path.join(os.path.dirname(HERE), "kiosk-close.ps1"), "-Client"],
+                   capture_output=True, text=True)
+
+
+# ── reading what came back ──────────────────────────────────────────────────
+
+def parse_latency(text):
+    """'28.4ms' -> 28.4. '--' and None mean the overlay had nothing to add up."""
+    if not text:
+        return None
+    m = re.search(r"([0-9]+(?:\.[0-9]+)?)", text)
+    return float(m.group(1)) if m else None
+
+
+def negotiated(stats):
+    """What the overlay says actually happened, as opposed to what was asked.
+
+    A HEVC that came back H.264, a 4:4:4 that came back 4:2:0 and an HDR that
+    came back SDR are silent everywhere else. This is the row that tells.
+    """
+    rows = stats.get("rows") or {}
+    get = lambda *names: next((rows[k] for n in names for k in rows if n.lower() in k.lower()), "")
+    return {
+        "resolution": get("Resolution"),
+        "framerate": get("Framerate", "FPS"),
+        "bitrate": get("Bitrate"),
+        "codec": get("Codec"),
+        "enhancer": get("Enhancer"),
+        "transport": get("Transport"),
+        "decoder": get("Decoder"),
+    }
+
+
+def verdict(machine, status, stats, reason):
+    """green / yellow / red / grey, with the fleet rules that override numbers.
+
+    On a VM, a machine with no GPU or a software encoder, latency is never a
+    failure criterion — those cells are grey or yellow, never red. What is
+    validated there is that it works at all.
+    """
+    if status == "skipped":
+        return "grey", reason
+    if status != "ok":
+        if not fleet.MACHINES[machine].get("perf", True):
+            return "yellow", reason
+        return "red", reason
+    lat = parse_latency((stats or {}).get("latencyText"))
+    if lat is None:
+        return "yellow", "stream ran, the overlay never totalled a latency"
+    if not fleet.MACHINES[machine].get("perf", True):
+        return "green", "compatibility bench: latency is reported, never judged"
+    if lat > 150:
+        return "yellow", "total latency %.1f ms is off the mark" % lat
+    return "green", ""
+
+
+# ── one pass ────────────────────────────────────────────────────────────────
+
+def run_pass(d, chapter, machine, spec, base, seconds, settle, access):
+    rec = {
+        "chapter": chapter, "machine": machine, "pass": spec["id"],
+        "factor": spec.get("factor", ""),
+        "target": spec.get("target", access["target"]),
+        "via": spec.get("via", "lan"),
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+    settings = dict(base)
+    settings.update(spec.get("settings") or {})
+    rec["requested"] = settings
+
+    shot_dir = os.path.join(SCREENS, machine, chapter)
+    shot = os.path.join(shot_dir, spec["id"] + ".png")
+
+    try:
+        want_url = access["rendezvous"] if rec["via"] == "rendezvous" else access["lan"]
+        if not want_url:
+            raise drive.PassFailed("no %s URL for this machine" % rec["via"])
+        # Reaching a host through the rendezvous is a slower thing than dialling
+        # its address: the page has to be fetched from stream.dev, a tunnel has
+        # to come up, and only then does the host list arrive. The LAN patience
+        # applied to it reported "no host card" on machines that were simply
+        # still connecting.
+        patience = 45 if rec["via"] == "rendezvous" else 25
+        if want_url != access.get("_current"):
+            d.navigate(want_url)
+            access["_current"] = want_url
+            d.wait_library(access["name"], access["pin"], tries=patience)
+
+        d.apply_settings(settings)
+        if not d.wait_library(access["name"], access["pin"], tries=patience):
+            # A host that has just ended a stream can take a while to serve its
+            # library again, and a reload that lands in that window shows an
+            # empty page. Going back to the URL once is cheap and turns a
+            # spurious failure into a pass.
+            d.navigate(want_url)
+            if not d.wait_library(access["name"], access["pin"], tries=patience):
+                raise drive.PassFailed("no host card after the reload, twice")
+
+        card, app = d.pick_tile(rec["target"])
+        rec["tile"] = {"host": card.get("name", ""), "app": app.get("name", ""),
+                       "appId": app.get("appId", "")}
+        d.launch(card, app)
+        d.wait_picture(timeout=60)
+        time.sleep(settle)
+
+        checks = spec.get("checks") or []
+        if "input" in checks:
+            d.poke_input()
+        time.sleep(seconds)
+
+        d.expand_latency_detail()
+        stats = d.stats()
+        rec["stats"] = stats
+        rec["negotiated"] = negotiated(stats)
+        rec["latencyMs"] = parse_latency(stats.get("latencyText"))
+        rec["legs"] = stats.get("legs") or {}
+        if "audio" in checks:
+            rec["audio"] = d.audio_state()
+        rec["screenshot"] = d.screenshot(shot)
+        rec["status"] = "ok"
+        rec["reason"] = ""
+    except drive.NotApplicable as e:
+        rec["status"] = "skipped"
+        rec["reason"] = str(e)
+        try:
+            rec["screenshot"] = d.screenshot(shot)
+        except Exception:
+            rec["screenshot"] = None
+    except drive.PassFailed as e:
+        rec["status"] = "failed"
+        rec["reason"] = str(e)
+        try:
+            rec["screenshot"] = d.screenshot(shot)
+        except Exception:
+            rec["screenshot"] = None
+    except (Exception, SystemExit) as e:  # nothing here may end the campaign
+        rec["status"] = "failed"
+        rec["reason"] = "%s: %s" % (type(e).__name__, e)
+        rec["screenshot"] = None
+    finally:
+        try:
+            d.stop()
+        except Exception:
+            pass
+
+    rec["verdict"], why = verdict(machine, rec["status"], rec.get("stats"), rec.get("reason", ""))
+    if why and not rec.get("reason"):
+        rec["reason"] = why
+    return rec
+
+
+def already_done(chapter, machine):
+    """Pass ids already recorded for this chapter and machine, for --resume.
+
+    Sixty passes is an hour and a half. A run that dies on pass four must be
+    restartable without throwing away the three that worked.
+    """
+    done = set()
+    path = os.path.join(RESULTS, "passes.jsonl")
+    if not os.path.exists(path):
+        return done
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if rec.get("chapter") == chapter and rec.get("machine") == machine                     and rec.get("status") == "ok":
+                done.add(rec.get("pass"))
+    return done
+
+
+def run_chapter(key, matrix, access_by_machine, only=None, one_pass=None, resume=False):
+    chapter = matrix["chapters"][key]
+    base = matrix["base"]
+    seconds = matrix.get("seconds", 10)
+    settle = matrix.get("settleSeconds", 6)
+
+    machines = [m for m in chapter["machines"] if not only or m in only]
+    if not machines:
+        return []
+
+    out = []
+    first = access_by_machine.get(machines[0], {})
+    kiosk_start(first.get("lan") or "about:blank")
+    d = drive.Driver(DEBUG_PORT)
+
+    for machine in machines:
+        access = dict(access_by_machine.get(machine) or {})
+        access.setdefault("target", chapter.get("target", "display"))
+        access["_current"] = None
+        print("\n=== %s · %s ===" % (key, machine))
+        # A fresh PIN per machine, minted right now. The one from chapter 1 was
+        # minted an hour and several restarts ago, and a client that cannot
+        # unlock just shows an empty page — which the pass then reports as "no
+        # host card", blaming the host for a stale credential.
+        try:
+            probe = fleet.probe(machine)
+            pin = (probe.get("pin") or {}).get("pin")
+            if pin:
+                access["pin"] = pin
+            lan = fleet.lan_url(machine, probe)
+            if lan:
+                access["lan"] = lan
+            print("  fresh pin=%s lan=%s" % (bool(pin), access.get("lan")), flush=True)
+        except Exception as e:
+            print("  could not re-probe (%s) — using chapter 1's access" % e, flush=True)
+        if not access.get("lan"):
+            print("  no address — skipped")
+            continue
+        done = already_done(key, machine) if resume else set()
+        for spec in chapter["passes"]:
+            if one_pass and spec["id"] != one_pass:
+                continue
+            if spec["id"] in done:
+                print("  %-16s already recorded — skipped" % spec["id"], flush=True)
+                continue
+            print("  %-16s %s" % (spec["id"], spec.get("factor", "")), flush=True)
+            rec = run_pass(d, key, machine, spec, base, seconds, settle, access)
+            mark = {"green": "OK", "yellow": "~~", "red": "!!", "grey": "--"}.get(rec["verdict"], "??")
+            print("      %s  latency=%s  %s" % (
+                mark, rec.get("latencyMs"), rec.get("reason", "")[:90]), flush=True)
+            append("passes.jsonl", rec)
+            out.append(rec)
+    kiosk_stop()
+    return out
+
+
+# ── chapter 1 ───────────────────────────────────────────────────────────────
+
+def packages_for(package_dir):
+    """Map each machine to the artifact it takes, by OS and architecture."""
+    found = {}
+    for root, _dirs, files in os.walk(package_dir):
+        for name in files:
+            found[name] = os.path.join(root, name)
+
+    def pick(*needles):
+        for name, path in sorted(found.items()):
+            low = name.lower()
+            if all(n in low for n in needles):
+                return path
+        return None
+
+    return {
+        "local":     pick("win", "x64", ".exe"),
+        "mw-intel":  pick("win", "x64", ".exe"),
+        "mw-arm":    pick("win", "arm64", ".exe"),
+        "mw-mac":    pick(".pkg"),
+        "um790pro":  pick(".deb"),
+        "mw-debian": pick(".deb"),
+    }
+
+
+def run_chapter1(package_dir, only=None):
+    mapping = packages_for(package_dir)
+    out = []
+    for mid in fleet.MACHINES:
+        if only and mid not in only:
+            continue
+        pkg = mapping.get(mid)
+        print("\n=== chapter 1 · %s ===" % mid)
+        if not pkg:
+            rec = {"machine": mid, "status": "skipped",
+                   "reason": "no artifact for this OS/arch in %s" % package_dir}
+            print("  " + rec["reason"])
+            append("chapter1.jsonl", rec)
+            out.append(rec)
+            continue
+        rec = installer.chapter1(mid, pkg, also_prod=(mid == "local"))
+        probe = rec.get("afterUpdate") or {}
+        native = probe.get("native") or {}
+        rec["status"] = "ok" if native.get("available") else "failed"
+        rec["reason"] = "" if native.get("available") else (
+            native.get("reason") or native.get("error") or "the native host did not come up")
+        print("  autostart=%s running=%s native=%s pin=%s" % (
+            probe.get("autostart"), probe.get("running"),
+            native.get("available"), bool(rec.get("pin"))))
+        append("chapter1.jsonl", rec)
+        out.append(rec)
+    return out
+
+
+def shots_chapter1(access, only=None):
+    """Open each host in the bench client and photograph its home page.
+
+    This is the evidence for chapter 1 that no shell command can give: the PIN
+    really unlocks, the host list really renders, and the version badge in the
+    header really reads what the log claimed. One picture per machine.
+    """
+    machines = [m for m in fleet.MACHINES if not only or m in only]
+    if not machines:
+        return []
+    kiosk_start("about:blank")
+    d = drive.Driver(DEBUG_PORT)
+    out = []
+    for mid in machines:
+        acc = access.get(mid) or {}
+        url = acc.get("lan")
+        rec = {"machine": mid, "url": url}
+        try:
+            d.navigate(url)
+            rec["unlocked"] = d.wait_library(acc.get("name", "bench"), acc.get("pin", ""),
+                                             tries=15)
+            rec["header"] = d.eval(
+                "JSON.stringify((document.querySelector('.app-version, .version-badge')"
+                " || {}).textContent || '')").strip('"')
+            rec["shot"] = d.screenshot(os.path.join(SCREENS, mid, "01-install", "home.png"))
+        except Exception as e:
+            rec["unlocked"] = False
+            rec["error"] = "%s: %s" % (type(e).__name__, e)
+            try:
+                rec["shot"] = d.screenshot(os.path.join(SCREENS, mid, "01-install", "home.png"))
+            except Exception:
+                rec["shot"] = None
+        print("  %-10s unlocked=%s shot=%s" % (mid, rec.get("unlocked"),
+                                               bool(rec.get("shot"))), flush=True)
+        append("chapter1-shots.jsonl", rec)
+        out.append(rec)
+    kiosk_stop()
+    return out
+
+
+def access_map():
+    """Where the client goes for each machine, and with what PIN.
+
+    Built from chapter 1's results when they exist — that is where the PIN was
+    minted — and from the machine table otherwise.
+    """
+    access = {}
+    path = os.path.join(RESULTS, "chapter1.jsonl")
+    by_machine = {}
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                by_machine[rec.get("machine")] = rec
+    for mid, m in fleet.MACHINES.items():
+        rec = by_machine.get(mid, {})
+        access[mid] = {
+            "lan": rec.get("lanUrl") or fleet.lan_url(mid, {}),
+            "rendezvous": rec.get("rendezvousUrl", ""),
+            "pin": rec.get("pin", ""),
+            "name": "bench",
+        }
+    return access
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--chapter", action="append", default=[],
+                    help="1, 2 or 3; repeatable. Default: all three")
+    ap.add_argument("--package", default="", help="directory holding the CI artifacts")
+    ap.add_argument("--only", action="append", default=[], help="restrict to a machine")
+    ap.add_argument("--pass", dest="one_pass", default="", help="restrict to one pass id")
+    ap.add_argument("--plan-only", action="store_true")
+    ap.add_argument("--resume", action="store_true",
+                    help="skip passes already recorded as ok for that machine")
+    ns = ap.parse_args()
+
+    matrix = load_matrix()
+    chapters = ns.chapter or ["1", "2", "3"]
+    if chapters == ["shots"]:
+        chapters = []
+
+    if ns.plan_only:
+        print("base settings: %s\n" % json.dumps(matrix["base"], indent=2))
+        for key, ch in matrix["chapters"].items():
+            machines = [m for m in ch["machines"] if not ns.only or m in ns.only]
+            print("%s — %s" % (key, ch["label"]))
+            print("  machines: %s" % ", ".join(machines) or "(none)")
+            for spec in ch["passes"]:
+                print("    %-16s %-38s target=%s via=%s" % (
+                    spec["id"], spec.get("factor", ""),
+                    spec.get("target", ch.get("target")), spec.get("via", "lan")))
+            print("  = %d passes\n" % (len(ch["passes"]) * len(machines)))
+        return
+
+    os.makedirs(RESULTS, exist_ok=True)
+    if "1" in chapters:
+        if not ns.package:
+            raise SystemExit("chapter 1 needs --package <dir with the CI artifacts>")
+        run_chapter1(ns.package, only=ns.only or None)
+
+    access = access_map()
+    if "1" in chapters or ns.chapter == ["shots"]:
+        print("\n=== chapter 1 · home pages ===")
+        shots_chapter1(access, only=ns.only or None)
+    if "2" in chapters:
+        run_chapter("02-dualrtx", matrix, access, only=ns.only or None,
+                    one_pass=ns.one_pass, resume=ns.resume)
+    if "3" in chapters:
+        run_chapter("03-fleet", matrix, access, only=ns.only or None,
+                    one_pass=ns.one_pass, resume=ns.resume)
+
+
+if __name__ == "__main__":
+    main()

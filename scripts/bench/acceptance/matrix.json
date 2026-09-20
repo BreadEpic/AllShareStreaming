@@ -1,0 +1,249 @@
+{
+  "_comment": [
+    "The acceptance matrix: does this build install, update and stream on the",
+    "fleet? One factor moves per pass, everything else stays on `base`.",
+    "",
+    "This is NOT the /bench campaign. That one measures how fast a pipeline is;",
+    "this one answers a go/no-go before a deployment. Click-to-photon is out of",
+    "scope here on purpose — the only number kept is the overlay's total",
+    "latency, which is the one a user reads.",
+    "",
+    "`target` names what to click, not a setting:",
+    "  vdisplay  the MoonlightWeb Virtual Display (app id 1000)",
+    "  display   the first physical display of the native host (app id 1)",
+    "  sunshine  the Sunshine/Wolf host of that machine, whatever it offers",
+    "`via` is how the client reaches the host: `lan` on its address, or",
+    "`rendezvous` through stream.dev — the path an internet user takes."
+  ],
+  "base": {
+    "video_codec": "hevc",
+    "stream_resolution": "auto",
+    "stream_fps": 60,
+    "stream_bitrate_auto": true,
+    "hdr_enabled": false,
+    "chroma_444_enabled": false,
+    "video_enhancement": "off",
+    "gaming_mode": false,
+    "mute_host_audio": true,
+    "show_performance_stats": true,
+    "seamless_switching": true
+  },
+  "chapters": {
+    "02-dualrtx": {
+      "label": "Chapter 2 — DualRTX host, DualRTX client",
+      "machines": [
+        "local"
+      ],
+      "target": "vdisplay",
+      "passes": [
+        {
+          "id": "default",
+          "factor": "reference",
+          "settings": {}
+        },
+        {
+          "id": "res-1440p",
+          "factor": "resolution 1440p",
+          "settings": {
+            "stream_resolution": "fixed",
+            "stream_height": 1440
+          }
+        },
+        {
+          "id": "res-device",
+          "factor": "resolution Match my screen",
+          "settings": {
+            "stream_resolution": "device"
+          }
+        },
+        {
+          "id": "res-custom",
+          "factor": "resolution Custom 1200x1600",
+          "settings": {
+            "stream_resolution": "custom",
+            "stream_custom_width": 1200,
+            "stream_custom_height": 1600
+          }
+        },
+        {
+          "id": "res-auto",
+          "factor": "resolution Auto",
+          "settings": {
+            "stream_resolution": "auto"
+          }
+        },
+        {
+          "id": "fps-auto",
+          "factor": "framerate Auto",
+          "settings": {
+            "stream_fps": 0
+          }
+        },
+        {
+          "id": "fps-120",
+          "factor": "framerate 120",
+          "settings": {
+            "stream_fps": 120
+          }
+        },
+        {
+          "id": "hdr-on",
+          "factor": "HDR on",
+          "settings": {
+            "hdr_enabled": true
+          }
+        },
+        {
+          "id": "enhancer-on",
+          "factor": "Enhancer on",
+          "settings": {
+            "video_enhancement": "on"
+          }
+        },
+        {
+          "id": "target-display",
+          "factor": "target native Display",
+          "settings": {},
+          "target": "display"
+        },
+        {
+          "id": "target-vdisplay",
+          "factor": "target Virtual Display",
+          "settings": {},
+          "target": "vdisplay"
+        },
+        {
+          "id": "target-sunshine",
+          "factor": "target Sunshine",
+          "settings": {},
+          "target": "sunshine"
+        },
+        {
+          "id": "gaming-on",
+          "factor": "Gaming mode on",
+          "settings": {
+            "gaming_mode": true
+          }
+        },
+        {
+          "id": "gaming-off",
+          "factor": "Gaming mode off",
+          "settings": {
+            "gaming_mode": false
+          }
+        },
+        {
+          "id": "audio-on",
+          "factor": "host audio unmuted",
+          "settings": {
+            "mute_host_audio": false
+          },
+          "checks": [
+            "audio"
+          ]
+        },
+        {
+          "id": "ref-tail",
+          "factor": "reference, replayed",
+          "settings": {}
+        }
+      ]
+    },
+    "03-fleet": {
+      "label": "Chapter 3 — every other host, DualRTX client",
+      "machines": [
+        "mw-mac",
+        "mw-intel",
+        "mw-arm",
+        "um790pro",
+        "mw-debian"
+      ],
+      "target": "display",
+      "passes": [
+        {
+          "id": "default",
+          "factor": "reference",
+          "settings": {},
+          "checks": [
+            "audio",
+            "input"
+          ]
+        },
+        {
+          "id": "res-1440p",
+          "factor": "resolution 1440p",
+          "settings": {
+            "stream_resolution": "fixed",
+            "stream_height": 1440
+          }
+        },
+        {
+          "id": "res-device",
+          "factor": "resolution Match my screen",
+          "settings": {
+            "stream_resolution": "device"
+          }
+        },
+        {
+          "id": "res-custom",
+          "factor": "resolution Custom 1200x1600",
+          "settings": {
+            "stream_resolution": "custom",
+            "stream_custom_width": 1200,
+            "stream_custom_height": 1600
+          }
+        },
+        {
+          "id": "res-auto",
+          "factor": "resolution Auto",
+          "settings": {
+            "stream_resolution": "auto"
+          }
+        },
+        {
+          "id": "target-display",
+          "factor": "target native Display",
+          "settings": {},
+          "target": "display"
+        },
+        {
+          "id": "target-sunshine",
+          "factor": "target Sunshine",
+          "settings": {},
+          "target": "sunshine"
+        },
+        {
+          "id": "via-rendezvous",
+          "factor": "reached through stream.dev",
+          "settings": {},
+          "via": "rendezvous"
+        },
+        {
+          "id": "ref-tail",
+          "factor": "reference, replayed",
+          "settings": {}
+        }
+      ]
+    }
+  },
+  "expect": {
+    "_comment": "What a machine is known NOT to be able to do. A pass that hits one of these is grey with this reason, never red.",
+    "mw-arm": {
+      "codecs": [
+        "h264"
+      ],
+      "note": "Adreno 618 has no hardware encode path in Sunshine: H.264 only, no HEVC, no AV1. Compatibility bench, latency is never a failure here."
+    },
+    "mw-debian": {
+      "codecs": [
+        "h264"
+      ],
+      "note": "Hyper-V VM, no GPU: the encoder is openh264 in software, so HEVC always comes back H.264. Compatibility bench — latency is never a failure here, and that codec fallback is the expected answer, not a silent downgrade."
+    },
+    "um790pro": {
+      "note": "Booted under Ubuntu 22.04: VA-API native host, and the GameStream backend on this box is Wolf, not Sunshine."
+    }
+  },
+  "seconds": 10,
+  "settleSeconds": 6
+}
