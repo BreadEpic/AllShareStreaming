@@ -272,6 +272,10 @@ public:
     /// session that starts after it was said.
     void setClientRefresh(int milliHz, bool vsync);
 
+    /// The client asks for no more than @p fps (a `clientfpscap` message, 0
+    /// lifts it): forwarded to Session::setClientFpsCap. Safe from any thread.
+    void setClientFpsCap(int fps);
+
     /// The viewer moved its bitrate (a `clientbitrate` message): the
     /// estimate following the frame the host really streams. The session's
     /// ceiling from the next frame — see mw::native::Session::

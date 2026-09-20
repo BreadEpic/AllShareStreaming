@@ -1333,6 +1333,17 @@ void DataChannelRelay::onInputMessage(const std::string& message)
         return;
     }
 
+    if (type == "clientfpscap") {
+        // The client's decoder keeps a queue it never empties: it asks for
+        // fewer frames than the viewer set rather than drop them and pay a
+        // keyframe each time. Zero lifts the cap. See Session::setClientFpsCap.
+        //
+        // Native host only: a GameStream host's frame rate is fixed at launch.
+        if (auto* native = qobject_cast<NativeMediaEngine*>(m_Shim))
+            native->setClientFpsCap(msg["fps"].toInt(0));
+        return;
+    }
+
     if (type == "clientbitrate") {
         // The viewer's automatic bitrate follows the frame the host really
         // streams (its own display's size under Auto, a mode change): the

@@ -593,6 +593,11 @@ void NativeMediaEngine::setClientRefresh(int milliHz, bool vsync)
     if (m_Session) m_Session->setClientRefresh(milliHz, vsync);
 }
 
+void NativeMediaEngine::setClientFpsCap(int fps)
+{
+    if (m_Session) m_Session->setClientFpsCap(fps);
+}
+
 void NativeMediaEngine::setClientBitrate(int kbps)
 {
     // The same bounds as the setting itself (AppSettings::setStreamBitrate).

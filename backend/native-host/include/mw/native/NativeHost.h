@@ -354,6 +354,13 @@ public:
     /// runs at the host's own rate.
     virtual void setClientRefresh(int milliHz, bool vsync) = 0;
 
+    /// The client cannot take the frame rate the viewer set — its decoder
+    /// keeps a queue it never empties — and asks for no more than @p fps.
+    /// Zero lifts the cap. It only ever lowers the rate: the cadence is
+    /// re-chosen between two frames like a client screen that changed, and the
+    /// encoder's per-frame budget follows. Safe from any thread.
+    virtual void setClientFpsCap(int fps) = 0;
+
     /// Where to hear that the viewer's input stopped reaching the host, or
     /// started again — see InputGate. Delivered on the thread that injects,
     /// i.e. the caller's own sendInput() thread, at most once per change.

@@ -611,6 +611,19 @@ public:
         m_ClientRefreshDirty.store(true);
     }
 
+    void setClientFpsCap(int fps) override
+    {
+        // Bounded like everything that crosses the network from a page. Zero
+        // lifts the cap; a cap under 15 would be a slideshow nobody asked for.
+        if (fps < 0) fps = 0;
+        if (fps > 0 && fps < 15) fps = 15;
+        if (fps > 1000) fps = 1000;
+        if (m_ClientFpsCap.exchange(fps) == fps) return;
+        // Same road as a client screen that changed: the loop re-chooses the
+        // gate between two frames.
+        m_ClientRefreshDirty.store(true);
+    }
+
 private:
     bool takeLinkFeedback(LinkFeedback& out)
     {
@@ -1625,10 +1638,15 @@ private:
         const int displayHz = (m_DisplayMilliHz + 500) / 1000;
         int fps = m_Config.fps > 0 ? m_Config.fps : displayHz;
         if (fps <= 0) fps = 60;
+        // A client whose decoder cannot keep up asks for fewer frames than the
+        // viewer set (setClientFpsCap). It only ever lowers the rate.
+        const int cap = m_ClientFpsCap.load();
+        const bool capped = cap > 0 && cap < fps;
+        if (capped) fps = cap;
+        const int wanted = capped ? cap : m_Config.fps;
 
         AlignedCadence aligned;
-        if (m_Config.fps > 0 && clientVsync)
-            aligned = alignCadence(m_Config.fps, clientMilliHz, displayHz);
+        if (wanted > 0 && clientVsync) aligned = alignCadence(wanted, clientMilliHz, displayHz);
 
         if (aligned.aligned) {
             fps = aligned.fps;
@@ -1640,6 +1658,7 @@ private:
                    " Hz display" +
                    (cadence.enabled() ? " — the first present of each interval is encoded, at once"
                                       : " — every present is encoded");
+            if (capped) line += " (the client asked for no more than " + std::to_string(cap) + ")";
             return fps;
         }
         cadence = FrameCadence(fps < displayHz ? fps : 0, displayHz);
@@ -1647,6 +1666,7 @@ private:
                hzString(m_DisplayMilliHz) + " Hz display" +
                (cadence.enabled() ? " — the first present of each interval is encoded, at once"
                                   : " — every present is encoded");
+        if (capped) line += " (the client asked for no more than " + std::to_string(cap) + ")";
         return fps;
     }
 
@@ -1691,6 +1711,9 @@ private:
     std::atomic<int> m_ClientMilliHz{0};
     std::atomic<bool> m_ClientVsync{false};
     std::atomic<bool> m_ClientRefreshDirty{false};
+    /// Frames per second the client asked not to exceed, 0 for none — see
+    /// setClientFpsCap.
+    std::atomic<int> m_ClientFpsCap{0};
 
     /// Whichever route is giving us pictures — the scanout reader, or the
     /// portal on a machine that may not read it (IScreenCapture.h).
