@@ -156,8 +156,8 @@ export class PipelineDiag {
      *   queueFull    — decoder output arrived with the queue already full
      *   backpressure — never submitted: decoder input queue saturated / no reference
      */
-    noteDrop(cause) {
-        if (this._drops[cause] !== undefined) this._drops[cause]++;
+    noteDrop(cause, count = 1) {
+        if (this._drops[cause] !== undefined) this._drops[cause] += count;
     }
 
     /** Flat snapshot — postMessage-safe (structured clone of plain numbers). */

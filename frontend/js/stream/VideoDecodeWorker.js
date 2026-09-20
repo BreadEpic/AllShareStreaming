@@ -98,6 +98,7 @@ const S = {
     frameCount: 0,
     _lastChunkTs: 0,
     _queueStallStart: 0,
+    _activeDecoderCfg: null, // last config applied, re-applied after a queue flush
     _idrRequested: false,
     _lastIdrRequestMs: 0,
 
@@ -417,6 +418,8 @@ function configureDecoder() {
                 S.decoderConfigured = true;
                 S.decoderConfiguring = false;
                 S._noDescription = noDescription;
+                // Kept for flushDecodeQueue: reset() unconfigures the decoder.
+                S._activeDecoderCfg = cfgToUse;
                 console.log(
                     '[VideoWorker] Decoder CONFIGURED codec=' +
                         cfgToUse.codec +
@@ -641,6 +644,26 @@ function flushPendingFrames() {
     }
 }
 
+// reset() is the only WebCodecs call that empties the decode queue; it also
+// unconfigures the decoder, so the active config is applied again right away.
+// The caller must submit a keyframe next.
+function flushDecodeQueue() {
+    if (!S.decoder || !S._activeDecoderCfg) return false;
+    const queued = S.decoder.decodeQueueSize;
+    try {
+        S.decoder.reset();
+        S.decoder.configure(S._activeDecoderCfg);
+    } catch (e) {
+        console.warn('[VideoWorker] Decode queue flush failed: ' + e.message);
+        return false;
+    }
+    S._chunkSubmitTimes.clear();
+    S.stats.dropped += queued;
+    S.diag.noteDrop('backpressure', queued);
+    console.warn('[VideoWorker] Decode queue flushed at the keyframe: ' + queued + ' stale');
+    return true;
+}
+
 function decodeFrame(data, isKeyframe, backendTs, arrivalAbs) {
     if (!S.decoderConfigured) {
         if (S.pendingFrames.length < 120)
@@ -691,6 +714,10 @@ function decodeFrame(data, isKeyframe, backendTs, arrivalAbs) {
     const type = isKeyframe ? 'key' : 'delta';
     const useAnnexB = S._noDescription && S.nalParser.codec === CODEC_HEVC;
     const avccData = toAvcc(data, S.decoderConfigured, S.nalParser.codec, useAnnexB);
+
+    // A keyframe behind a saturated queue recovers nothing: it would wait its
+    // turn after every stale frame already submitted. Flush them first.
+    if (isKeyframe && S.decoder.decodeQueueSize >= S.DECODE_QUEUE_MAX) flushDecodeQueue();
 
     try {
         const chunk = new EncodedVideoChunk({ type, timestamp, duration: 16667, data: avccData });

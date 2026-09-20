@@ -1383,6 +1383,8 @@ export class StreamView {
         this.QUEUE_STALL_MS = 200;
         this.QUEUE_RESET_MS = 1000;
         this._queueStallStart = 0;
+        // Last config applied to the decoder, re-applied after a queue flush.
+        this._activeDecoderCfg = null;
         // Last EncodedVideoChunk timestamp (µs) — enforces monotonicity.
         this._lastChunkTs = -1;
 
@@ -2581,6 +2583,8 @@ export class StreamView {
                     this.decoderConfigured = true;
                     this.decoderConfiguring = false;
                     this._noDescription = noDescription;
+                    // Kept for _flushDecodeQueue: reset() unconfigures the decoder.
+                    this._activeDecoderCfg = cfgToUse;
                     console.log(
                         '[StreamView] VideoDecoder configured: codec=' +
                             cfgToUse.codec +
@@ -3163,6 +3167,13 @@ export class StreamView {
             console.error('[StreamView] NAL types in empty-avcc frame:', types.join(', '));
         }
 
+        // A keyframe behind a saturated queue recovers nothing: it would wait
+        // its turn after every stale frame already submitted, and the latency
+        // they built up stays. Flush them — the keyframe needs none of them.
+        if (isKeyframe && this.decoder.decodeQueueSize >= this.DECODE_QUEUE_MAX) {
+            this._flushDecodeQueue();
+        }
+
         try {
             const chunk = new EncodedVideoChunk({
                 type: type,
@@ -3209,6 +3220,30 @@ export class StreamView {
             perf: performance.now(),
             backendTs: backendTs || 0,
         });
+    }
+
+    /**
+     * Throw away every chunk the decoder has not decoded yet. reset() is the
+     * only WebCodecs call that empties the decode queue; it also unconfigures
+     * the decoder, so the active config is applied again right away. The caller
+     * must submit a keyframe next.
+     * @returns {boolean} false when nothing could be flushed
+     */
+    _flushDecodeQueue() {
+        if (!this.decoder || !this._activeDecoderCfg) return false;
+        const queued = this.decoder.decodeQueueSize;
+        try {
+            this.decoder.reset();
+            this.decoder.configure(this._activeDecoderCfg);
+        } catch (e) {
+            console.warn('[StreamView] Decode queue flush failed: ' + e.message);
+            return false;
+        }
+        this._chunkSubmitTimes.clear();
+        this.stats.dropped += queued;
+        this._diag.noteDrop('backpressure', queued);
+        console.warn('[StreamView] Decode queue flushed at the keyframe: ' + queued + ' stale');
+        return true;
     }
 
     onDecodedFrame(frame) {
