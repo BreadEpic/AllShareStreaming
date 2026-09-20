@@ -1691,6 +1691,10 @@ private:
                 m_DuplicationPaintsPointer && m_CaptureApi == CaptureApi::DxgiDuplication
                     ? capture::AcquireStatus::Lost
                     : m_Capture->acquire(timeoutMs, frame);
+            if (status == capture::AcquireStatus::PointerOnly)
+                m_PointerWakes++;
+            else if (status == capture::AcquireStatus::Timeout)
+                m_TimeoutWakes++;
 
             // Anything but a timeout means the screen is alive again, and the
             // frame about to be encoded is a moving one. Restore the ordinary
@@ -2501,6 +2505,19 @@ private:
         }
         log::info(line);
 
+        // The turns of the loop that had no present to carry, against the ones
+        // that did: what the pointer alone costs the capture thread.
+        if (seconds > 0) {
+            const auto perSecond = [seconds](int64_t n) {
+                return std::to_string(static_cast<int>(static_cast<double>(n) / seconds + 0.5));
+            };
+            log::info("[native] capture wake-ups: " + std::to_string(m_PresentsSeen) +
+                      " presents (" + perSecond(m_PresentsSeen) + "/s), " +
+                      std::to_string(m_PointerWakes) + " pointer-only (" +
+                      perSecond(m_PointerWakes) + "/s), " + std::to_string(m_TimeoutWakes) +
+                      " timeouts (" + perSecond(m_TimeoutWakes) + "/s)");
+        }
+
         // What the bridge cost, when there was one: the figure that says how
         // much of this session's convert stage was the copy and not the pass.
         if (m_Bridge && m_Bridge->transfers() > 0) {
@@ -2548,6 +2565,11 @@ private:
     std::atomic<bool> m_ClientRefreshDirty{false};
     /// Presents the display delivered (AcquireStatus::Ok), for the log.
     int64_t m_PresentsSeen = 0;
+    /// Turns of the loop that carried no present: the pointer alone moved, or
+    /// nothing did. A mouse swept at its report rate wakes the capture a
+    /// thousand times a second between the presents — the log says how often.
+    int64_t m_PointerWakes = 0;
+    int64_t m_TimeoutWakes = 0;
     int64_t m_LoopStartUs = 0;
 
     std::unique_ptr<capture::IWindowsCapture> m_Capture;
