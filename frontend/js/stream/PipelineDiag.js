@@ -118,6 +118,21 @@ export class PipelineDiag {
         // Cumulative, by cause — deltas are computed by the reader so the
         // display can show a per-second rate without resetting shared state.
         this._drops = { stale: 0, queueFull: 0, backpressure: 0 };
+        // Recoveries, cumulative too. A collapse that feeds itself — a drop asks
+        // for a keyframe, the keyframe flushes or resets the decoder, the
+        // decoder restarts late and the queue fills again — reads in the
+        // queues exactly like a decoder that is simply too slow; only the
+        // count of what was done about it tells them apart.
+        this._recoveries = { idr: 0, flush: 0, reset: 0 };
+    }
+
+    /**
+     * A recovery action was taken.
+     * @param {'idr'|'flush'|'reset'} kind keyframe requested / decode queue
+     *   flushed at a keyframe / decoder torn down and rebuilt
+     */
+    noteRecovery(kind) {
+        if (this._recoveries[kind] !== undefined) this._recoveries[kind]++;
     }
 
     /**
@@ -198,6 +213,9 @@ export class PipelineDiag {
             dropStale: this._drops.stale,
             dropQueueFull: this._drops.queueFull,
             dropBackpressure: this._drops.backpressure,
+            recoverIdr: this._recoveries.idr,
+            recoverFlush: this._recoveries.flush,
+            recoverReset: this._recoveries.reset,
         };
     }
 }
@@ -355,6 +373,11 @@ export function formatDiag(diag, rates) {
         diag.dropQueueFull +
         ' bp ' +
         diag.dropBackpressure +
-        ')'
+        ') · idr ' +
+        (diag.recoverIdr || 0) +
+        ' flush ' +
+        (diag.recoverFlush || 0) +
+        ' reset ' +
+        (diag.recoverReset || 0)
     );
 }

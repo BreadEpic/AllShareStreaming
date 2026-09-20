@@ -2347,6 +2347,7 @@ export class StreamView {
         // Guard: prevent re-entrant recovery (error callback may fire during
         // setupDecoder(), which would loop back to this method)
         if (this._decoderRecovering) return;
+        this._diag.noteRecovery('reset');
         // Guard: limit total recovery attempts to avoid infinite loops on
         // a fundamentally broken connection
         this._recoveryAttempts++;
@@ -2491,6 +2492,7 @@ export class StreamView {
         this._idrRequested = true;
         this._lastIdrRequestMs = now;
         console.log('[StreamView] Requesting IDR (' + reason + ')');
+        this._diag.noteRecovery('idr');
         this.webrtc.send({ type: 'requestidr' });
         this._recordCongestionEvent('sv:' + reason);
     }
@@ -3251,6 +3253,7 @@ export class StreamView {
         this._chunkSubmitTimes.clear();
         this.stats.dropped += queued;
         this._diag.noteDrop('backpressure', queued);
+        this._diag.noteRecovery('flush');
         console.warn('[StreamView] Decode queue flushed at the keyframe: ' + queued + ' stale');
         return true;
     }
