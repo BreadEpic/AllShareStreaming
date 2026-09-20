@@ -103,7 +103,8 @@ elseif(APPLE)
         src/platform/macos/MacSession.mm
         src/capture/macos/SckCapture.mm
         src/encode/macos/VtEncoder.mm
-        src/input/macos/CgInput.mm)
+        src/input/macos/CgInput.mm
+        src/input/macos/MacPointerAccel.mm)
     target_sources(mw-native-host PRIVATE ${MW_NATIVE_MACOS_SOURCES})
     # Plain C++ against the CoreAudio C API — no Objective-C, hence outside the
     # ARC list above.
@@ -442,9 +443,13 @@ endif()
 # ── Lab tools ───────────────────────────────────────────────────────────────
 # Instruments for deciding things about the engine, never shipped: off by
 # default, outside the library's licence boundary (tools/ is not scanned, and
-# nothing here links into mw-native-host). Windows only for now — the one tool
-# is a D3D11 shader bench.
-option(MW_BUILD_TOOLS "Build the native host's lab tools (scaler bench)" OFF)
+# nothing here links into mw-native-host). One per platform so far: a D3D11
+# shader bench on Windows, and on macOS the probe that measures the pointer
+# acceleration MacPointerAccel has to reproduce.
+option(MW_BUILD_TOOLS "Build the native host's lab tools (scaler bench, mouse probe)" OFF)
 if(MW_BUILD_TOOLS AND WIN32)
     add_subdirectory(tools/scaler-bench)
+endif()
+if(MW_BUILD_TOOLS AND APPLE)
+    add_subdirectory(tools/mouse-accel-probe)
 endif()

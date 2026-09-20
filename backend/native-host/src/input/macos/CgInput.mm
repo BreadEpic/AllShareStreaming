@@ -240,6 +240,7 @@ bool CgInput::start(std::string& error)
 
     // Where the pointer is now, so relative motion starts from the truth.
     pointerLocation(m_X, m_Y);
+    m_Accel.start();
     m_Recentre.reset();
     m_Modifiers = 0;
     m_ModifierFixes = 0;
@@ -651,9 +652,26 @@ void CgInput::postPointer(double x, double y, int deltaX, int deltaY)
 void CgInput::injectMouseMove(int deltaX, int deltaY)
 {
     if (deltaX == 0 && deltaY == 0) return;
-    // Points and mouse counts are taken as one and the same, which is what
-    // a local mouse at the default speed does. Acceleration is the host's.
-    moveTo(m_X + deltaX, m_Y + deltaY, deltaX, deltaY);
+
+    // What arrives are the MOUSE'S OWN COUNTS — the client asks its browser
+    // for unadjusted movement precisely so that nothing accelerates them
+    // twice. Windows and Linux then hand them to the OS, which applies the
+    // host's pointer speed on the way in; macOS has no such door. CGEventPost
+    // takes a position we computed and the HID driver, where all of Apple's
+    // acceleration lives, never sees the motion. Left alone, one count moved
+    // the pointer one point while the Mac's own mouse got its whole curve,
+    // and aiming through the stream took several times the desk.
+    //
+    // So the curve is applied here, before the event exists, which is where
+    // the driver would have applied it. m_Accel follows the host's tracking
+    // speed and honours a host that has acceleration turned off by doing
+    // nothing at all.
+    int pointsX = deltaX;
+    int pointsY = deltaY;
+    m_Accel.apply(deltaX, deltaY, pointsX, pointsY);
+    if (pointsX == 0 && pointsY == 0) return;
+
+    moveTo(m_X + pointsX, m_Y + pointsY, pointsX, pointsY);
 }
 
 void CgInput::injectMousePosition(const InputEvent& event)

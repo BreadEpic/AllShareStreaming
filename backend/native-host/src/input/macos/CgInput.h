@@ -19,6 +19,7 @@
 
 #include "../IInputSink.h"
 #include "../RecentreDetector.h"
+#include "MacPointerAccel.h"
 
 #include <atomic>
 #include <cstdint>
@@ -36,7 +37,7 @@
 // like the real thing. Thread-safe and microseconds per event, which is what
 // IInputSink asks for.
 //
-// ── Two things macOS makes the sender's job ─────────────────────────────────
+// ── Three things macOS makes the sender's job ───────────────────────────────
 //
 // 1. Modifiers are FLAGS, not keys. A Shift press is posted as a flags-changed
 //    event carrying the new modifier state, and every key or mouse event that
@@ -47,6 +48,12 @@
 //    double-click interval has to say "click count 2" or it is two single
 //    clicks; the OS will not infer it. Same for a drag: a move with a button
 //    held is a "dragged" event, not a "moved" one.
+// 3. Pointer speed is nobody's. A relative move on Windows or Linux goes in
+//    through the OS, which applies the host's own acceleration on the way;
+//    here the event is posted at a position we computed ourselves and the HID
+//    driver is never in the path. So the host's curve is applied on this side,
+//    by MacPointerAccel, or a stream's mouse is several times slower than the
+//    Mac's own.
 //
 // ── Permission ──────────────────────────────────────────────────────────────
 //
@@ -148,6 +155,13 @@ private:
     int m_Top = 0;
     int m_Right = 0;
     int m_Bottom = 0;
+
+    /// The host's pointer speed and acceleration, which CGEventPost does not
+    /// apply for us. Only ever on the TRUE relative path (injectMouseMove):
+    /// the deltas the recentre detector derives are already screen points and
+    /// accelerating them a second time would double the movement they stand
+    /// for. Under m_Mutex like everything else here.
+    MacPointerAccel m_Accel;
 
     /// Whether the application under the pointer keeps warping it back to one
     /// spot — the one case where placing the client's position is wrong.
