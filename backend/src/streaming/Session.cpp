@@ -585,6 +585,8 @@ void StreamSession::onLaunchResult(bool ok, const BackendError& err, const Media
         // paints on vsync — see SessionConfig::clientRefreshMilliHz.
         nativeParams.clientRefreshMilliHz = m_ClientRefreshMilliHz;
         nativeParams.clientVsync = m_ClientVsync;
+        // And the ceiling that alignment may not cross — see setMaxFps.
+        nativeParams.maxFps = m_MaxFps;
         nativeParams.followDisplayShape = m_FollowDisplayShape;
         nativeParams.fitRequestedBox = m_FitRequestedBox;
         nativeParams.allowUpscale = m_AllowUpscale;

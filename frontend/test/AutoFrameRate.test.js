@@ -10,15 +10,36 @@
  * the choice to the caller rather than inventing a rate.
  */
 import { describe, it, expect } from 'vitest';
-import { autoFps, AUTO_FPS_MIN, AUTO_FPS_MAX } from '../js/util/RefreshRate.js';
+import { autoFps, measuredFps, AUTO_FPS_MIN, AUTO_FPS_MAX } from '../js/util/RefreshRate.js';
+
+describe('measuredFps', () => {
+    it('rounds the measured millihertz to whole frames per second', () => {
+        expect(measuredFps(59940)).toBe(60);
+        expect(measuredFps(60000)).toBe(60);
+        expect(measuredFps(119880)).toBe(120);
+        expect(measuredFps(143900)).toBe(144);
+        expect(measuredFps(164800)).toBe(165);
+    });
+
+    it('says what the panel runs at, with no ceiling on it', () => {
+        expect(measuredFps(240000)).toBe(240);
+        expect(measuredFps(0)).toBe(0);
+    });
+});
 
 describe('autoFps', () => {
     it('rounds the measured millihertz to whole frames per second', () => {
         expect(autoFps(59940)).toBe(60);
         expect(autoFps(60000)).toBe(60);
         expect(autoFps(119880)).toBe(120);
-        expect(autoFps(143900)).toBe(144);
-        expect(autoFps(164800)).toBe(165);
+    });
+
+    it('stops at the ceiling a choice made for the viewer stops at', () => {
+        // The panel is 144 or 165; Auto asks for 120 and the viewer who wants
+        // the rest picks it by name in the list.
+        expect(autoFps(143900)).toBe(AUTO_FPS_MAX);
+        expect(autoFps(164800)).toBe(AUTO_FPS_MAX);
+        expect(AUTO_FPS_MAX).toBe(120);
     });
 
     it('answers 0 when nothing was measured, so the caller keeps its default', () => {

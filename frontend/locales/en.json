@@ -289,6 +289,7 @@
         "fpsSuffix": "{{fps}} FPS",
         "fpsAuto": "Auto (your screen's rate)",
         "fpsAutoMeasured": "Auto ({{fps}} FPS, your screen's rate)",
+        "fpsAutoCapped": "Auto ({{fps}} FPS, your {{screen}} Hz screen capped)",
         "hdr": "HDR",
         "hdrDesc": "High Dynamic Range — richer colors and contrast. A MoonlightWeb native host ignores this box: it streams HDR whenever both screens are in HDR.",
         "hdrDeviceSdr": "This screen is not in HDR mode right now: streams stay SDR until it is.",

@@ -63,10 +63,19 @@ import {
     hdrClientCapability,
     chroma444ClientCapability,
 } from './util/BrowserDetect.js';
-import { startRefreshRateMonitor, currentRefreshMilliHz, autoFps } from './util/RefreshRate.js';
+import {
+    startRefreshRateMonitor,
+    currentRefreshMilliHz,
+    autoFps,
+    measuredFps,
+} from './util/RefreshRate.js';
 import { computeAutoBitrate } from './util/AutoBitrate.js';
 import { DEFAULT_ASPECT, loadHostAspect, saveHostAspect } from './util/AspectRatio.js';
-import { readResolutionChoice, resolveStreamSize } from './util/StreamResolution.js';
+import {
+    readResolutionChoice,
+    resolveStreamSize,
+    fitPixelBudget,
+} from './util/StreamResolution.js';
 import { startAspectProbe } from './stream/AspectProbe.js';
 import * as iosAudioUnlock from './audio/iosAudioUnlock.js';
 import { init as i18nInit, applyDOM, t } from './i18n/i18n.js';
@@ -1890,7 +1899,9 @@ const MoonlightApp = {
         // stream is relaunched at the new size (_onClientScreenChanged).
         //
         // The frame rate is resolved first, since the automatic bitrate the
-        // size brings counts frames per second.
+        // size brings counts frames per second — and since the pixel budget
+        // below weighs the two together.
+        const fpsAuto = !(streamingSettings.stream_fps > 0);
         this._applyResolvedFps(streamingSettings);
         const choice = readResolutionChoice(streamingSettings);
         const size = resolveStreamSize(
@@ -1909,7 +1920,9 @@ const MoonlightApp = {
                 virtualDisplay: app?.isVirtualDisplay === true,
             },
         );
-        this._applyResolvedSize(streamingSettings, size);
+        this._fpsAuto = fpsAuto;
+        const bounded = this._applyPixelBudget(streamingSettings, size, choice.mode, fpsAuto);
+        this._applyResolvedSize(streamingSettings, bounded);
         this._sizeFollowsScreen = size.followsScreen;
         this._sizeOnVirtualDisplay = app?.isVirtualDisplay === true;
         // The ladder's session-only rung and bitrate outrank the choice: a
@@ -2430,11 +2443,11 @@ const MoonlightApp = {
     /**
      * Write the frame rate this launch asks for: "Auto" (stream_fps 0, the
      * default) is this screen's own refresh rate, measured by the browser
-     * (util/RefreshRate.js) — one streamed frame per refresh, which is also
-     * the cadence the native host's virtual display is created at, since the
-     * same measurement travels with /start. A screen that could not be
-     * measured, and every fixed choice, is left exactly as it is: the backend
-     * reads a 0 it still gets as 60.
+     * (util/RefreshRate.js) and held to AUTO_FPS_MAX — one streamed frame per
+     * refresh, which is also the cadence the native host's virtual display is
+     * created at, since the same measurement travels with /start. A screen
+     * that could not be measured, and every fixed choice, is left exactly as
+     * it is: the backend reads a 0 it still gets as 60.
      *
      * The stored preference is untouched — this is the launch's copy — and
      * the rate is resolved once per launch, not followed mid-stream: the host
@@ -2445,8 +2458,57 @@ const MoonlightApp = {
         if (settings.stream_fps > 0) return;
         const fps = autoFps();
         if (!fps) return;
-        console.log('[MW] Auto frame rate: this screen refreshes at ' + fps + ' Hz');
+        const panel = measuredFps();
+        console.log(
+            '[MW] Auto frame rate: ' +
+                fps +
+                ' fps' +
+                (panel > fps ? ' (this screen refreshes at ' + panel + ' Hz)' : ''),
+        );
         settings.stream_fps = fps;
+    },
+
+    /**
+     * Hold the size and the frame rate of this launch under the pixel budget,
+     * and tell the host what rate it may not exceed.
+     *
+     * A resolution and a frame rate are picked apart and multiply together;
+     * whenever one of the two was ours to pick, the product is ours to keep
+     * sane (util/StreamResolution.js, fitPixelBudget). Two explicit choices
+     * are left exactly as asked.
+     *
+     * `stream_fps_max` is the ceiling the native host must respect: without
+     * it, a client presenting on vsync gets the nearest divisor of its own
+     * refresh within a fifth of the setting (CadenceAlign.h), which would
+     * happily answer an Auto 120 with the 144 its panel runs at and put the
+     * budget back where it was. A rate the viewer named carries no ceiling —
+     * that alignment is worth its 20%.
+     *
+     * @returns {object} the size to launch at
+     */
+    _applyPixelBudget(settings, size, mode, fpsAuto) {
+        delete settings.stream_fps_max;
+        if (mode !== 'auto' && !fpsAuto) return size;
+        const bounded = fitPixelBudget(size, settings.stream_fps, {
+            clientFps: measuredFps(),
+            aspect: settings.stream_aspect,
+        });
+        if (bounded.capped) {
+            console.log(
+                '[MW] Pixel budget: ' +
+                    (size.aspect || size.height + ' lines') +
+                    ' at ' +
+                    (settings.stream_fps || 60) +
+                    ' fps → ' +
+                    (bounded.size.aspect || bounded.size.height + ' lines') +
+                    ' at ' +
+                    bounded.fps +
+                    ' fps',
+            );
+            settings.stream_fps = bounded.fps;
+        }
+        if (fpsAuto || bounded.capped) settings.stream_fps_max = settings.stream_fps || 60;
+        return bounded.size;
     },
 
     /** The estimate's bitrate, in kbps, for a frame of that size. */
@@ -2513,15 +2575,32 @@ const MoonlightApp = {
                 virtualDisplay: this._sizeOnVirtualDisplay === true,
             },
         );
-        if (size.height === settings.stream_height && size.aspect === settings.stream_aspect)
+        // The new screen carries its own budget: a window moved from a 1080p
+        // monitor to a 4K one asks for more pixels, and the pair is weighed
+        // again before anything is relaunched. An Auto rate is read from the
+        // measurement again for that — this relaunch is the one moment where
+        // it costs nothing, and starting from a rate an earlier budget had
+        // already cut would ratchet the stream down screen after screen.
+        const fps = settings.stream_fps;
+        const fpsAuto = this._fpsAuto === true;
+        if (fpsAuto) settings.stream_fps = autoFps() || settings.stream_fps;
+        const bounded = this._applyPixelBudget(settings, size, choice.mode, fpsAuto);
+        if (
+            bounded.height === settings.stream_height &&
+            bounded.aspect === settings.stream_aspect &&
+            settings.stream_fps === fps
+        )
             return;
         console.log(
             '[MW] This screen is now ' +
                 (device ? device.width + 'x' + device.height : '?') +
                 ' — relaunching at ' +
-                (size.aspect || size.height),
+                (bounded.aspect || bounded.height) +
+                ' at ' +
+                (settings.stream_fps || 60) +
+                ' fps',
         );
-        this._applyResolvedSize(settings, size);
+        this._applyResolvedSize(settings, bounded);
         this._qualityRelaunch(this._transportIndex || 0);
     },
 

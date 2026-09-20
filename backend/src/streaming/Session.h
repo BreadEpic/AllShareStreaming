@@ -163,6 +163,12 @@ public:
         m_ClientVsync = vsync;
     }
 
+    /// A rate this session may not exceed, alignment included. "Auto" states
+    /// one because it chose the rate itself, against a pixel budget the whole
+    /// chain has to carry; a rate the viewer named carries none. Only the
+    /// native engine acts on it — see mw::native::SessionConfig::maxFps.
+    void setMaxFps(int fps) { m_MaxFps = fps > 0 ? fps : 0; }
+
     /// The viewer's aspect setting is "Auto", so a native stream rebuilds at
     /// the display's new shape when the host changes mode — see
     /// mw::native::SessionConfig::followDisplayShape. Other engines ignore it.
@@ -445,6 +451,9 @@ private:
     /// The client's screen at /start — see setClientPresentation.
     int m_ClientRefreshMilliHz = 0;
     bool m_ClientVsync = false;
+
+    /// See setMaxFps.
+    int m_MaxFps = 0;
 
     /// See setFollowDisplayShape.
     bool m_FollowDisplayShape = false;

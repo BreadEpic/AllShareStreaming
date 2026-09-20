@@ -127,14 +127,33 @@ export function currentRefreshMilliHz() {
     return _milliHz;
 }
 
-/** The lowest and highest frame rate "Auto" will ask a host for. */
+/** The lowest and highest frame rate "Auto" will ask a host for.
+ *
+ *  The ceiling is 120 and not the 165 or 240 a panel may run at: past 120 the
+ *  smoothness a viewer can feel is bought with a frame every 8 ms across a
+ *  capture, an encoder, a network and a decoder, and a choice made FOR the
+ *  viewer does not spend that. A viewer who wants their 165 Hz panel fed says
+ *  so in the list — a named rate is never held down. The rate that goes to
+ *  the host for its vsync alignment is the UNCAPPED measurement
+ *  (currentRefreshMilliHz): the grid the frames land on is the panel's, cap
+ *  or no cap. */
 export const AUTO_FPS_MIN = 24;
-export const AUTO_FPS_MAX = 240;
+export const AUTO_FPS_MAX = 120;
+
+/** What a panel was actually measured at, whole frames per second, with no
+ *  ceiling on it: what the Settings line says about the screen, and the floor
+ *  the pixel budget reads (fitPixelBudget). 0 when nothing was measured. */
+export function measuredFps(milliHz) {
+    const mhz = milliHz === undefined ? _milliHz : milliHz;
+    if (!(mhz > 0)) return 0;
+    return Math.round(mhz / 1000);
+}
 
 /**
  * The frame rate "Auto" asks for: this screen's own, in whole frames per
- * second. A stream at the screen's rate shows one frame per refresh — no
- * frame encoded for nothing, and no refresh showing the previous one again.
+ * second, up to AUTO_FPS_MAX. A stream at the screen's rate shows one frame
+ * per refresh — no frame encoded for nothing, and no refresh showing the
+ * previous one again.
  *
  * The measurement is unrounded on purpose (a 165 Hz panel may run at 164.8),
  * so it is rounded here and nowhere else; 0 — nothing measured yet, a hidden
@@ -145,9 +164,8 @@ export const AUTO_FPS_MAX = 240;
  * @returns {number} frames per second, or 0 when unknown
  */
 export function autoFps(milliHz) {
-    const mhz = milliHz === undefined ? _milliHz : milliHz;
-    if (!(mhz > 0)) return 0;
-    const fps = Math.round(mhz / 1000);
+    const fps = measuredFps(milliHz);
+    if (!fps) return 0;
     return Math.min(AUTO_FPS_MAX, Math.max(AUTO_FPS_MIN, fps));
 }
 

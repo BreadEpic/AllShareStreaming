@@ -15,9 +15,14 @@ import {
     CUSTOM_SIZE_MAX,
     CUSTOM_SIZE_MIN,
     HOST_FALLBACK_HEIGHT,
+    AUTO_MAX_HEIGHT,
+    PIXEL_RATE_BUDGET,
+    BUDGET_MIN_HEIGHT,
+    BUDGET_MIN_FPS,
     bitrateReference,
     clampCustomSize,
     devicePixelSize,
+    fitPixelBudget,
     readResolutionChoice,
     resolveStreamSize,
 } from '../js/util/StreamResolution.js';
@@ -85,14 +90,15 @@ describe('resolveStreamSize', () => {
     });
 
     // Auto on the native host: this screen is the box the host's own size
-    // must fit in — the host keeps its size when it fits (1920×1080 in
-    // 2000×1600), scales down at its own shape when it does not (2560×1440 →
-    // 2000×1125), never up. All of that is the host's box rule; what is sent
-    // is the box, and the request follows this screen.
+    // must fit in — the host keeps its size when it fits, scales down at its
+    // own shape when it does not (2560×1440 → 2000×1125), never up. All of
+    // that is the host's box rule; what is sent is the box, and the request
+    // follows this screen. The box itself stops at Auto's ceiling, so the
+    // 2000×1600 tablet asks for 1800×1440.
     it('asks the native host for its own size within this screen, never upscaled', () => {
         expect(resolveStreamSize({ mode: 'auto' }, { nativeHost: true, device: tablet })).toEqual({
-            height: 1600,
-            aspect: '2000:1600',
+            height: 1440,
+            aspect: '1800:1440',
             fitBox: true,
             allowUpscale: false,
             matchDisplay: false,
@@ -273,8 +279,13 @@ describe('resolveStreamSize on the virtual display', () => {
 
 describe('bitrateReference', () => {
     it('counts the pixels the choice stands for', () => {
-        // Auto and "Match my screen": this screen, the most the host sends.
+        // Auto: this screen under Auto's ceiling, the most the host sends.
         expect(bitrateReference({ mode: 'auto' }, tablet)).toEqual({
+            height: 1440,
+            aspect: '1800:1440',
+        });
+        // "Match my screen" is the viewer's own word: no ceiling on it.
+        expect(bitrateReference({ mode: 'device' }, tablet)).toEqual({
             height: 1600,
             aspect: '2000:1600',
         });
@@ -294,5 +305,119 @@ describe('bitrateReference', () => {
             height: 2160,
             aspect: '16:9',
         });
+    });
+});
+
+// ── Auto's ceiling and the pixel budget ──────────────────────────────
+//
+// Two numbers chosen apart multiply into one bill the whole chain pays. What
+// is worth pinning down is where the reductions stop and in which order they
+// happen: a viewer feels a frame rate on every mouse move and a hundred lines
+// of resolution almost never, so the resolution goes first — and neither goes
+// below what the client itself does, since a stream smaller than the screen it
+// lands on has nothing left to give.
+describe("Auto's ceiling", () => {
+    const uhd = { width: 3840, height: 2160 };
+
+    it('stops the box at 1440 lines, its shape kept', () => {
+        expect(
+            resolveStreamSize({ mode: 'auto' }, { nativeHost: true, device: uhd }),
+        ).toMatchObject({ height: AUTO_MAX_HEIGHT, aspect: '2560:1440' });
+    });
+
+    it('leaves "Match my screen" and Custom alone — the viewer named those', () => {
+        expect(
+            resolveStreamSize({ mode: 'device' }, { nativeHost: true, device: uhd }),
+        ).toMatchObject({ height: 2160, aspect: '3840:2160', matchDisplay: true });
+        expect(
+            resolveStreamSize(
+                { mode: 'custom', customWidth: 3840, customHeight: 2160 },
+                { nativeHost: true, device: uhd },
+            ),
+        ).toMatchObject({ height: 2160, aspect: '3840:2160' });
+    });
+
+    it('holds the display it makes to order to the same ceiling under Auto', () => {
+        const ctx = { nativeHost: true, device: uhd, virtualDisplay: true };
+        expect(resolveStreamSize({ mode: 'auto' }, ctx)).toMatchObject({
+            height: AUTO_MAX_HEIGHT,
+            aspect: '2560:1440',
+            matchDisplay: true,
+        });
+        expect(resolveStreamSize({ mode: 'device' }, ctx)).toMatchObject({
+            height: 2160,
+            aspect: '3840:2160',
+        });
+    });
+});
+
+describe('fitPixelBudget', () => {
+    const uhd = { width: 3840, height: 2160 };
+
+    it('lets a pair that fits through untouched', () => {
+        // 1920×1080 at 120 is 249 Mpx/s — the reference the budget was read
+        // off, and the one pair that must never be touched.
+        const size = { height: 1080, aspect: '1920:1080' };
+        const out = fitPixelBudget(size, 120, { device: uhd, clientFps: 120 });
+        expect(out.capped).toBe(false);
+        expect(out.size).toBe(size);
+        expect(out.fps).toBe(120);
+        expect(1920 * 1080 * 120).toBeLessThanOrEqual(PIXEL_RATE_BUDGET);
+    });
+
+    it('spends the resolution before the frame rate', () => {
+        // 1440p120 on a 4K screen is 442 Mpx/s. The rate is what the viewer
+        // feels, so it stands and the lines come down to 1080.
+        const out = fitPixelBudget({ height: 1440, aspect: '2560:1440' }, 120, {
+            device: uhd,
+            clientFps: 120,
+        });
+        expect(out.capped).toBe(true);
+        expect(out.fps).toBe(120);
+        expect(out.size).toEqual({ height: 1080, aspect: '1920:1080' });
+    });
+
+    it('takes the frame rate down once the resolution is at its floor', () => {
+        // An ultrawide at its own shape: 2560×1080 is already at the floor's
+        // lines, so the rate pays the rest.
+        const out = fitPixelBudget({ height: 1080, aspect: '2560:1080' }, 120, {
+            device: { width: 2560, height: 1080 },
+            clientFps: 120,
+        });
+        expect(out.size.height).toBe(BUDGET_MIN_HEIGHT);
+        expect(out.fps).toBeLessThan(120);
+        expect(out.fps).toBeGreaterThanOrEqual(BUDGET_MIN_FPS);
+        expect(2560 * out.size.height * out.fps).toBeLessThanOrEqual(PIXEL_RATE_BUDGET);
+    });
+
+    it('never pushes either half below what this very screen does', () => {
+        // A 4K120 ask from a 720p60 screen: both floors are the screen's own,
+        // and the budget stops there even when it is still over.
+        const out = fitPixelBudget({ height: 2160, aspect: '3840:2160' }, 120, {
+            device: { width: 1280, height: 720 },
+            clientFps: 60,
+        });
+        expect(out.size.height).toBeGreaterThanOrEqual(720);
+        expect(out.fps).toBeGreaterThanOrEqual(60);
+    });
+
+    it('weighs a rung whose width still belongs to the Auto ratio', () => {
+        // `fixed` fixes no shape: the rung is weighed at the ratio the caller
+        // knows, and comes back with its width still unstated.
+        const out = fitPixelBudget({ height: 2160, aspect: null }, 120, {
+            device: uhd,
+            clientFps: 120,
+            aspect: '16:9',
+        });
+        expect(out.capped).toBe(true);
+        expect(out.size.aspect).toBe(null);
+        expect(out.size.height).toBe(1080);
+    });
+
+    it('holds its peace when there is no size to weigh', () => {
+        // Height 0 is "the host display's own size, whatever it is".
+        const out = fitPixelBudget({ height: 0, aspect: null }, 120, { device: uhd });
+        expect(out.capped).toBe(false);
+        expect(out.fps).toBe(120);
     });
 });

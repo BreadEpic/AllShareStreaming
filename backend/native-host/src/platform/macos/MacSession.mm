@@ -1331,15 +1331,21 @@ private:
         int fps = m_Config.fps > 0 ? m_Config.fps : displayHz;
         if (fps <= 0) fps = 60;
         // A client whose decoder cannot keep up asks for fewer frames than the
-        // viewer set (setClientFpsCap). It only ever lowers the rate.
-        const int cap = m_ClientFpsCap.load();
+        // viewer set (setClientFpsCap), and a rate chosen FOR the viewer comes
+        // with a ceiling of its own (SessionConfig::maxFps — the rate the
+        // browser's pixel budget was sized at). Both only ever lower the rate;
+        // the smaller of the two is the one the cadence answers to.
+        const int asked = m_ClientFpsCap.load();
+        const int cap = m_Config.maxFps > 0 && (asked <= 0 || m_Config.maxFps < asked)
+                            ? m_Config.maxFps
+                            : asked;
         const bool capped = cap > 0 && cap < fps;
         if (capped) fps = cap;
         const int wanted = capped ? cap : m_Config.fps;
 
         AlignedCadence aligned;
         if (wanted > 0 && clientVsync)
-            aligned = alignCadence(wanted, clientMilliHz, displayHz);
+            aligned = alignCadence(wanted, clientMilliHz, displayHz, cap);
 
         if (aligned.aligned) {
             fps = aligned.fps;
@@ -1351,7 +1357,11 @@ private:
                    " Hz display" +
                    (cadence.enabled() ? " — the first present of each interval is encoded, at once"
                                       : " — every present is encoded");
-            if (capped) line += " (the client asked for no more than " + std::to_string(cap) + ")";
+            if (capped)
+                line += " (no more than " + std::to_string(cap) + " fps: " +
+                        (cap == m_Config.maxFps ? "the rate chosen for this client"
+                                                : "what its decoder keeps up with") +
+                        ")";
             return fps;
         }
         cadence = FrameCadence(fps < displayHz ? fps : 0, displayHz);
@@ -1359,7 +1369,11 @@ private:
                hzString(m_DisplayMilliHz) + " Hz display" +
                (cadence.enabled() ? " — the first present of each interval is encoded, at once"
                                   : " — every present is encoded");
-        if (capped) line += " (the client asked for no more than " + std::to_string(cap) + ")";
+        if (capped)
+            line += " (no more than " + std::to_string(cap) + " fps: " +
+                    (cap == m_Config.maxFps ? "the rate chosen for this client"
+                                            : "what its decoder keeps up with") +
+                    ")";
         return fps;
     }
 

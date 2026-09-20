@@ -2721,6 +2721,16 @@ int main(int argc, char* argv[])
             body.contains("stream_fps") ? body["stream_fps"].toInt() : appSettings.streamFps();
         if (reqFps <= 0) reqFps = reqClientFps > 0 ? reqClientFps : 60;
 
+        // The ceiling the browser states when the rate above is ITS choice and
+        // not the viewer's ("Auto", and anything the pixel budget cut down —
+        // see frontend/js/util/StreamResolution.js). The native host may not
+        // align past it, which it otherwise would: a vsync client is served
+        // the nearest divisor of its own refresh within a fifth of the rate,
+        // and a 144 Hz panel would answer an Auto 120 with 144. Absent — an
+        // older frontend, a rate the viewer named — means no ceiling, and the
+        // alignment keeps the freedom it was designed with.
+        const int reqFpsCeiling = qMax(0, body["stream_fps_max"].toInt(0));
+
         bool reqYuv444 = body.contains("chroma_444_enabled") ? body["chroma_444_enabled"].toBool()
                                                              : appSettings.chroma444Enabled();
 
@@ -3079,6 +3089,9 @@ int main(int argc, char* argv[])
             // on vsync. Absent (an older frontend) → unknown, no alignment.
             s->setClientPresentation(body["client_refresh_mhz"].toInt(0),
                                      body["client_vsync"].toBool(false));
+            // A rate chosen FOR the viewer states the ceiling it was chosen
+            // against; one the viewer named states none.
+            s->setMaxFps(reqFpsCeiling);
             // The viewer's aspect is "Auto": a native stream follows the
             // display's shape when it changes. Absent → the size is kept.
             s->setFollowDisplayShape(body["follow_display_shape"].toBool(false));
@@ -3208,6 +3221,7 @@ int main(int argc, char* argv[])
             // travel with the config — setting it on the in-process session
             // alone would never reach the encoder.
             cfg["rideOutLoss"] = body["ride_out_loss"].toBool(false);
+            cfg["fpsCeiling"] = reqFpsCeiling;
             cfg["clientRefreshMilliHz"] = body["client_refresh_mhz"].toInt(0);
             cfg["clientVsync"] = body["client_vsync"].toBool(false);
             cfg["followDisplayShape"] = body["follow_display_shape"].toBool(false);
@@ -3501,11 +3515,14 @@ int main(int argc, char* argv[])
             // passes 0 and takes the mode that is there.
             const int vdWidth = reqMatchDisplay ? reqWidth : 0;
             const int vdHeight = reqMatchDisplay ? reqHeight : 0;
-            // Its refresh rate is the client's own, whatever the resolution
-            // choice: a display nobody looks at has no reason to run at
-            // anything but the cadence of the screen the frames end up on.
+            // Its refresh rate is the stream's own — the client's screen rate
+            // under "Auto", what the viewer named otherwise: a display nobody
+            // looks at has no reason to run at anything but the cadence of the
+            // frames it exists to produce. Not the raw measurement: a panel at
+            // 144 Hz streaming an Auto 120 would leave the compositor
+            // presenting 24 frames a second into the void.
             // Unmeasured (0) leaves the display's default rate.
-            const int vdRefresh = reqClientFps;
+            const int vdRefresh = reqFps;
             std::function<void()> readyThenStart = claimThenStart;
             if (host->backendType == NativeHostBackend::typeName() &&
                 appId == NativeHostBackend::virtualDisplayAppId()) {

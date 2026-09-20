@@ -47,6 +47,22 @@ struct SessionConfig
     /// Requested frame rate. Zero means "the display's own refresh rate".
     int fps = 0;
 
+    /// A rate the session may not exceed, whatever `fps` says and whatever the
+    /// vsync alignment would rather have. Zero — the default — means none.
+    ///
+    /// `fps` is a wish: a client presenting on its vsync is served the nearest
+    /// divisor of its own refresh within a fifth of it, which may be FASTER
+    /// (144 Hz client, 120 set, 144 streamed — see CadenceAlign.h). That trade
+    /// is the right one when the viewer named the rate. It is the wrong one
+    /// when the rate was chosen FOR them: the browser's "Auto" sizes a pixel
+    /// budget — resolution × rate × the whole chain — and picks the rate that
+    /// fits it, so a host that then streams 20% more frames undoes the very
+    /// arithmetic that produced the number. This is how "Auto" says so.
+    ///
+    /// Read together with the client's own live cap (a decoder that cannot
+    /// keep up asks for fewer frames still): the smaller of the two wins.
+    int maxFps = 0;
+
     int bitrateKbps = 20000;
 
     /// Codecs the BROWSER accepts, best first. The engine intersects this with

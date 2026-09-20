@@ -999,6 +999,62 @@ Rien n'est demandé au retour — sauf, depuis le 05/09, que le premier
 ceux du lien et défait à l'instant la coupe que notre silence lui avait fait
 faire, au lieu de la remonter en cinq rapports.
 
+### 9.13 Le plafond d'Auto et le budget de pixels (20/09/2026)
+
+Une résolution et une cadence sont choisies séparément et se **multiplient** :
+2560×1440 à 120 fps, ce sont 442 millions de pixels par seconde à capturer,
+réduire, convertir, encoder, transmettre, décoder et peindre — plus que ce que
+l'une ou l'autre des deux machines tient une soirée de jeu. Trois règles, toutes
+côté client (`util/StreamResolution.js`, `util/RefreshRate.js`), tiennent ce
+produit :
+
+1. **Résolution Auto : plafond à 1440 lignes** (`AUTO_MAX_HEIGHT`). La boîte
+   d'Auto est cet écran-ci **à sa forme**, ramené à 1440 lignes quand il en a
+   plus : un 4K demande 2560×1440. Au-delà, le gain est un détail qu'on voit en
+   se penchant et le coût est payé deux fois, à l'encodage et au décodage. Le
+   plafond ne s'applique qu'à Auto : « Match my screen » et « Custom » sont le
+   mot du joueur et ne sont jamais bridés. L'écran virtuel créé à la demande
+   suit la même règle sous Auto — le fabriquer en 4K pour ensuite streamer du
+   1440p ne ferait que donner trois millions de pixels à jeter au compositeur.
+
+2. **Cadence Auto : plafond à 120 fps** (`AUTO_FPS_MAX`). Au-delà de 120, la
+   fluidité gagnée s'achète à une image toutes les 8 ms sur toute la chaîne, et
+   un choix fait **à la place** du joueur ne dépense pas ça. Le joueur qui veut
+   nourrir son 165 Hz le prend par son nom dans la liste. La ligne des Réglages
+   le dit quand le plafond mord (« Auto (120 FPS, votre écran à 165 Hz est
+   bridé) ») : un libellé qui annonce 165 pour streamer 120 serait un mensonge.
+   La mesure **brute** continue de partir à l'hôte (`client_refresh_mhz`) : la
+   grille sur laquelle les images atterrissent reste celle de la dalle.
+
+3. **Budget de 250 Mpx/s dès que l'un des deux est en Auto**
+   (`PIXEL_RATE_BUDGET`, `fitPixelBudget`). 1920×1080 à 120 fps, c'est 249
+   millions : la référence sur laquelle le nombre a été lu. Au-dessus, **la
+   résolution paie d'abord** — une cadence se sent à chaque mouvement de souris,
+   cent lignes de résolution presque jamais — jusqu'à un plancher de **1080p**,
+   puis la cadence, jusqu'à un plancher de **60 fps**. Aucun des deux planchers
+   ne descend sous ce que fait l'écran du client lui-même : un stream déjà plus
+   petit que l'écran où il atterrit n'a plus rien à donner. Une paire encore
+   au-dessus du budget aux deux planchers passe : les planchers sont la
+   promesse, le budget est la visée. Deux choix explicites (résolution **et**
+   cadence nommées) ne sont jamais touchés — c'est l'affaire du joueur.
+
+   Ainsi un 4K 144 Hz en Auto/Auto demande **1920×1080 à 120** ; un ultra-large
+   2560×1080 en Auto demande 2560×1080 à **90** (la résolution étant déjà au
+   plancher, c'est la cadence qui paie) ; un 3440×1440 en Auto/Auto demande
+   2580×1080 à **89** ; et 1080p120 ne bouge pas.
+
+**Le côté hôte.** Un plafond n'est pas un vœu, et l'alignement de cadence
+(§9.11) est libre de monter de 20 % : un client vsync à 144 Hz à qui Auto
+demande 120 se verrait servir 144, ce qui remettrait un cinquième du budget.
+Le client dit donc son plafond dans `/start` (`stream_fps_max` →
+`SessionConfig::maxFps`), et `alignCadence()` ne retient plus un diviseur
+au-dessus de lui. Il se lit avec le plafond vivant du décodeur
+(`setClientFpsCap`) : le plus petit des deux gagne. Une cadence **nommée** par
+le joueur n'envoie aucun plafond — là, les 72 pour 60 valent leurs 20 %. Et
+l'écran virtuel est créé à la cadence **du stream** et non à la mesure brute :
+une dalle à 144 Hz qui streame un Auto à 120 laissait le compositeur présenter
+24 images par seconde dans le vide.
+
 ---
 
 ## 10. Host natif dans l'UI

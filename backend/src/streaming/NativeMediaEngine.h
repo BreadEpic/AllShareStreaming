@@ -86,6 +86,9 @@ public:
         int width = 0;  ///< 0 = the display's native width
         int height = 0; ///< 0 = the display's native height
         int fps = 0;    ///< 0 = the display's own refresh rate
+        /// A rate the session may not exceed, alignment included (0 = none) —
+        /// see SessionConfig::maxFps.
+        int maxFps = 0;
         int bitrateKbps = 20000;
         /// VIDEO_FORMAT_* bitmask of what the browser can decode.
         int clientVideoFormats = 0;

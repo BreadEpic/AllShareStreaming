@@ -149,6 +149,30 @@ void run_cadence_align_tests()
         CHECK_EQ(ntsc.intervalUs, 1000000000LL / 59940); // 16683 µs
     }
 
+    SECTION("a ceiling the caller states is not a wish the alignment may exceed");
+    {
+        // 120 asked of a 144 Hz vsync client: the grid would rather have 144,
+        // which is inside the fifth the window allows, and does — until the
+        // caller says 120 is a ceiling. It is what the browser's "Auto" says
+        // when the rate was ITS choice: the pixel budget was sized at 120 and
+        // 144 would put a fifth of it back.
+        const AlignedCadence free = alignCadence(120, 144000, 144);
+        CHECK(free.aligned);
+        CHECK_EQ(free.fps, 144);
+
+        const AlignedCadence held = alignCadence(120, 144000, 144, 120);
+        CHECK(!held.aligned);
+        CHECK_EQ(held.fps, 120);
+        CHECK_EQ(held.divisor, 0);
+
+        // A ceiling never blocks a divisor at or under it: 165 Hz client, 60
+        // set, 55 streamed is still the smoother picture.
+        const AlignedCadence under = alignCadence(60, 165000, 165, 60);
+        CHECK(under.aligned);
+        CHECK_EQ(under.fps, 55);
+        CHECK_EQ(under.divisor, 3);
+    }
+
     SECTION("FrameCadence::fromIntervalNs — the aligned interval drives the gate exactly");
     {
         // 55 fps as three 165 Hz periods, on a 165 Hz display: over 10 minutes

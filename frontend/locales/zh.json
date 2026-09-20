@@ -289,6 +289,7 @@
         "fpsSuffix": "{{fps}} FPS",
         "fpsAuto": "自动（与您的屏幕刷新率一致）",
         "fpsAutoMeasured": "自动（{{fps}} FPS，与您的屏幕刷新率一致）",
+        "fpsAutoCapped": "自动（{{fps}} FPS，您的 {{screen}} Hz 屏幕已受限）",
         "hdr": "HDR",
         "hdrDesc": "高动态范围——更丰富的色彩与对比度。MoonlightWeb 原生主机不看此选项：只要两端屏幕都处于 HDR，就以 HDR 串流。",
         "hdrDeviceSdr": "此屏幕当前未处于 HDR 模式：在其开启 HDR 之前，串流保持 SDR。",

@@ -42,7 +42,7 @@ import {
     chroma444ClientCapability,
 } from '../util/BrowserDetect.js';
 import { aspectToNumber, computeAutoBitrate } from '../util/AutoBitrate.js';
-import { autoFps } from '../util/RefreshRate.js';
+import { autoFps, measuredFps } from '../util/RefreshRate.js';
 import { ASPECT_VALUES, SCREEN_ASPECTS } from '../util/AspectRatio.js';
 import {
     CUSTOM_SIZE_MAX,
@@ -51,6 +51,7 @@ import {
     bitrateReference,
     clampCustomSize,
     devicePixelSize,
+    fitPixelBudget,
     readResolutionChoice,
 } from '../util/StreamResolution.js';
 
@@ -443,10 +444,19 @@ export class SettingsView {
         // Auto (0) is estimated at the rate this screen runs at — what the
         // stream will actually ask for — and at 60 when none was measured.
         const chosen = isNaN(fps) ? this._streamFps : fps;
+        const rate = chosen > 0 ? chosen : autoFps() || 60;
+        // And at the size and rate the pixel budget leaves of them, since that
+        // is what the stream will carry — an estimate for a 1440p120 the
+        // launch turns into 1080p120 recommends a bitrate for pixels nobody
+        // ever sends (util/StreamResolution.js).
+        const bounded =
+            choice.mode === 'auto' || chosen <= 0
+                ? fitPixelBudget({ height: ref.height, aspect }, rate, { clientFps: measuredFps() })
+                : { size: { height: ref.height, aspect }, fps: rate };
         return this._computeAutoBitrate(
-            ref.height,
-            chosen > 0 ? chosen : autoFps() || 60,
-            aspect,
+            bounded.size.height,
+            bounded.fps,
+            bounded.size.aspect || aspect,
             chroma444,
             hdr,
         );
@@ -1050,14 +1060,21 @@ export class SettingsView {
         // FPS options. Auto first and default: the rate this very screen
         // refreshes at, which is also what the native host's virtual display
         // is created at — one streamed frame per refresh, neither judder nor
-        // frames encoded for nothing. Its label names the measured rate when
-        // there is one.
+        // frames encoded for nothing. Its label names the rate Auto will ask
+        // for when there is a measurement, and says so plainly when the panel
+        // runs faster than Auto's ceiling: a 165 Hz screen reading "Auto
+        // (165 FPS)" and then streaming 120 would be a label that lies, and
+        // the 165 rung right below it is there for whoever wants it.
         const measured = autoFps();
+        const panel = measuredFps();
+        const autoLabel = !measured
+            ? t('settings.fpsAuto')
+            : panel > measured
+              ? t('settings.fpsAutoCapped', { fps: measured, screen: panel })
+              : t('settings.fpsAutoMeasured', { fps: measured });
         const fpsValues = [15, 30, 60, 75, 90, 120, 144, 165, 240];
         const fpsOptions = [
-            `<option value="0" ${this._streamFps > 0 ? '' : 'selected'}>${this.esc(
-                measured ? t('settings.fpsAutoMeasured', { fps: measured }) : t('settings.fpsAuto'),
-            )}</option>`,
+            `<option value="0" ${this._streamFps > 0 ? '' : 'selected'}>${this.esc(autoLabel)}</option>`,
         ]
             .concat(
                 fpsValues.map(

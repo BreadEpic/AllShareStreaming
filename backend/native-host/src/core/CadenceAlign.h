@@ -50,6 +50,11 @@ namespace mw::native {
 /// - The divisor asks for more than the host's display produces (60 Hz host,
 ///   144 Hz client, 60 set → 72): the host cannot make frames it does not
 ///   have, so the setting stands and the gate does what it always did.
+/// - The divisor asks for more than @p maxFps, when the caller named one
+///   (SessionConfig::maxFps, the client's live cap): a ceiling is not a wish.
+///   A 144 Hz client whose rate was chosen for it by "Auto" — 120, the rate
+///   its pixel budget was sized at — is served 120 and not the 144 the grid
+///   would prefer.
 ///
 /// Pure, so the choice is testable and the log can say exactly why.
 struct AlignedCadence
@@ -77,10 +82,11 @@ struct AlignedCadence
 inline constexpr int kAlignWindowPercent = 20;
 
 /// Choose the stream's cadence for a client presenting on vsync at
-/// @p clientMilliHz, given the viewer's @p settingFps and the host display's
-/// @p displayHz. See the struct for the rules; the nearest divisor wins, the
-/// faster one on a tie.
-inline AlignedCadence alignCadence(int settingFps, int clientMilliHz, int displayHz)
+/// @p clientMilliHz, given the viewer's @p settingFps, the host display's
+/// @p displayHz and a rate @p maxFps the stream may not exceed (0: none).
+/// See the struct for the rules; the nearest divisor wins, the faster one on
+/// a tie.
+inline AlignedCadence alignCadence(int settingFps, int clientMilliHz, int displayHz, int maxFps = 0)
 {
     AlignedCadence out;
     if (settingFps <= 0) return out;
@@ -100,6 +106,9 @@ inline AlignedCadence alignCadence(int settingFps, int clientMilliHz, int displa
         const int64_t milliFps = clientMilliHz / n;
         if (milliFps < low) break;
         if (milliFps > high) continue;
+        // A ceiling the caller stated is a floor under nothing: a divisor
+        // above it is not a candidate at all.
+        if (maxFps > 0 && (milliFps + 500) / 1000 > maxFps) continue;
         int64_t distance = milliFps - static_cast<int64_t>(settingFps) * 1000;
         if (distance < 0) distance = -distance;
         // Nearest wins; on a tie the faster cadence, because a viewer who

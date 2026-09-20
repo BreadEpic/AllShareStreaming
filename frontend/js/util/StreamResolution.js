@@ -23,16 +23,19 @@
  *   - `auto`   — the default. On the native host: the host display's own size
  *                when it fits this screen, else the host's picture scaled DOWN
  *                (on the host, its shape kept) to fit this screen — a 2560×1440
- *                display on a 2000×1600 laptop streams 2000×1125. On a phone or
- *                a tablet the box is not the screen but 1440 lines by any width
- *                (MOBILE_AUTO_BOX): the picture is pinched and zoomed there,
- *                and a stream reduced to the screen's 1170 lines blurs the
- *                moment it is; so a host of up to 1440 lines streams as it is
- *                and a taller one comes down to 1440, never below 1080 that
- *                way. The stream follows both screens: the host changing its
- *                mode, a computer's window moving to another monitor. On every
- *                other host, which cannot say its display's size: 1080p, the
- *                width from the Auto ratio (measured from Sunshine's bars).
+ *                display on a 2000×1600 laptop streams 2000×1125. The box is
+ *                never taller than AUTO_MAX_HEIGHT, so a 4K screen asks for
+ *                1440p and neither machine spends a GPU on pixels Auto never
+ *                promised. On a phone or a tablet the box is not the screen but
+ *                1440 lines by any width (MOBILE_AUTO_BOX): the picture is
+ *                pinched and zoomed there, and a stream reduced to the screen's
+ *                1170 lines blurs the moment it is; so a host of up to 1440
+ *                lines streams as it is and a taller one comes down to 1440,
+ *                never below 1080 that way. The stream follows both screens:
+ *                the host changing its mode, a computer's window moving to
+ *                another monitor. On every other host, which cannot say its
+ *                display's size: 1080p, the width from the Auto ratio (measured
+ *                from Sunshine's bars).
  *   - `device` — "Match my screen": this screen's size, pixel for pixel. The
  *                native host is asked to put its display in that mode for the
  *                session; when its driver lists no such mode the request falls
@@ -49,14 +52,29 @@
  * Every choice but `fixed` (and `auto` off the native host) fixes the shape
  * itself, so the aspect probe stays out of it — the size IS the request.
  *
+ * ── The pixel budget ───────────────────────────────────────────────────────
+ *
+ * A size and a rate are chosen apart and multiply together: 2560×1440 at
+ * 120 fps is 442 million pixels a second to capture, scale, encode, send,
+ * decode and paint — more than a machine on either end holds for an hour of
+ * play. So whenever ONE of the two was left to us (Auto resolution or Auto
+ * frame rate), the pair is held under PIXEL_RATE_BUDGET, and the reduction
+ * goes to the resolution first (fitPixelBudget): a frame rate is felt on
+ * every mouse move, a hundred lines of resolution are not. Neither is ever
+ * brought below what the client itself does — BUDGET_MIN_HEIGHT and
+ * BUDGET_MIN_FPS, or this screen's own when it is under them. Two explicit
+ * choices are the viewer's business and are left alone.
+ *
  * ── "MoonlightWeb Virtual Display" ─────────────────────────────────────────
  *
  * A display that exists only for this stream is not something to fit into: it
  * is made to measure, so on that one card every choice names an exact size and
- * the display is created at it (`virtualDisplay` in the context). Auto and
- * "Match my screen" both mean this screen, pixel for pixel, which is a
- * fullscreen with no bars anywhere. Custom is the pair as typed, portrait
- * included. A rung is that many lines at THIS screen's shape — 1080p on a
+ * the display is created at it (`virtualDisplay` in the context). "Match my
+ * screen" means this screen pixel for pixel, a fullscreen with no bars
+ * anywhere; Auto means the same screen under Auto's own ceiling, so a 4K panel
+ * gets a 1440p display rather than a 4K one nobody looks at. Custom is the
+ * pair as typed, portrait included. A rung is that many lines at THIS
+ * screen's shape — 1080p on a
  * 2532×1170 phone is 2336×1080, not 1920×1080 — because the shape of a
  * display nobody sees has no reason to be anyone else's. Every one of them is
  * held inside [MODE_SIZE_MIN, MODE_SIZE_MAX], the driver's and the decoders'
@@ -78,11 +96,30 @@ export const HOST_FALLBACK_HEIGHT = 1080;
 /** The rungs of `fixed` — also the congestion ladder's steps. */
 export const FIXED_HEIGHTS = [720, 1080, 1440, 2160];
 
+/** The tallest box Auto ever asks for. A choice made FOR the viewer stops at
+ *  1440 lines: above that the gain is a detail seen by leaning in, and the
+ *  cost is paid twice, by a host encoding it and by a client decoding it.
+ *  A viewer who wants their 4K screen filled says so — "Match my screen" and
+ *  Custom are not bound by this. */
+export const AUTO_MAX_HEIGHT = 1440;
+
 /** Auto's box on a phone or a tablet: 1440 lines, any width. A host of up to
  *  1440 lines streams as it is (the pinch zoom stays sharp), a 4K one comes
  *  down to 1440 (a phone decoding 4K heats up for pixels it cannot show),
  *  and nothing is ever reduced below 1080 that way. */
-export const MOBILE_AUTO_BOX = { width: CUSTOM_SIZE_MAX, height: 1440 };
+export const MOBILE_AUTO_BOX = { width: CUSTOM_SIZE_MAX, height: AUTO_MAX_HEIGHT };
+
+/** How many pixels a second the whole chain is asked to carry, at most, when
+ *  either half of the choice was left to us. 1920×1080 at 120 fps is 249
+ *  million of them — the reference this number was read off. */
+export const PIXEL_RATE_BUDGET = 250000000;
+
+/** How far down the budget may push each half. The resolution goes first and
+ *  stops at 1080 lines, the frame rate follows and stops at 60 — and neither
+ *  moves below what this very screen does, since a stream already smaller
+ *  than the screen it lands on has nothing left to give. */
+export const BUDGET_MIN_HEIGHT = 1080;
+export const BUDGET_MIN_FPS = 60;
 
 /** Bounds of a display mode made on demand — what the virtual display driver
  *  will take, and what the decoder on the other side will. The floor is VGA's
@@ -158,21 +195,37 @@ export function devicePixelSize(win) {
     return { width: Math.max(a, b), height: Math.min(a, b) };
 }
 
-/** Auto's box for a native host: this screen on a computer, MOBILE_AUTO_BOX
- *  on a phone or a tablet, null when neither is known. */
+/**
+ * A size brought under Auto's ceiling, its shape kept: a 3840×2160 screen is
+ * 2560×1440, a 2560×1080 ultrawide is itself. Even, as every encoder wants.
+ */
+export function capAutoHeight(size) {
+    if (!size || !(size.width > 0) || !(size.height > 0)) return null;
+    if (size.height <= AUTO_MAX_HEIGHT) return { width: size.width, height: size.height };
+    return {
+        width: Math.round((size.width * AUTO_MAX_HEIGHT) / size.height) & ~1,
+        height: AUTO_MAX_HEIGHT,
+    };
+}
+
+/** Auto's box for a native host: this screen under Auto's ceiling on a
+ *  computer, MOBILE_AUTO_BOX on a phone or a tablet, null when neither is
+ *  known. */
 export function autoBox(device, touch) {
     if (touch) return MOBILE_AUTO_BOX;
-    return device || null;
+    return capAutoHeight(device);
 }
 
 /**
  * The size to make "MoonlightWeb Virtual Display" at for this choice, or null
  * when this screen is unknown and there is nothing to measure against.
  *
- * Auto and "Match my screen" are the same thing here — this screen, pixel for
- * pixel — because a display made to order has no size of its own to reconcile
- * with. Custom is the typed pair, portrait included. A rung is its lines at
- * this screen's shape.
+ * "Match my screen" is this screen pixel for pixel, because a display made to
+ * order has no size of its own to reconcile with. Auto is the same screen
+ * under Auto's ceiling (AUTO_MAX_HEIGHT): a display nobody looks at is made
+ * at the size the stream wants, and making it 4K to then stream 1440p would
+ * only hand the compositor three million pixels to throw away. Custom is the
+ * typed pair, portrait included. A rung is its lines at this screen's shape.
  */
 export function virtualDisplaySize(choice, device) {
     const c = choice || {};
@@ -182,7 +235,11 @@ export function virtualDisplaySize(choice, device) {
             clampCustomSize(c.customHeight, 1080),
         );
     if (!device || !(device.width > 0) || !(device.height > 0)) return null;
-    if (c.mode === 'auto' || c.mode === 'device') return fitModeBounds(device.width, device.height);
+    if (c.mode === 'device') return fitModeBounds(device.width, device.height);
+    if (c.mode === 'auto') {
+        const box = capAutoHeight(device);
+        return box ? fitModeBounds(box.width, box.height) : null;
+    }
     const lines = c.height > 0 ? c.height : HOST_FALLBACK_HEIGHT;
     return fitModeBounds((lines * device.width) / device.height, lines);
 }
@@ -295,18 +352,21 @@ export function resolveStreamSize(choice, ctx) {
 /**
  * What the recommended-bitrate estimate should count for this choice: a
  * height and a "W:H" aspect (see util/AutoBitrate.js). `auto` counts this
- * screen — the most the native host will send under it — 1440p 16:9 on a
- * phone or a tablet, and 1080p 16:9 when the screen is unknown, the
- * estimate's reference.
+ * screen under Auto's ceiling — the most the native host will send under it —
+ * 1440p 16:9 on a phone or a tablet, and 1080p 16:9 when the screen is
+ * unknown, the estimate's reference. The pixel budget is applied on top by
+ * the caller, which alone knows the frame rate (fitPixelBudget).
  */
 export function bitrateReference(choice, device, touch) {
     const c = choice || {};
     const dev = device !== undefined ? device : devicePixelSize();
     switch (c.mode) {
-        case 'auto':
+        case 'auto': {
             if (touch) return { height: MOBILE_AUTO_BOX.height, aspect: '16:9' };
-            if (dev) return { height: dev.height, aspect: dev.width + ':' + dev.height };
+            const box = capAutoHeight(dev);
+            if (box) return { height: box.height, aspect: box.width + ':' + box.height };
             return { height: 1080, aspect: '16:9' };
+        }
         case 'device':
             if (dev) return { height: dev.height, aspect: dev.width + ':' + dev.height };
             return { height: c.height > 0 ? c.height : 1080, aspect: '16:9' };
@@ -318,4 +378,80 @@ export function bitrateReference(choice, device, touch) {
         default:
             return { height: c.height > 0 ? c.height : 1080, aspect: '16:9' };
     }
+}
+
+/** The ratio behind a "W:H" string, or 0 when there is none to read. */
+function aspectRatio(aspect) {
+    if (typeof aspect !== 'string') return 0;
+    const parts = aspect.split(':');
+    const w = parseFloat(parts[0]);
+    const h = parseFloat(parts[1]);
+    if (!(w > 0) || !(h > 0)) return 0;
+    return w / h;
+}
+
+/**
+ * Hold a size and a frame rate under PIXEL_RATE_BUDGET together.
+ *
+ * Called only when ONE of the two was left to us — Auto resolution or Auto
+ * frame rate; a viewer who named both is answered as asked. The resolution
+ * goes down first, to whatever fits at the rate asked for, and stops at
+ * BUDGET_MIN_HEIGHT (or at this screen's own height, when the screen is under
+ * it: there is nothing to gain below what the picture lands on). Only then is
+ * the frame rate brought down, the same way, to BUDGET_MIN_FPS. A pair that
+ * is still over the budget at both floors is let through — the floors are the
+ * promise, the budget is the aim.
+ *
+ * The height that comes back is a multiple of eight, so a 4K screen at 120 fps
+ * asks for the 1920×1080 that 249 Mpx/s was read off and not the 1924×1082 the
+ * arithmetic alone would give.
+ *
+ * @param {{height:number, aspect:string|null}} size resolveStreamSize's answer
+ * @param {number} fps the rate this launch asks for; 0 (unknown) counts as 60
+ * @param {{device?: {width:number,height:number}|null, clientFps?:number,
+ *          aspect?:string|null}} [ctx]
+ *        this screen and its rate — the two floors are read off them — and the
+ *        ratio to assume when the size does not fix one (a `fixed` rung, whose
+ *        width belongs to the Auto ratio).
+ * @returns {{size:object, fps:number, capped:boolean}}
+ */
+export function fitPixelBudget(size, fps, ctx) {
+    const s = /** @type {{height:number, aspect:string|null}} */ (size || {});
+    const c = ctx || {};
+    const rate = fps > 0 ? fps : 60;
+    const height = s.height;
+    const ratio = aspectRatio(s.aspect) || aspectRatio(c.aspect) || 16 / 9;
+    // Height 0 is "the host display's own size, whatever it is" — nothing
+    // measured here to hold to a budget.
+    if (!(height > 0)) return { size: s, fps, capped: false };
+
+    const widthFor = (h) => Math.round(h * ratio) & ~1;
+    const pixelsAt = (h) => widthFor(h) * h;
+    if (pixelsAt(height) * rate <= PIXEL_RATE_BUDGET) return { size: s, fps, capped: false };
+
+    const dev = c.device !== undefined ? c.device : devicePixelSize();
+    const floorHeight = Math.min(
+        BUDGET_MIN_HEIGHT,
+        dev && dev.height > 0 ? dev.height : BUDGET_MIN_HEIGHT,
+    );
+    const floorFps = Math.min(BUDGET_MIN_FPS, c.clientFps > 0 ? c.clientFps : BUDGET_MIN_FPS);
+
+    // 1. The resolution, down to its floor: h × (h × ratio) × rate ≤ budget.
+    let h = height;
+    if (h > floorHeight) {
+        const room = Math.floor(Math.sqrt(PIXEL_RATE_BUDGET / (ratio * rate)));
+        h = Math.max(floorHeight, Math.min(h, room - (room % 8)));
+    }
+    // 2. The frame rate, down to its floor, for what the resolution still costs.
+    let f = rate;
+    const cost = pixelsAt(h);
+    if (cost * f > PIXEL_RATE_BUDGET && f > floorFps)
+        f = Math.max(floorFps, Math.floor(PIXEL_RATE_BUDGET / cost));
+
+    const capped = h !== height || f !== rate;
+    if (!capped) return { size: s, fps, capped: false };
+    const out = { ...s, height: h };
+    // The size fixed the shape: it still does, at the new height.
+    if (s.aspect) out.aspect = widthFor(h) + ':' + h;
+    return { size: out, fps: f, capped: true };
 }
