@@ -52,6 +52,23 @@ const CONTENDED = { fsr1: 19.5, nis: 12, sgsr: 9, off: 3 };
 // Recovery needs the running level under 0.4 × 16.7 = 6.7ms.
 const IDLE = { fsr1: 10.3, nis: 6, sgsr: 5, off: 2 };
 
+/** Same cadence as feed(), with a decode-queue depth on every window. */
+function feedQueued(gov, obs, seconds, startMs = 0) {
+    const steps = [];
+    let now = startMs;
+    for (let i = 0; i < seconds * 2; i++) {
+        now += 500;
+        const algo = gov.update({
+            serviceMs: obs.serviceMs,
+            arrivalMs: obs.arrivalMs,
+            decodeQueue: obs.decodeQueue,
+            now,
+        });
+        if (algo) steps.push({ algo, now });
+    }
+    return steps;
+}
+
 describe('EnhancerGovernor — measured scenarios', () => {
     // Each: [name, render service time, arrival avg] from the captured [perf] lines.
     const healthy = [
@@ -201,6 +218,73 @@ describe('EnhancerGovernor — invited player profile', () => {
         expect(gov.level).toBe('off');
         // Idle GPU for five minutes: predictable beats optimal for a guest.
         expect(feed(gov, { serviceMs: 0.5, arrivalMs: 16.7 }, 300, 40000)).toEqual([]);
+        expect(gov.level).toBe('off');
+    });
+});
+
+/**
+ * The failure the draw timing cannot report: a WebGL pass that only queues its
+ * work costs nothing to submit while the decoder starves behind it. Numbers
+ * from an Arc A380 streaming 1440p120 HEVC with FSR1 on — serviceMs 0.2ms for
+ * a 9ms budget, decodeQueueSize 12-14, two thirds of the frames lost.
+ */
+describe('EnhancerGovernor — a starved decoder behind a cheap draw', () => {
+    const STARVED = { serviceMs: 0.2, arrivalMs: 9.0, decodeQueue: 13 };
+
+    it('steps down although the draw says it fits', () => {
+        const gov = new EnhancerGovernor('fsr1');
+        // Same window without the queue: the old policy saw nothing at all.
+        const blind = new EnhancerGovernor('fsr1');
+        expect(feed(blind, { serviceMs: 0.2, arrivalMs: 9.0 }, 60)).toEqual([]);
+        expect(blind.level).toBe('fsr1');
+
+        const steps = feedQueued(gov, STARVED, 20);
+        expect(steps[0].algo).toBe('nis');
+        // The queue stays deep, so the ladder keeps walking down to off.
+        expect(gov.level).toBe('off');
+    });
+
+    it('holds through a spike shorter than the sustain window', () => {
+        const gov = new EnhancerGovernor('fsr1');
+        expect(feedQueued(gov, STARVED, 1.5)).toEqual([]);
+        expect(gov.level).toBe('fsr1');
+    });
+
+    it('leaves a queue that is merely busy alone', () => {
+        const gov = new EnhancerGovernor('fsr1');
+        // decQ 2 with a cheap draw is a healthy 120fps stream, not starvation.
+        expect(feedQueued(gov, { serviceMs: 0.2, arrivalMs: 9.0, decodeQueue: 2 }, 60)).toEqual([]);
+        expect(gov.level).toBe('fsr1');
+    });
+
+    it('does not climb back while the queue is still deep', () => {
+        const gov = new EnhancerGovernor('fsr1');
+        feedQueued(gov, STARVED, 20);
+        expect(gov.level).toBe('off');
+        // Draw cost says recover — the decoder says the GPU is still behind.
+        expect(
+            feedQueued(gov, { serviceMs: 0.2, arrivalMs: 9.0, decodeQueue: 6 }, 300, 20000),
+        ).toEqual([]);
+        expect(gov.level).toBe('off');
+    });
+
+    it('climbs back once the decoder is clear again', () => {
+        const gov = new EnhancerGovernor('fsr1');
+        feedQueued(gov, STARVED, 20);
+        expect(gov.level).toBe('off');
+        const steps = feedQueued(
+            gov,
+            { serviceMs: 0.2, arrivalMs: 9.0, decodeQueue: 0 },
+            300,
+            20000,
+        );
+        expect(steps.map((s) => s.algo)).toContain('sgsr');
+    });
+
+    it('stays out of it with the enhancer already off', () => {
+        const gov = new EnhancerGovernor('off');
+        // A backlog with nothing enhancing is not the ladder's problem.
+        expect(feedQueued(gov, STARVED, 60)).toEqual([]);
         expect(gov.level).toBe('off');
     });
 });

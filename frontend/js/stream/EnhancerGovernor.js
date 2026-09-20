@@ -47,6 +47,26 @@ export const ENHANCER_LADDER = ['fsr1', 'nis', 'sgsr', 'off'];
 
 /** Draw wait above this share of the frame budget = it no longer fits. */
 const DEGRADE_RATIO = 0.8;
+/**
+ * Decoded frames waiting at the decoder input, above which the enhancer is
+ * judged to be starving it — a second, independent reason to step down.
+ *
+ * A WebGL or WebGPU draw only QUEUES its work: gl.drawArrays() returns as soon
+ * as the commands are recorded, so the draw timing above measures SUBMISSION,
+ * not the GPU time the pass really costs. On a contended GPU it stays near
+ * 0.2ms while the pass falls further and further behind, and this policy never
+ * fires. Where the delay does show up is the decoder: the queued draws hold its
+ * output surfaces, and with none free it stalls. Measured on an Arc A380, FSR1
+ * at 1440p120 kept serviceMs at 0.2ms for a 9ms budget while decodeQueueSize
+ * sat at 12-14 and the decode leg went from 15ms to 477ms — two thirds of the
+ * frames lost, with the ladder standing by.
+ *
+ * StreamView's DECODE_QUEUE_MAX is 8 and a healthy stream reads under 1, so
+ * half the cap is a wide margin either way.
+ */
+const DECODE_QUEUE_DEGRADE = 4;
+/** …and the queue has to be back to about empty before climbing again. */
+const DECODE_QUEUE_RECOVER = 1;
 /** …and back below this share (with margin, so a restore is not a coin flip). */
 const RECOVER_RATIO = 0.4;
 /** A verdict must hold this long — a single busy window is not a trend. */
@@ -110,19 +130,24 @@ export class EnhancerGovernor {
 
     /**
      * Feed one observation window.
-     * @param {{serviceMs: number, arrivalMs: number, now: number}} obs
+     * @param {{serviceMs: number, arrivalMs: number, now: number,
+     *           decodeQueue?: number}} obs
      *   serviceMs per-frame cost of the render stage — the draw latency divided
      *             by how many draws overlap (PipelineDiag.renderServiceMs), NOT
      *             the raw wait: with two draws in flight each one waits about
      *             twice as long while costing the pipeline the same.
      *   arrivalMs average interval between incoming frames = the frame budget
      *   now       performance.now(), passed in so the policy stays pure
+     *   decodeQueue average decodeQueueSize (PipelineDiag.decodeQueueAvg) —
+     *             the cost a queued GPU pass does not report about itself, see
+     *             DECODE_QUEUE_DEGRADE. Absent counts as an empty queue.
      * @returns {string|null} the new algo when the level changed, else null.
      */
     update(obs) {
         const budget = obs && obs.arrivalMs;
         const wait = obs && obs.serviceMs;
         const now = (obs && obs.now) || 0;
+        const queue = obs && obs.decodeQueue > 0 ? obs.decodeQueue : 0;
         // No usable budget (stream idle, no sample yet): hold, and let the
         // sustain timers lapse rather than deciding on nothing.
         if (!(budget >= MIN_BUDGET_MS) || budget > MAX_BUDGET_MS || !(wait >= 0)) {
@@ -153,7 +178,10 @@ export class EnhancerGovernor {
         const degradeAbove = this._fixedBudgetMs > 0 ? this._fixedBudgetMs : budget * DEGRADE_RATIO;
         const recoverBelow = this._fixedBudgetMs > 0 ? -1 : budget * RECOVER_RATIO;
 
-        if (wait > degradeAbove) {
+        // Either the draw no longer fits, or it says it does while the decoder
+        // starves behind it. The second is the only signal a queued GPU pass
+        // gives about its real cost.
+        if (wait > degradeAbove || queue > DECODE_QUEUE_DEGRADE) {
             this._recoverSince = 0;
             if (this._degradeSince === 0) this._degradeSince = now;
             if (now - this._degradeSince < DEGRADE_SUSTAIN_MS) return null;
@@ -168,7 +196,12 @@ export class EnhancerGovernor {
             return this.level;
         }
 
-        if (!this._noRecovery && wait < recoverBelow && this._level > this._ceiling) {
+        if (
+            !this._noRecovery &&
+            wait < recoverBelow &&
+            queue <= DECODE_QUEUE_RECOVER &&
+            this._level > this._ceiling
+        ) {
             this._degradeSince = 0;
             if (this._recoverSince === 0) this._recoverSince = now;
             if (now - this._recoverSince < this._recoverAfterMs) return null;

@@ -275,13 +275,16 @@ function postCounters(force) {
 }
 
 // Feed the observation window to the enhancer ladder and apply its verdict.
-// The draw wait is the enhancer's own GPU cost; the arrival interval is the
-// budget it has to fit in. Main is told so the overlay can name what is running.
+// The draw wait is the enhancer's own GPU cost, the arrival interval is the
+// budget it has to fit in, and the decode queue catches the pass that reports
+// no cost because it only queued its work. Main is told so the overlay can name
+// what is running.
 function applyEnhancerGovernor(diag, now) {
     if (!S.governor || !S.renderer) return;
     const algo = S.governor.update({
         serviceMs: diag.renderServiceMs,
         arrivalMs: diag.arrivalAvgMs,
+        decodeQueue: diag.decodeQueueAvg,
         now,
     });
     if (!algo) return;

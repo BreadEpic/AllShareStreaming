@@ -5818,13 +5818,16 @@ export class StreamView {
     /**
      * Feed the observation window to the enhancer ladder and apply its verdict
      * (main-thread renderer path). The draw wait is the enhancer's own GPU
-     * cost; the arrival interval is the budget it has to fit into.
+     * cost; the arrival interval is the budget it has to fit into. The decode
+     * queue covers the case the draw wait cannot see: a GPU pass that only
+     * queues its work reports no cost at all while it starves the decoder.
      */
     _applyEnhancerGovernor(diag, now) {
         if (!this._governor || !this._renderer) return;
         const algo = this._governor.update({
             serviceMs: diag.renderServiceMs,
             arrivalMs: diag.arrivalAvgMs,
+            decodeQueue: diag.decodeQueueAvg,
             now,
         });
         if (!algo) return;
