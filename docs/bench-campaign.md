@@ -642,17 +642,42 @@ Three gaps a local build cannot close, all of them already known:
 And it is a chapter 0 consequence that this is possible at all: until the flag
 left `QT_DEBUG`, a release binary could not be measured for click-to-photon.
 
+### The artifact must be the one `main` holds
+
+A campaign measures the code of today. An artifact that is two commits old
+measures something nobody will ever publish, and it does it silently, because
+nothing in the machinery notices. So the first step of a campaign is not
+discovery — it is checking that what is installed on the fleet came from the
+commit that is on `main`:
+
+```bash
+git rev-parse --short=3 HEAD          # -> 3d4
+# the installed version reads <last tag>.g<3-char sha>-dev
+# 0.3.0.g980-dev -> 980, which is commit 9807770c, which is not HEAD
+```
+
+If the two shas differ — or the working tree still holds changes that belong in
+the release — the campaign **builds the artifact before it measures anything**:
+format and check locally first (a CI that fails on whitespace costs twenty-five
+minutes), commit on `main`, push, then dispatch. If the CI fails, fixing it is
+part of the campaign; falling back to the previous artifact is not.
+
 ### Getting the artifacts, without cutting a release
 
 No tag is needed. `ci.yml` runs the full packaging as its last stage, and **a
 manual run on a branch only uploads workflow artifacts** — the version is
 `<last tag>.g<3-char sha>-dev`, nothing is published.
 
-1. Push the commits (Bruno's gesture; `ci.yml` has no branch push trigger on
-   purpose, so the multi-platform matrix is never spent by accident).
-2. Run `ci.yml` manually on `main` — or `release.yml` directly, which takes a
-   `platform` input (`all`, `windows-x64`, `windows-arm64`, `linux`, `macos`)
-   when only one bench needs refreshing.
+1. Push the commits. `ci.yml` has no branch push trigger on purpose, so the
+   multi-platform matrix is never spent by accident — nothing leaves until step
+   2 asks for it. (Pushing was historically Bruno's gesture alone; he delegated
+   it for campaigns on 2026-09-20 so that a stale artifact can never again be
+   the reason a bench measures the wrong code. Outside a campaign the old rule
+   stands.)
+2. Run `ci.yml` manually on `main` — `gh workflow run ci.yml --ref main -f
+   channel=dev` — or `release.yml` directly, which takes a `platform` input
+   (`all`, `windows-x64`, `windows-arm64`, `linux`, `macos`) when only one bench
+   needs refreshing. Then `gh run watch`: about twenty-five minutes.
 3. Collect what each bench needs:
 
 | Artifact | For |
