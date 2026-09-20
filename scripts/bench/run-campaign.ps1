@@ -204,8 +204,16 @@ if (-not $KioskRect) {
 
 # ── 2. The matrix ───────────────────────────────────────────────────────────
 
+# stream_resolution travels WITH stream_height, always. The height alone means
+# nothing while the mode is 'auto': StreamResolution.js resolves Auto against
+# the host display and writes stream_height back, so a matrix that sets only the
+# height runs every one of its passes at the host's native size — the reference
+# claims 1080p60 and delivers 1440p, and the whole resolution sweep measures the
+# same picture five times without a single warning. 'fixed' is the mode that
+# means "this many lines, as asked".
 $reference = [ordered]@{
     video_codec           = 'hevc'
+    stream_resolution     = 'fixed'
     stream_height         = 1080
     stream_fps            = 60
     video_enhancement     = 'off'

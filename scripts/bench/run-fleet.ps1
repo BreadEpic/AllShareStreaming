@@ -145,7 +145,12 @@ try {
                 Start-Sleep -Seconds 5
             }
             $algo = $enh   # the same word the star matrix writes: 'on' or 'off'
-            $settings = '{"video_codec":"' + $codec + '","stream_height":1080,"stream_fps":60,' +
+            # "stream_resolution":"fixed" is not decoration: without it the mode
+            # stays Auto, the client resolves 1080 against the host's display and
+            # writes the host's own height back, and every fleet pass runs at
+            # whatever that machine's screen happens to be instead of 1080p.
+            $settings = '{"video_codec":"' + $codec + '","stream_resolution":"fixed",' +
+                        '"stream_height":1080,"stream_fps":60,' +
                         '"video_enhancement":"' + $algo + '","chroma_444_enabled":false,' +
                         '"hdr_enabled":false,"mute_host_audio":true,"stream_aspect":"auto"}'
             # Through a FILE, never inline. PowerShell strips the double quotes of an
