@@ -171,8 +171,14 @@ if ($contentName -eq 'cod') {
 }
 Write-Host "content      : $contentName"
 & powershell -NoProfile -File "$PSScriptRoot\kiosk.ps1" -Url $content -X $kx -Y $ky -W $kw -H $kh | Out-Host
-& powershell -NoProfile -File "$PSScriptRoot\kiosk.ps1" -Url $AppUrl -X $cx -Y $cy -W $cw -H $ch `
-    -DebugPort $DebugPort -AdapterLuid $ClientAdapterLuid | Out-Host
+# -AdapterLuid only when there is one: `powershell -File` hands an empty string
+# to the child as *no argument at all*, and the child then dies with "Missing an
+# argument for parameter 'AdapterLuid'" — so leaving the pin unset, which the
+# parameter's own default allows, used to abort the whole browser half.
+$clientArgs = @('-NoProfile', '-File', "$PSScriptRoot\kiosk.ps1", '-Url', $AppUrl,
+                '-X', $cx, '-Y', $cy, '-W', $cw, '-H', $ch, '-DebugPort', $DebugPort)
+if ($ClientAdapterLuid) { $clientArgs += @('-AdapterLuid', $ClientAdapterLuid) }
+& powershell @clientArgs | Out-Host
 
 # -like '*click-target.ps1*' matches the killing shell's own command line: exclude $PID.
 Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
