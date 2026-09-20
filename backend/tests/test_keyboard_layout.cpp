@@ -344,6 +344,21 @@ void run_keyboard_layout_tests()
         CHECK(!InputMsg::debugEnabled());
     }
     {
+        // The modifier mask is read off the message, not off the key plan, so
+        // it is the same whether the key goes out as a position or as a
+        // character. The character path used to drop it, and the macOS host —
+        // the only one that has to synthesise the modifier flags rather than
+        // let the OS hold them — had nothing left to correct its own idea of
+        // them with.
+        QJsonObject msg = key(kVkQ, "KeyQ", "a", true);
+        msg["metaKey"] = true;
+        msg["shiftKey"] = true;
+        CHECK(resolveKey(msg, KeyboardMode::Native).isText());
+        CHECK_EQ(static_cast<int>(InputMsg::modifierMask(msg)), 0x08 | 0x01);
+        // And "nothing is held" is a statement too, not an absence.
+        CHECK_EQ(static_cast<int>(InputMsg::modifierMask(key(kVkQ, "KeyQ", "a", true))), 0);
+    }
+    {
         CHECK_EQ(InputMsg::usKeyLabel(kVk1).toStdString(), std::string("1"));
         CHECK_EQ(InputMsg::usKeyLabel(kVkQ).toStdString(), std::string("Q"));
         CHECK_EQ(InputMsg::usKeyLabel(0xBF).toStdString(), std::string("/"));

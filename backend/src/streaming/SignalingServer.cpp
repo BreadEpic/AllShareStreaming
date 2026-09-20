@@ -818,7 +818,7 @@ void SignalingServer::handleWsFallbackInput(const QString& message)
         const InputMsg::KeyPlan plan = InputMsg::resolveKey(msg, m_Shim->keyboardMode());
         InputMsg::logKey(msg, m_Shim->keyboardMode(), plan, down);
         if (plan.isText()) {
-            m_Shim->sendKeyChar(plan.text, down);
+            m_Shim->sendKeyChar(plan.text, down, InputMsg::modifierMask(msg));
         } else {
             m_Shim->sendKeyEvent(plan.keyCode, down, InputMsg::modifierMask(msg), plan.flags);
         }

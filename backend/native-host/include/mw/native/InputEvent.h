@@ -68,6 +68,14 @@ struct InputEvent
     int16_t keyCode = 0;
     /// Modifier bitmask, matching the browser's existing encoding.
     uint8_t modifiers = 0;
+    /// Whether @ref modifiers is the client's own statement of what it holds,
+    /// and so may be trusted as the whole truth — including "nothing is held".
+    /// False on the events the host makes up for itself (the watchdog letting
+    /// go of a key during a stall), where a zero mask means "not said" rather
+    /// than "no modifier". Read by the macOS backend only: it is the one that
+    /// has to synthesise the modifier flags instead of letting the OS hold
+    /// them, so it is the one whose idea of them can drift.
+    bool modifiersKnown = false;
     uint8_t keyFlags = 0;
     /// UTF-8 payload for Type::Utf8Text, and the single character for
     /// Type::CharDown / Type::CharUp.

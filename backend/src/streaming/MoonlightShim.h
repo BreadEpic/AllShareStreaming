@@ -114,7 +114,7 @@ public:
     // left here is the UTF-8 text event — which has no key state, hence the
     // release doing nothing. Letters never reach this on a Windows host: they
     // stay real key presses through SS_KBE_FLAG_NON_NORMALIZED.
-    void sendKeyChar(const QString& ch, bool down) override;
+    void sendKeyChar(const QString& ch, bool down, char modifiers = 0) override;
     void sendMouseMove(short deltaX, short deltaY) override;
     void sendMousePosition(short x, short y, short referenceWidth, short referenceHeight) override;
     void sendMouseButton(bool down, int button, bool hold = false) override;

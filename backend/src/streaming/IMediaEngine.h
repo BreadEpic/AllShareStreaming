@@ -160,7 +160,11 @@ public:
     /// edges, one that can only inject text acts on the press and ignores the
     /// release. Distinct from sendUtf8Text, which carries a whole string from
     /// a soft keyboard and has no key transition at all.
-    virtual void sendKeyChar(const QString& ch, bool down) = 0;
+    /// `modifiers` is the client's own statement of what it holds, in the
+    /// same encoding as sendKeyEvent's. The character path used to drop it,
+    /// which left the macOS backend with no way to notice that its own idea
+    /// of the modifiers had drifted.
+    virtual void sendKeyChar(const QString& ch, bool down, char modifiers = 0) = 0;
 
     virtual void sendMouseMove(short deltaX, short deltaY) = 0;
     virtual void sendMousePosition(short x, short y, short referenceWidth,

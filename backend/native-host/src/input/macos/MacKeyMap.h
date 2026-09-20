@@ -187,4 +187,48 @@ constexpr bool macIsModifier(int vk)
     }
 }
 
+/// The CoreGraphics flag of each modifier the viewer can hold, spelled out for
+/// the same reason as the key codes: this header compiles, and is tested, off a
+/// Mac. The values are kCGEventFlagMask* from CGEventTypes.h.
+constexpr uint64_t kMacFlagAlphaShift = 0x00010000; ///< Caps Lock — a LOCK, not held
+constexpr uint64_t kMacFlagShift = 0x00020000;
+constexpr uint64_t kMacFlagControl = 0x00040000;
+constexpr uint64_t kMacFlagAlternate = 0x00080000;
+constexpr uint64_t kMacFlagCommand = 0x00100000;
+
+/// Every flag a held key sets, and therefore every flag the client's mask is
+/// allowed to speak for.
+constexpr uint64_t kMacHeldFlags =
+    kMacFlagShift | kMacFlagControl | kMacFlagAlternate | kMacFlagCommand;
+
+/// The modifier flags to post from here on, given what we believe is held
+/// (@p current) and what the client says it is holding (@p clientMask, the
+/// Limelight mask built by InputMsg::modifierMask: 0x01 shift, 0x02 ctrl,
+/// 0x04 alt, 0x08 meta).
+///
+/// ── Why the client wins ─────────────────────────────────────────────────────
+///
+/// On Windows and Linux a modifier is a key the OS holds for us; on macOS it is
+/// a flag WE put on every event, so our idea of it is a shadow that can drift.
+/// It drifts for one reason above all: the OS eats a key-up. The Windows key
+/// opens the Start menu and the browser never sees the release, so Command
+/// stays down on the Mac for the rest of the session — Space then reads as
+/// ⌘Space and opens Spotlight instead of making the character jump.
+///
+/// The browser, on the other hand, states the whole modifier state on every
+/// single keystroke, and that statement is the truth about the viewer's hand.
+/// So the four held modifiers are taken from it outright, and everything else
+/// in @p current is left alone: Caps Lock is a lock kept by syncLockKeys(), and
+/// the Fn, numeric-pad and device-dependent bits are none of the client's
+/// business.
+constexpr uint64_t reconcileModifierFlags(uint64_t current, uint8_t clientMask)
+{
+    uint64_t wanted = 0;
+    if (clientMask & 0x01) wanted |= kMacFlagShift;
+    if (clientMask & 0x02) wanted |= kMacFlagControl;
+    if (clientMask & 0x04) wanted |= kMacFlagAlternate;
+    if (clientMask & 0x08) wanted |= kMacFlagCommand;
+    return (current & ~kMacHeldFlags) | wanted;
+}
+
 } // namespace mw::native::input

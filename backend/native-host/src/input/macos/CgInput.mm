@@ -128,8 +128,30 @@ std::string modifierText(uint64_t flags)
     if (flags & kCGEventFlagMaskShift) out += "+Shift";
     if (flags & kCGEventFlagMaskAlternate) out += "+Option";
     if (flags & kCGEventFlagMaskControl) out += "+Control";
+    if (flags & kCGEventFlagMaskCommand) out += "+Command";
     return out;
 }
+
+/// The same, for a line that has to say something when nothing is held.
+std::string modifierLabel(uint64_t flags)
+{
+    const std::string out = modifierText(flags);
+    return out.empty() ? std::string("none") : out.substr(1);
+}
+
+/// Each held modifier's flag and the key that carries it on a Mac board, in
+/// the order a correction posts them. Left-hand keys: a flag says which
+/// modifier is down, never which side of the keyboard it came from.
+constexpr struct
+{
+    uint64_t flag;
+    uint16_t code;
+} kFlagKeys[] = {
+    {kMacFlagShift, 0x38},     // kVK_Shift
+    {kMacFlagControl, 0x3B},   // kVK_Control
+    {kMacFlagAlternate, 0x3A}, // kVK_Option
+    {kMacFlagCommand, 0x37},   // kVK_Command
+};
 
 /// The modifier flag a virtual key sets, or 0 for an ordinary key.
 CGEventFlags modifierFlag(int vk)
@@ -220,6 +242,7 @@ bool CgInput::start(std::string& error)
     pointerLocation(m_X, m_Y);
     m_Recentre.reset();
     m_Modifiers = 0;
+    m_ModifierFixes = 0;
     m_Started = true;
     log::info("[native] input: Quartz events on the display at " + std::to_string(m_Left) + "," +
               std::to_string(m_Top) + " " + std::to_string(m_Right - m_Left) + "x" +
@@ -306,8 +329,13 @@ void CgInput::inject(const InputEvent& event)
     switch (event.type) {
     case InputEvent::Type::KeyDown: injectKey(event, true); break;
     case InputEvent::Type::KeyUp: injectKey(event, false); break;
-    case InputEvent::Type::CharDown: injectChar(event.text, true); break;
-    case InputEvent::Type::CharUp: injectChar(event.text, false); break;
+    case InputEvent::Type::CharDown:
+    case InputEvent::Type::CharUp:
+        // A character is never a modifier itself, so the client's mask is the
+        // whole truth about what is held around it.
+        if (event.modifiersKnown) reconcileModifiers(event.modifiers);
+        injectChar(event.text, event.type == InputEvent::Type::CharDown);
+        break;
     case InputEvent::Type::Utf8Text: injectText(event.text); break;
     case InputEvent::Type::MouseMoveRelative: injectMouseMove(event.deltaX, event.deltaY); break;
     case InputEvent::Type::MouseMoveAbsolute: injectMousePosition(event); break;
@@ -331,6 +359,21 @@ void CgInput::injectKey(const InputEvent& event, bool down)
     if (vk <= 0 || vk > 0xFF) return;
     const uint16_t code = macKeyCode(vk);
     if (code == kMacNoKey) return;
+
+    // The client states its whole modifier state on every keystroke; ours is
+    // a shadow that drifts the moment a key-up is eaten — the Windows key
+    // opening the Start menu is the everyday one, and it left Command down
+    // for the rest of the stream, where Space read as ⌘Space and opened
+    // Spotlight instead of making the character jump. Put the flags back
+    // before the key goes out. Never from a modifier's own event: that event
+    // IS the statement about its flag, and is applied below.
+    if (event.modifiersKnown && modifierFlag(vk) == 0) reconcileModifiers(event.modifiers);
+
+    if (down && keyboardDiagnostics())
+        log::info("[KBD] host flags " + modifierLabel(m_Modifiers) + " | client says " +
+                  (event.modifiersKnown ? modifierLabel(reconcileModifierFlags(0, event.modifiers))
+                                        : std::string("(not stated)")) +
+                  " | key code " + std::to_string(code));
 
     // A heartbeat re-press of a key still held would be an extra character;
     // a real repeat is passed through (the user holding a key wants typematic).
@@ -373,6 +416,50 @@ void CgInput::injectKey(const InputEvent& event, bool down)
             break;
         }
     }
+}
+
+void CgInput::reconcileModifiers(uint8_t clientMask)
+{
+    const uint64_t was = m_Modifiers;
+    const uint64_t wanted = reconcileModifierFlags(was, clientMask);
+    if (wanted == was) return;
+
+    // A virtual key whose flag just fell is not held any more: left in
+    // m_HeldKeys, releaseAll() would post a key-up for a key the viewer let
+    // go of long ago.
+    const uint64_t dropped = was & ~wanted;
+    for (auto it = m_HeldKeys.begin(); it != m_HeldKeys.end();) {
+        if (modifierFlag(*it) & dropped)
+            it = m_HeldKeys.erase(it);
+        else
+            ++it;
+    }
+
+    // The correction goes out as its own events, one per modifier that moved
+    // and naming that modifier's key, which is exactly what the key-up we
+    // never got would have looked like. An application that follows
+    // flags-changed events — which is how a game reads the modifier keys —
+    // keeps its own account of them, and fixing only the flags of the next
+    // keystroke would leave that account wrong.
+    uint64_t flags = was;
+    for (const auto& fk : kFlagKeys) {
+        if ((was & fk.flag) == (wanted & fk.flag)) continue;
+        flags = (flags & ~fk.flag) | (wanted & fk.flag);
+        const bool held = (wanted & fk.flag) != 0;
+        if (CGEventRef ev = CGEventCreateKeyboardEvent(nullptr, fk.code, held)) {
+            CGEventSetType(ev, kCGEventFlagsChanged);
+            CGEventSetFlags(ev, static_cast<CGEventFlags>(flags));
+            post(ev);
+        }
+    }
+    m_Modifiers = wanted;
+
+    // Said once at full voice, then only under the keyboard diagnostics: it
+    // is an anomaly worth a line in an ordinary log, not a running commentary.
+    if (m_ModifierFixes++ == 0 || keyboardDiagnostics())
+        log::warning("[KBD] modifier drift: the host held " + modifierLabel(was & kMacHeldFlags) +
+                     ", the client says " + modifierLabel(wanted & kMacHeldFlags) +
+                     " — flags corrected (" + std::to_string(m_ModifierFixes) + ")");
 }
 
 bool CgInput::ensureCharMap()

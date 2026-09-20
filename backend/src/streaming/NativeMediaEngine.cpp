@@ -669,6 +669,7 @@ void NativeMediaEngine::sendKeyEvent(short keyCode, bool down, char modifiers, c
     event.type = down ? mw::native::InputEvent::Type::KeyDown : mw::native::InputEvent::Type::KeyUp;
     event.keyCode = keyCode;
     event.modifiers = static_cast<uint8_t>(modifiers);
+    event.modifiersKnown = true;
     event.keyFlags = static_cast<uint8_t>(flags);
     event.hold = hold;
     HeldKey k;
@@ -689,7 +690,7 @@ void NativeMediaEngine::sendUtf8Text(const QString& text)
     m_Session->sendInput(event);
 }
 
-void NativeMediaEngine::sendKeyChar(const QString& ch, bool down)
+void NativeMediaEngine::sendKeyChar(const QString& ch, bool down, char modifiers)
 {
     if (!m_Session) return;
     // The one host where a character can stay a real key: the platform layer
@@ -701,6 +702,8 @@ void NativeMediaEngine::sendKeyChar(const QString& ch, bool down)
     event.type =
         down ? mw::native::InputEvent::Type::CharDown : mw::native::InputEvent::Type::CharUp;
     event.text = ch.toStdString();
+    event.modifiers = static_cast<uint8_t>(modifiers);
+    event.modifiersKnown = true;
     m_Session->sendInput(event);
 }
 
@@ -861,6 +864,7 @@ void NativeMediaEngine::syncHeldInputs(const QVector<HeldKey>& keys, quint32 but
         event.type = mw::native::InputEvent::Type::KeyDown;
         event.keyCode = key.keyCode;
         event.modifiers = static_cast<uint8_t>(key.modifiers);
+        event.modifiersKnown = true;
         event.keyFlags = static_cast<uint8_t>(key.flags);
         event.hold = key.hold;
         event.resync = true;

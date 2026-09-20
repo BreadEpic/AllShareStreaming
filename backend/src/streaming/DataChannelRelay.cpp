@@ -1391,7 +1391,7 @@ void DataChannelRelay::onInputMessage(const std::string& message)
             // position would not produce. The engine decides what it can do
             // with that: a real press/release on the native host, a one-shot
             // text injection on Sunshine (where the release has nothing to do).
-            m_Shim->sendKeyChar(plan.text, down);
+            m_Shim->sendKeyChar(plan.text, down, InputMsg::modifierMask(msg));
         } else {
             // `hold`: a movement key the client wants kept down through a brief
             // stall instead of released at the short grace period (see the shim).

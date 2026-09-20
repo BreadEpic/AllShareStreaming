@@ -94,6 +94,11 @@ private:
     void injectMouseButton(int button, bool down);
     void injectScroll(int amount, bool horizontal);
     void syncLockKeys(const InputEvent& event);
+    /// Take the client's word for which modifiers are held and put the flags
+    /// back in line with it, posting the flags-changed event that says so.
+    /// Only for keys that are NOT modifiers themselves — on those, the event
+    /// being injected is what moves the flag. The caller holds m_Mutex.
+    void reconcileModifiers(uint8_t clientMask);
     void releaseAll();
 
     /// Post a pointer event at @p x, @p y (points), typed for the buttons
@@ -110,6 +115,9 @@ private:
     std::set<int> m_HeldKeys;    ///< virtual keys held, for release at stop()
     std::set<int> m_HeldButtons; ///< browser button numbers held
     uint64_t m_Modifiers = 0;    ///< CGEventFlags of the modifiers held
+    /// How many times the client's mask disagreed with m_Modifiers and put
+    /// it back. Above zero, a modifier's key-up was lost somewhere.
+    uint64_t m_ModifierFixes = 0;
 
     /// A character and the key of the host's layout that types it.
     struct CharKey

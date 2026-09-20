@@ -80,4 +80,41 @@ void run_mac_keymap_tests()
     // Letters, digits, keypad, function row, typewriter and navigation keys:
     // a table that lost a row would show up here.
     CHECK(mapped >= 100);
+
+    SECTION("macOS modifier flags — the client's mask settles the held ones");
+
+    // The bug this exists for: the host believes Command is down (its key-up
+    // was eaten by the Start menu), the client says nothing is held, and the
+    // next Space would go out as ⌘Space and open Spotlight.
+    CHECK_EQ(reconcileModifierFlags(kMacFlagCommand, 0x00), 0u);
+    // A real chord is left alone: the client says meta, meta stays.
+    CHECK_EQ(reconcileModifierFlags(kMacFlagCommand, 0x08), kMacFlagCommand);
+    // …and one the host missed the press of is put back.
+    CHECK_EQ(reconcileModifierFlags(0, 0x08), kMacFlagCommand);
+
+    // Each bit of the mask, alone and together.
+    CHECK_EQ(reconcileModifierFlags(0, 0x01), kMacFlagShift);
+    CHECK_EQ(reconcileModifierFlags(0, 0x02), kMacFlagControl);
+    CHECK_EQ(reconcileModifierFlags(0, 0x04), kMacFlagAlternate);
+    CHECK_EQ(reconcileModifierFlags(0, 0x0F), kMacHeldFlags);
+    CHECK_EQ(reconcileModifierFlags(kMacHeldFlags, 0x00), 0u);
+
+    // Caps Lock is a LOCK, kept by syncLockKeys(): the mask never speaks for
+    // it, in either direction.
+    CHECK_EQ(reconcileModifierFlags(kMacFlagAlphaShift, 0x00), kMacFlagAlphaShift);
+    CHECK_EQ(reconcileModifierFlags(kMacFlagAlphaShift | kMacFlagCommand, 0x00),
+             kMacFlagAlphaShift);
+    CHECK_EQ(reconcileModifierFlags(kMacFlagAlphaShift, 0x0F), kMacFlagAlphaShift | kMacHeldFlags);
+
+    // Everything else the window server puts in there — Fn, numeric pad, the
+    // device-dependent bits — is none of the client's business and survives.
+    constexpr uint64_t kOther = 0x00800000 /*Fn*/ | 0x00200000 /*numeric pad*/ | 0x20000000;
+    CHECK_EQ(reconcileModifierFlags(kOther | kMacFlagCommand, 0x00), kOther);
+    CHECK_EQ(reconcileModifierFlags(kOther, 0x02), kOther | kMacFlagControl);
+
+    // Applying the same mask twice changes nothing the first pass did not.
+    for (uint8_t mask = 0; mask <= 0x0F; ++mask) {
+        const uint64_t once = reconcileModifierFlags(kOther | kMacHeldFlags, mask);
+        CHECK_EQ(reconcileModifierFlags(once, mask), once);
+    }
 }

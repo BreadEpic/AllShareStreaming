@@ -212,6 +212,21 @@ void run_input_watchdog_tests()
         CHECK(!wd.anythingHeld());
     }
 
+    // ── An empty beat lets go of a modifier the client no longer holds ──────
+    //
+    // The client sends one closing beat when nothing is left held, precisely
+    // so this happens: a modifier whose key-up the local OS ate is still down
+    // here, and no other message would ever contradict it.
+    {
+        FakeWire wire;
+        InputWatchdog wd(wire.sink());
+        wd.sync({key(0x5B)}, 0, false); // the Windows key, held
+        InputWatchdog::SyncDiff diff = wd.sync({}, 0, false);
+        CHECK_EQ(diff.release.size(), 1);
+        CHECK_EQ(diff.release.value(0).keyCode, short(0x5B));
+        CHECK(!wd.anythingHeld());
+    }
+
     // ── An explicit release does not need the timer ─────────────────────────
     {
         FakeWire wire;
