@@ -47,6 +47,7 @@ function keySink(hostOs, overrides = {}) {
         sendDesktopSwitch: StreamView.prototype.sendDesktopSwitch,
         _releaseHeldModifiers: StreamView.prototype._releaseHeldModifiers,
         _sendKeyEvent: StreamView.prototype._sendKeyEvent,
+        _reconcileModifiers: StreamView.prototype._reconcileModifiers,
         _forgetHeldKey: StreamView.prototype._forgetHeldKey,
         _holdsThroughStall: StreamView.prototype._holdsThroughStall,
         _releaseKeysHeldUnderMeta: StreamView.prototype._releaseKeysHeldUnderMeta,

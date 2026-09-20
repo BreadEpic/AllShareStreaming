@@ -43,6 +43,7 @@ function keySink(overrides = {}) {
         handleKeyDown: StreamView.prototype.handleKeyDown,
         handleKeyUp: StreamView.prototype.handleKeyUp,
         _sendKeyEvent: StreamView.prototype._sendKeyEvent,
+        _reconcileModifiers: StreamView.prototype._reconcileModifiers,
         _forgetHeldKey: StreamView.prototype._forgetHeldKey,
         _holdsThroughStall: StreamView.prototype._holdsThroughStall,
         // Not exercised here, but the clipboard bridge arms a 150ms timer that
