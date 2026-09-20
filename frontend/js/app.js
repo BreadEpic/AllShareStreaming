@@ -2745,6 +2745,9 @@ const MoonlightApp = {
             // The host is this machine's own screen (mw-native-host): the mouse
             // is sent at its raw report rate there — see _bindPointerRaw.
             nativeHost: result.native === true,
+            // The frame rate this launch asked for: the ceiling the view's
+            // decode-rate governor climbs back to — see DecodeRateGovernor.
+            streamFps: Number(streamingSettings.stream_fps) || 0,
             // Its encoder heals a lost frame with a delta (reference
             // invalidation): the view then decodes through a gap.
             refInvalidation: result.ref_invalidation === true,

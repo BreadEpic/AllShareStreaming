@@ -76,6 +76,7 @@ import {
     formatMainThread,
 } from '../stream/PipelineDiag.js';
 import { shouldFlushAtKeyframe } from '../stream/DecodeQueuePolicy.js';
+import { DecodeRateGovernor } from '../stream/DecodeRateGovernor.js';
 import { EnhancerGovernor } from '../stream/EnhancerGovernor.js';
 import { drawCapFor } from '../stream/RenderPacing.js';
 import { LatencyProbe } from '../stream/LatencyProbe.js';
@@ -1394,6 +1395,13 @@ export class StreamView {
         this.QUEUE_RESET_MS = 1000;
         this._queueStallStart = 0;
         this._lastQueueFlushMs = -Infinity; // see DecodeQueuePolicy
+        // Asks a native host for fewer frames when the decoder keeps a queue
+        // it never empties (DecodeRateGovernor). Created on the first stats
+        // tick that knows the rate to climb back to: the launch's setting, or
+        // the fastest arrival seen when the launch did not say.
+        this._streamFps = opts.streamFps > 0 ? opts.streamFps : 0;
+        this._peakArrivalFps = 0;
+        this._rateGovernor = null;
         // Last config applied to the decoder, re-applied after a queue flush.
         this._activeDecoderCfg = null;
         // Last EncodedVideoChunk timestamp (µs) — enforces monotonicity.
@@ -5636,6 +5644,7 @@ export class StreamView {
             // posting, so re-deciding here would fight it with stale numbers.
             // Runs whether or not the diagnostics are displayed.
             if (!this._useWorker) this._applyEnhancerGovernor(diagSnap, now);
+            this._applyDecodeRateGovernor(diagSnap, fps, now);
             if (this._perfDiag) {
                 let diagLine = formatDiag(diagSnap, {
                     decodedFps: fps,
@@ -5849,6 +5858,42 @@ export class StreamView {
      * queue covers the case the draw wait cannot see: a GPU pass that only
      * queues its work reports no cost at all while it starves the decoder.
      */
+    /**
+     * Feed the decode-rate governor and tell the host what it decides.
+     *
+     * Native host only — no GameStream host can change its rate mid-stream —
+     * and only once the enhancer has stepped aside: a deep decode queue is the
+     * enhancer ladder's signal too, the enhancer is the cheaper thing to give
+     * up, and two governors answering the same queue would both pay for it.
+     */
+    _applyDecodeRateGovernor(diag, decodedFps, now) {
+        if (!this._nativeHost || !diag || this._quitting) return;
+        if (this._governor && this._governor.level !== 'off') return;
+        if (!this._rateGovernor) {
+            if (diag.arrivalAvgMs > 0) {
+                this._peakArrivalFps = Math.max(this._peakArrivalFps, 1000 / diag.arrivalAvgMs);
+            }
+            // The first seconds are start-up traffic, not a rate.
+            if (now - this._startTime < 10000) return;
+            const ceiling = this._streamFps || Math.round(this._peakArrivalFps);
+            if (!(ceiling > 0)) return;
+            this._rateGovernor = new DecodeRateGovernor(ceiling);
+        }
+        const cap = this._rateGovernor.update({
+            decodeQueue: diag.decodeQueueAvg,
+            decodedFps,
+            now,
+        });
+        if (cap === null) return;
+        console.log(
+            '[StreamView] Decode rate: ' +
+                (cap > 0
+                    ? 'the decoder keeps a queue — asking the host for ' + cap + ' fps'
+                    : 'the queue stayed empty — back to the rate that was set'),
+        );
+        this._sendToHost({ type: 'clientfpscap', fps: cap });
+    }
+
     _applyEnhancerGovernor(diag, now) {
         if (!this._governor || !this._renderer) return;
         const algo = this._governor.update({

@@ -47,6 +47,7 @@ export default defineConfig({
                 'js/stream/EnhancerGovernor.js',
                 'js/stream/RenderPacing.js',
                 'js/stream/DecodeQueuePolicy.js',
+                'js/stream/DecodeRateGovernor.js',
                 'js/stream/GamepadManager.js',
                 'js/stream/renderers/createRenderer.js',
                 'js/models/App.js',
