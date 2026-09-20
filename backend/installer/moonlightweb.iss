@@ -761,12 +761,36 @@ begin
   end;
 end;
 
+// Who the scheduled tasks run as, written the way schtasks can resolve it.
+//
+// USERDOMAIN alone is not that. An interactive logon on a machine that is not
+// domain-joined sets it to the computer name, which resolves; a NETWORK logon —
+// SSH, WinRM, an RMM or MDM agent, anything that deploys a fleet without a
+// human at the keyboard — sets it to "WORKGROUP", and "WORKGROUP\someone" maps
+// to no SID at all. schtasks then fails with "No mapping between account names
+// and security IDs was done", the installer has no UI to say so, and the
+// machine ends up installed, green, and with no autostart, no update task and
+// no virtual display task. A domain account keeps its domain: that one is a
+// real authority.
+function TaskPrincipal(): String;
+var
+  domain: String;
+begin
+  domain := GetEnv('USERDOMAIN');
+  if (domain = '') or (Uppercase(domain) = 'WORKGROUP') then
+    domain := GetEnv('COMPUTERNAME');
+  if domain = '' then
+    Result := TaskXmlEscape(GetEnv('USERNAME'))
+  else
+    Result := TaskXmlEscape(domain + '\' + GetEnv('USERNAME'));
+end;
+
 procedure RegisterLogonTask();
 var
   user, xml, xmlPath, exePath: String;
   rc: Integer;
 begin
-  user := TaskXmlEscape(GetEnv('USERDOMAIN') + '\' + GetEnv('USERNAME'));
+  user := TaskPrincipal();
   exePath := TaskXmlEscape(ExpandConstant('{app}\{#MyAppExe}'));
   // No <?xml?> declaration: schtasks' MSXML rejects a declared encoding when
   // the file bytes don't match it exactly ("unable to switch the encoding" —
@@ -829,7 +853,7 @@ var
   user, xml, xmlPath: String;
   rc: Integer;
 begin
-  user := TaskXmlEscape(GetEnv('USERDOMAIN') + '\' + GetEnv('USERNAME'));
+  user := TaskPrincipal();
   // No <?xml?> declaration and pure ASCII, for the same reason as the logon task.
   xml :=
     '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">' + #13#10 +
@@ -871,7 +895,7 @@ var
   user, xml, xmlPath, exePath: String;
   rc: Integer;
 begin
-  user := TaskXmlEscape(GetEnv('USERDOMAIN') + '\' + GetEnv('USERNAME'));
+  user := TaskPrincipal();
   exePath := TaskXmlEscape(ExpandConstant('{app}\{#MyAppExe}'));
   // No <?xml?> declaration and pure ASCII, for the same reason as the logon task.
   xml :=
