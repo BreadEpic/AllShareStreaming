@@ -69,7 +69,12 @@ import {
 } from '../util/BrowserDetect.js';
 import { createVideoRenderer, NO_WEBGPU_ALGOS } from '../stream/renderers/createRenderer.js';
 import { videoSinkCtor } from '../stream/renderers/videoSink.js';
-import { PipelineDiag, formatDiag } from '../stream/PipelineDiag.js';
+import {
+    PipelineDiag,
+    MainThreadProbe,
+    formatDiag,
+    formatMainThread,
+} from '../stream/PipelineDiag.js';
 import { EnhancerGovernor } from '../stream/EnhancerGovernor.js';
 import { drawCapFor } from '../stream/RenderPacing.js';
 import { LatencyProbe } from '../stream/LatencyProbe.js';
@@ -1051,6 +1056,10 @@ export class StreamView {
         try {
             this._perfDiag = localStorage.getItem('mw_perf_diag') === '1';
         } catch (e) {}
+        // What the main thread does besides streaming — input sent, event-loop
+        // lag, long tasks. Exists only under the same flag: it runs a timer.
+        this._mainThreadProbe = this._perfDiag ? new MainThreadProbe(2000) : null;
+        if (this._mainThreadProbe) this._mainThreadProbe.start();
 
         // ── webrtc-media native stats (getStats polling) ──────────────────────
         // RTP media track frames bypass the JS decoder, so fps/bitrate/latency
@@ -5622,6 +5631,9 @@ export class StreamView {
                 // that was felt — the averages above cannot.
                 const tails = this._formatStageTails(now);
                 if (tails) diagLine += ' · ' + tails;
+                if (this._mainThreadProbe) {
+                    diagLine += ' · ' + formatMainThread(this._mainThreadProbe.snapshot());
+                }
                 if (showDetail) {
                     html += '<div class="stats-diag">' + escapeHtml(diagLine) + '</div>';
                 }
@@ -9109,7 +9121,13 @@ export class StreamView {
 
     /** Ship an input message to the host. */
     _sendToHost(msg) {
+        if (!this._mainThreadProbe) {
+            this.webrtc.send(msg);
+            return;
+        }
+        const t0 = performance.now();
         this.webrtc.send(msg);
+        this._mainThreadProbe.noteInput(performance.now() - t0);
     }
 
     /**
@@ -9132,6 +9150,15 @@ export class StreamView {
         this._rawPointer = false;
         if (!this._nativeHost || !this.inputEl) return;
         if (!('onpointerrawupdate' in window)) return;
+        // Diagnostics: mw_raw_pointer = '0' keeps the coalesced mousemove
+        // cadence against a native host too — the A/B for "is it the report
+        // rate?". Not a setting, same family as mw_pacing.
+        try {
+            if (localStorage.getItem('mw_raw_pointer') === '0') {
+                console.log('[StreamView] Mouse: raw report rate held off (mw_raw_pointer=0)');
+                return;
+            }
+        } catch (e) {}
         this._onPointerRaw = (e) => {
             if (e.pointerType !== 'mouse') return;
             this._lastRawPointerMs = performance.now();
@@ -10216,6 +10243,10 @@ export class StreamView {
             this._latencyProbe.stop();
             if (window.mwLatency === this._latencyProbe) window.mwLatency = null;
             this._latencyProbe = null;
+        }
+        if (this._mainThreadProbe) {
+            this._mainThreadProbe.stop();
+            this._mainThreadProbe = null;
         }
 
         if (this._shareMenu) {

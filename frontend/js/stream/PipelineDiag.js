@@ -89,6 +89,19 @@ class DiagWindow {
         }
         return m;
     }
+
+    /** Samples still inside the window — a rate, once divided by its length. */
+    get count() {
+        this._prune();
+        return this._samples.length;
+    }
+
+    get sum() {
+        this._prune();
+        let sum = 0;
+        for (const s of this._samples) sum += s.value;
+        return sum;
+    }
 }
 
 export class PipelineDiag {
@@ -187,6 +200,107 @@ export class PipelineDiag {
             dropBackpressure: this._drops.backpressure,
         };
     }
+}
+
+/**
+ * MainThreadProbe — what else the main thread is busy with while it streams.
+ *
+ * The pipeline above is fed, and by default drawn, on the main thread — the
+ * same one that handles the mouse. Against a native host the mouse goes out at
+ * its own report rate (pointerrawupdate, 1000 a second for a gaming mouse),
+ * each report a handler run and a message; a frame interval at 120fps is 8.3ms.
+ * Whether the two get in each other's way is a question for a measurement, and
+ * nothing in PipelineDiag can answer it: a late frame reads the same there
+ * whether the network, the decoder or a busy event loop held it up.
+ *
+ * Three observations, all windowed like the rest:
+ *   - input messages sent, and the time their handlers took,
+ *   - event-loop lag: how late a 10ms timer fires. It fires late only when the
+ *     thread was busy with something else, so its max is the longest stretch
+ *     during which a frame that had arrived could not be touched,
+ *   - long tasks (>50ms), as the browser reports them.
+ *
+ * Diagnostics only (mw_perf_diag): the timer runs only between start() and
+ * stop(), and noteInput() costs a push.
+ */
+export class MainThreadProbe {
+    constructor(windowMs = 2000) {
+        this._windowMs = windowMs;
+        this._inputMs = new DiagWindow(windowMs);
+        this._lag = new DiagWindow(windowMs);
+        this._longTasks = new DiagWindow(windowMs);
+        this._timer = null;
+        this._observer = null;
+    }
+
+    start() {
+        if (this._timer !== null) return;
+        const PERIOD_MS = 10;
+        let expected = performance.now() + PERIOD_MS;
+        this._timer = setInterval(() => {
+            const now = performance.now();
+            this._lag.push(Math.max(0, now - expected));
+            expected = now + PERIOD_MS;
+        }, PERIOD_MS);
+        if (typeof PerformanceObserver !== 'undefined') {
+            try {
+                this._observer = new PerformanceObserver((list) => {
+                    for (const entry of list.getEntries()) this._longTasks.push(entry.duration);
+                });
+                this._observer.observe({ entryTypes: ['longtask'] });
+            } catch (e) {
+                this._observer = null;
+            }
+        }
+    }
+
+    stop() {
+        if (this._timer !== null) clearInterval(this._timer);
+        this._timer = null;
+        if (this._observer) this._observer.disconnect();
+        this._observer = null;
+    }
+
+    /** One input message left; its handler ran for @p handlerMs. */
+    noteInput(handlerMs) {
+        this._inputMs.push(handlerMs);
+    }
+
+    snapshot() {
+        const seconds = this._windowMs / 1000;
+        return {
+            inputsPerSec: this._inputMs.count / seconds,
+            inputMsPerSec: this._inputMs.sum / seconds,
+            loopLagAvgMs: this._lag.avg,
+            loopLagMaxMs: this._lag.max,
+            longTasks: this._longTasks.count,
+            longTaskMaxMs: this._longTasks.max,
+        };
+    }
+}
+
+/**
+ * Render a MainThreadProbe snapshot as the tail of the [perf] line.
+ * @param {ReturnType<MainThreadProbe['snapshot']>|null} load
+ */
+export function formatMainThread(load) {
+    if (!load) return '';
+    const n1 = (v) => (v || 0).toFixed(1);
+    return (
+        'input ' +
+        Math.round(load.inputsPerSec) +
+        '/s ' +
+        n1(load.inputMsPerSec) +
+        'ms/s · loop lag ' +
+        n1(load.loopLagAvgMs) +
+        '/' +
+        n1(load.loopLagMaxMs) +
+        'ms · longtask ' +
+        load.longTasks +
+        '/' +
+        Math.round(load.longTaskMaxMs) +
+        'ms'
+    );
 }
 
 /**

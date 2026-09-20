@@ -13,7 +13,12 @@
  * sequence of pipeline events, and what the formatted line contains.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { PipelineDiag, formatDiag } from '../js/stream/PipelineDiag.js';
+import {
+    PipelineDiag,
+    MainThreadProbe,
+    formatDiag,
+    formatMainThread,
+} from '../js/stream/PipelineDiag.js';
 
 /** Drive performance.now() by hand so the sliding window is deterministic. */
 let clock = 0;
@@ -175,5 +180,63 @@ describe('formatDiag', () => {
     it('tolerates missing rates', () => {
         const line = formatDiag(new PipelineDiag().snapshot(), {});
         expect(line).toContain('fps in/out 0/0');
+    });
+});
+
+describe('MainThreadProbe', () => {
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    it('turns the input messages of its window into a rate and a cost', () => {
+        const probe = new MainThreadProbe(2000);
+        for (let i = 0; i < 2000; i++) probe.noteInput(0.01);
+        const snap = probe.snapshot();
+        expect(snap.inputsPerSec).toBe(1000);
+        expect(snap.inputMsPerSec).toBeCloseTo(10, 5);
+    });
+
+    it('forgets the input that left the window', () => {
+        const probe = new MainThreadProbe(2000);
+        probe.noteInput(0.01);
+        clock += 2500;
+        expect(probe.snapshot().inputsPerSec).toBe(0);
+    });
+
+    it('reads a timer that fires late as event-loop lag', () => {
+        vi.useFakeTimers();
+        vi.spyOn(performance, 'now').mockImplementation(() => clock);
+        const probe = new MainThreadProbe(2000);
+        probe.start();
+        // On time, then held up 30ms by whatever else the thread was doing.
+        clock += 10;
+        vi.advanceTimersByTime(10);
+        clock += 40;
+        vi.advanceTimersByTime(10);
+        const snap = probe.snapshot();
+        probe.stop();
+        expect(snap.loopLagMaxMs).toBe(30);
+        expect(snap.loopLagAvgMs).toBe(15);
+    });
+
+    it('stops its timer', () => {
+        vi.useFakeTimers();
+        const probe = new MainThreadProbe(2000);
+        probe.start();
+        probe.stop();
+        expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('formats the tail of the perf line', () => {
+        const line = formatMainThread({
+            inputsPerSec: 987.4,
+            inputMsPerSec: 14.26,
+            loopLagAvgMs: 0.4,
+            loopLagMaxMs: 21.7,
+            longTasks: 2,
+            longTaskMaxMs: 63.2,
+        });
+        expect(line).toBe('input 987/s 14.3ms/s · loop lag 0.4/21.7ms · longtask 2/63ms');
+        expect(formatMainThread(null)).toBe('');
     });
 });
