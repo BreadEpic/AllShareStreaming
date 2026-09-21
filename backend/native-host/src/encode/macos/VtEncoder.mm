@@ -200,10 +200,16 @@ bool VtEncoder::init(Codec codec, int width, int height, int fps, int bitrateKbp
     d->session = session;
 
     // ── The latency configuration ───────────────────────────────────────────
-    // Real time, no reordering (no B-frames, one frame in flight), keyframes
-    // only when asked, speed over quality. The same choices every other
-    // encoder in this tree made after measurement.
-    if (!setBool(session, kVTCompressionPropertyKey_RealTime, true, "real-time mode", error) ||
+    // No reordering (no B-frames, one frame in flight), keyframes only when
+    // asked, speed over quality. The same choices every other encoder in this
+    // tree made after measurement.
+    //
+    // And real time OFF, on purpose (VtEncoder.h): "real time" lets the
+    // encoder run just fast enough for the expected frame rate, which on an
+    // M1 Pro doubles the latency of every frame — and pushes H.264 past the
+    // frame period altogether. Each encode() waits for its own frame anyway,
+    // so there is no queue for a non-real-time encoder to fill.
+    if (!setBool(session, kVTCompressionPropertyKey_RealTime, false, "full-speed mode", error) ||
         !setBool(session, kVTCompressionPropertyKey_AllowFrameReordering, false,
                  "no frame reordering", error) ||
         !setInt(session, kVTCompressionPropertyKey_MaxKeyFrameInterval, 0x7fffffff,
@@ -280,7 +286,7 @@ bool VtEncoder::init(Codec codec, int width, int height, int fps, int bitrateKbp
               ", " + std::to_string(m_Width) + "x" + std::to_string(m_Height) + "@" +
               std::to_string(m_Fps) + ", " + std::to_string(m_BitrateKbps) + " kbps, VBV " +
               std::to_string(vbv / 1000) +
-              " kbit, real-time, no reordering, keyframes on "
+              " kbit, full speed, no reordering, keyframes on "
               "demand only — hardware (Apple Video Encoder)" +
               (m_Tuning.describe().empty() ? "" : " [bench: " + m_Tuning.describe() + "]"));
     return true;
@@ -378,9 +384,9 @@ bool VtEncoder::encode(CVPixelBufferRef pixels, bool forceKeyframe, int64_t pres
         }
         if (d->dropped || !d->sample) {
             // Dropped by the encoder's own rate control — it should never
-            // happen without reordering and with real-time on, and the loop
-            // has no frame to emit for it. Reported as an empty output so the
-            // caller skips it rather than ending the session.
+            // happen without reordering, and the loop has no frame to emit
+            // for it. Reported as an empty output so the caller skips it
+            // rather than ending the session.
             out = EncoderOutput{};
             m_OutputHeld = true;
             return true;

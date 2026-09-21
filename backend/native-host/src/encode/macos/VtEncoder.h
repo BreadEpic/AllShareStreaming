@@ -34,12 +34,18 @@
 //
 // ── The same latency decisions as the other four ────────────────────────────
 //
-// Real-time mode, no frame reordering (so no B-frames and one frame in flight),
+// No frame reordering (so no B-frames and one frame in flight),
 // a GOP with keyframes only on demand, CBR with the one-frame VBV of
 // RateControl.h expressed as VideoToolbox's data-rate limit, and the encoder's
 // own "speed over quality" switch on. Each encode() blocks until the bitstream
 // is out: VideoToolbox is asynchronous by design, and the wait for exactly the
 // frame just submitted is what keeps the loop's "one frame in flight" true.
+//
+// Real-time mode is deliberately OFF. Despite its name it is a power mode: the
+// Apple Video Encoder clocks down until a frame takes about one frame period
+// (M1 Pro, 2216x1440@60: HEVC 16.6 ms instead of 8.2, H.264 29 ms instead of
+// 11.5 — past the period, so H.264 capped near 50 fps). Measured 21/09/2026,
+// same bitrate and sizes either way.
 //
 // ── What VideoToolbox does not offer ────────────────────────────────────────
 //
