@@ -28,6 +28,10 @@ add_library(mw-native-host STATIC
     # diagonal). Building it on every platform is what lets the tests check it
     # without a driver or a pad.
     src/input/Ds4Mapping.cpp
+    # The VPS/SPS/PPS of a stream whose slices a D3D12 driver writes. Bits and
+    # nothing else, so it builds — and is tested — on every platform, though
+    # only Windows has a use for it.
+    src/encode/HevcParamSets.cpp
 )
 
 # ── Platform backend selection ──────────────────────────────────────────────
@@ -396,6 +400,7 @@ if(MW_BUILD_TESTS)
         tests/test_virtual_display.cpp
         tests/test_encode_load_cap.cpp
         tests/test_h264_vui.cpp
+        tests/test_hevc_param_sets.cpp
         tests/test_reference_slots.cpp
         tests/test_audio_pacer.cpp
         tests/test_audio_interleave.cpp

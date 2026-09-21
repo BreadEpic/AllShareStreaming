@@ -107,6 +107,10 @@ struct BitWriter
         u(bits, 0);
         u(bits + 1, static_cast<uint32_t>(x));
     }
+    void se(int32_t v)
+    {
+        ue(v > 0 ? static_cast<uint32_t>(v) * 2u - 1u : static_cast<uint32_t>(-v) * 2u);
+    }
 };
 
 inline std::vector<uint8_t> unescape(const uint8_t* p, size_t size)
