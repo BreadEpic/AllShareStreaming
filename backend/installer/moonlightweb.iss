@@ -375,6 +375,29 @@ begin
                  ewWaitUntilTerminated, rc) and (rc = 0);
 end;
 
+// What the user last ASKED FOR, which is not the same question as what the
+// machine currently has.
+//
+// An update used to read the logon task alone and mirror it, which is right
+// when the task is missing because somebody unticked the box, and wrong when it
+// is missing because registering it failed. It failed for everyone who
+// installed over a network logon before the TaskPrincipal fix: USERDOMAIN is
+// WORKGROUP there, schtasks maps it to no SID, and the task was never created.
+// Mirroring that state means the fix ships and those machines stay broken,
+// because the update faithfully preserves the damage.
+//
+// So the answer is recorded, every time it is applied, and an update prefers
+// the record over the symptom. Returns False when nothing was ever recorded —
+// every install from before this build.
+function AutostartChoiceRecorded(var want: Boolean): Boolean;
+var
+  v: Cardinal;
+begin
+  Result := RegQueryDWordValue(HKEY_LOCAL_MACHINE, VDisplaySetupKey,
+                               'AutostartWanted', v);
+  if Result then want := v <> 0;
+end;
+
 // True when a Desktop shortcut created by a previous install is still there.
 function DesktopIconExists(): Boolean;
 begin
@@ -555,11 +578,19 @@ begin
     WizardSelectTasks(tasks);
   end;
 
-  // Start at logon: on by default, and on an update whatever the machine does
-  // today — the box reflects the task, it does not re-impose a default on it.
-  // Placed on the Finished page in CurPageChanged, once Inno has laid that
-  // page out (RunList's position is only known then).
-  if UpdateMode then WantAutostart := LogonTaskExists()
+  // Start at logon: on by default. Placed on the Finished page in
+  // CurPageChanged, once Inno has laid that page out (RunList's position is
+  // only known then).
+  // On an update: the task if it is there (unambiguous), else the recorded
+  // answer, else on. That last default is the repair — an install old enough to
+  // have no record, whose task is missing, is overwhelmingly one the WORKGROUP
+  // bug silently robbed, and turning it back on is what the user asked for the
+  // day they installed. Someone who had genuinely turned it off gets it once,
+  // on a page where the box is visible and unticking it is now remembered.
+  if UpdateMode then begin
+    if LogonTaskExists() then WantAutostart := True
+    else if not AutostartChoiceRecorded(WantAutostart) then WantAutostart := True;
+  end
   else WantAutostart := True;
   AutostartCheck := TNewCheckBox.Create(WizardForm);
   AutostartCheck.Parent := WizardForm.FinishedPage;
@@ -834,6 +865,14 @@ begin
   else if LogonTaskExists() then
     Exec('schtasks.exe', '/Delete /TN "{#MyAppName}" /F', '', SW_HIDE,
          ewWaitUntilTerminated, rc);
+  // Recorded AFTER the attempt and regardless of whether it succeeded: this is
+  // the intent, and the next update needs it precisely in the case where
+  // registering failed. HKLM, like the rest of this installer's own state —
+  // it is written elevated and read elevated.
+  if want then
+    RegWriteDWordValue(HKEY_LOCAL_MACHINE, VDisplaySetupKey, 'AutostartWanted', 1)
+  else
+    RegWriteDWordValue(HKEY_LOCAL_MACHINE, VDisplaySetupKey, 'AutostartWanted', 0);
 end;
 
 // --- One-click update from the web app: the elevated launcher --------------
@@ -1408,8 +1447,11 @@ begin
 
   // Auto-start at logon (relaunches on crash, keeps the tray icon). Interactive
   // installs decide this on the Finished page, at the last click; a silent one
-  // has no such page and takes the default (on for a first install, unchanged
-  // for an update).
+  // has no such page and takes what InitializeWizard worked out — on for a
+  // first install, and for an update the machine's own task, else the recorded
+  // answer, else on. That last arm is what repairs a machine whose task the
+  // WORKGROUP bug destroyed, and it has to work here above all: an update
+  // triggered from the web app is always silent.
   if WizardSilent then
     ApplyAutostartChoice(WantAutostart);
 
