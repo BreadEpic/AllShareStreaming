@@ -158,25 +158,6 @@ struct EncoderTuning
     };
     Fallback fallback = Fallback::None;
 
-    /// Windows: which API carries the picture from the captured surface to the
-    /// encoder. A D3D11 device has a single queue, the one a game fills, and
-    /// under a game that saturates the GPU every step of the D3D11 pipeline
-    /// waits its turn in it; D3D12 opens a compute queue beside it (see
-    /// platform/windows/d3d12/D3d12Context.h).
-    ///
-    /// Bench only until each vendor has been measured: the engine's own is
-    /// still D3D11, which is also what every session falls back to — and says
-    /// so in the log — when the other two cannot serve it (4:4:4, a cross-GPU
-    /// copy, Windows.Graphics.Capture, the fallback tier, a driver that refuses).
-    enum class Pipeline
-    {
-        Default, ///< the engine's choice: D3D11 today
-        D3d11,   ///< conversion and encoder on the capture's D3D11 device
-        Hybrid,  ///< conversion on a D3D12 compute queue, the same D3D11 encoder
-        D3d12    ///< conversion and encoder both in D3D12
-    };
-    Pipeline pipeline = Pipeline::Default;
-
     bool isDefault() const
     {
         return nvencPreset == 0 && nvencTuning == Latency::Default &&
@@ -187,7 +168,7 @@ struct EncoderTuning
                vplMbBrc == Choice::Default && vplExtBrc == Choice::Default &&
                vplLowDelayBrc == Choice::Default && vplGamingScenario == Choice::Default &&
                vplWinBrcFrames == 0 && vbvFrames == 0 && dpbFrames == 0 &&
-               fallback == Fallback::None && pipeline == Pipeline::Default;
+               fallback == Fallback::None;
     }
 
     /// One line naming every field that is NOT at its default, for the log and
@@ -230,9 +211,6 @@ struct EncoderTuning
         if (fallback == Fallback::MediaFoundationSoftware) add("fallback=mfsw");
         if (fallback == Fallback::MediaFoundationCpuInput) add("fallback=mfcpu");
         if (fallback == Fallback::Cpu) add("fallback=cpu");
-        if (pipeline == Pipeline::D3d11) add("pipeline=d3d11");
-        if (pipeline == Pipeline::Hybrid) add("pipeline=hybrid");
-        if (pipeline == Pipeline::D3d12) add("pipeline=d3d12");
         return s;
     }
 };

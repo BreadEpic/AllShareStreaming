@@ -28,10 +28,6 @@ add_library(mw-native-host STATIC
     # diagonal). Building it on every platform is what lets the tests check it
     # without a driver or a pad.
     src/input/Ds4Mapping.cpp
-    # The VPS/SPS/PPS of a stream whose slices a D3D12 driver writes. Bits and
-    # nothing else, so it builds — and is tested — on every platform, though
-    # only Windows has a use for it.
-    src/encode/HevcParamSets.cpp
 )
 
 # ── Platform backend selection ──────────────────────────────────────────────
@@ -44,15 +40,12 @@ if(WIN32)
         src/platform/windows/WindowsEncoderProbe.cpp
         src/platform/windows/WindowsSession.cpp
         src/platform/windows/CrossGpuBridge.cpp
-        src/platform/windows/d3d12/D3d12Context.cpp
         src/platform/windows/StreamPriority.cpp
         src/capture/windows/DxgiDuplication.cpp
         src/capture/windows/WgcCapture.cpp
         src/capture/windows/CursorShape.cpp
         src/capture/windows/Win32Cursor.cpp
         src/convert/windows/ColorConvert.cpp
-        src/convert/windows/PictureConverter.cpp
-        src/convert/windows/d3d12/ComputeConvert.cpp
         src/input/windows/Win32Input.cpp
         src/input/windows/VigemGamepad.cpp
         third_party/vigem-client/src/ViGEmClient.cpp
@@ -379,7 +372,6 @@ if(MW_BUILD_TESTS)
         tests/test_capabilities.cpp
         tests/test_capture.cpp
         tests/test_color_convert.cpp
-        tests/test_compute_convert.cpp
         tests/test_win32_cursor.cpp
         tests/test_host_mute.cpp
         tests/test_evdev_keymap.cpp
@@ -404,7 +396,6 @@ if(MW_BUILD_TESTS)
         tests/test_virtual_display.cpp
         tests/test_encode_load_cap.cpp
         tests/test_h264_vui.cpp
-        tests/test_hevc_param_sets.cpp
         tests/test_reference_slots.cpp
         tests/test_audio_pacer.cpp
         tests/test_audio_interleave.cpp

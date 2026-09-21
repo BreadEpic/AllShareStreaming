@@ -20,7 +20,6 @@ void run_selector_tests();
 void run_capabilities_tests();
 void run_capture_tests();
 void run_color_convert_tests();
-void run_compute_convert_tests();
 void run_win32_cursor_tests();
 void run_host_mute_tests();
 void run_evdev_keymap_tests();
@@ -34,7 +33,6 @@ void run_cpu_cursor_tests();
 void run_portal_tests();
 void run_encode_load_cap_tests();
 void run_h264_vui_tests();
-void run_hevc_param_sets_tests();
 void run_linux_session_tests();
 void run_mac_keymap_tests();
 void run_mac_session_tests();
@@ -77,7 +75,6 @@ int main()
     run_selector_tests();
     run_encode_load_cap_tests();
     run_h264_vui_tests();
-    run_hevc_param_sets_tests();
     run_vpl_params_tests();
 #ifdef MW_NATIVE_OPENH264
     run_openh264_tests();
@@ -99,7 +96,6 @@ int main()
     run_cursor_position_gate_tests();
     run_capture_tests();
     run_color_convert_tests();
-    run_compute_convert_tests();
     run_win32_cursor_tests();
     run_host_mute_tests();
     run_evdev_keymap_tests();
