@@ -18,6 +18,7 @@
 #include "VtEncoder.h"
 
 #include "../../core/Log.h"
+#include "../H264Vui.h"
 #include "../RateControl.h"
 
 #include <CoreMedia/CoreMedia.h>
@@ -483,6 +484,24 @@ bool VtEncoder::toAnnexB(bool keyframe, EncoderOutput& out, std::string& error)
             got = CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(format, i, &set, &setSize,
                                                                      nullptr, nullptr);
         if (got != noErr || !set) continue;
+        if (m_Codec == Codec::H264 && setSize > 0 && (set[0] & 0x1f) == 7) {
+            // The SPS, with a VUI that says "nothing to reorder" (see the
+            // header). Rewritten once per format, not per keyframe.
+            if (m_SpsIn.size() != setSize || std::memcmp(m_SpsIn.data(), set, setSize) != 0) {
+                m_SpsIn.assign(set, set + setSize);
+                m_SpsOut = h264WithNoReorderVui(set, setSize);
+                if (m_SpsOut.empty())
+                    log::warning("[native] VideoToolbox H.264 SPS not understood; sent as is — "
+                                 "the browser may hold frames back to reorder them");
+                else
+                    log::info("[native] VideoToolbox H.264 SPS: VUI bitstream_restriction "
+                              "added (no reordering)");
+            }
+            if (!m_SpsOut.empty()) {
+                set = m_SpsOut.data();
+                setSize = m_SpsOut.size();
+            }
+        }
         m_Scratch.insert(m_Scratch.end(), kStartCode, kStartCode + 4);
         m_Scratch.insert(m_Scratch.end(), set, set + setSize);
     }

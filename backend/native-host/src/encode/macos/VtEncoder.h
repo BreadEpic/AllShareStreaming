@@ -56,6 +56,13 @@
 // prefixes are 4 bytes and so are start codes, so a delta frame is rewritten IN
 // PLACE in the encoder's own buffer and handed out without a copy. A keyframe —
 // rare — is assembled into a scratch buffer with its parameter sets in front.
+//
+// ── The H.264 SPS is rewritten on the way ───────────────────────────────────
+//
+// VideoToolbox's H.264 SPS carries no VUI, so nothing tells the browser's
+// decoder there is no reordering — it then holds a DPB's worth of frames (bug
+// B8, 90–105 ms on bench-mac). No session property adds it; H264Vui.h does, on
+// the copy of the SPS that goes ahead of each keyframe.
 
 namespace mw::native::encode {
 
@@ -116,6 +123,10 @@ private:
     EncoderTuning m_Tuning;
 
     std::vector<uint8_t> m_Scratch;
+    /// The SPS as VideoToolbox last gave it, and the rewritten one sent in its
+    /// place (empty when the rewrite could not parse it: the original goes).
+    std::vector<uint8_t> m_SpsIn;
+    std::vector<uint8_t> m_SpsOut;
     bool m_OutputHeld = false;
     uint32_t m_Encoded = 0;
 };
