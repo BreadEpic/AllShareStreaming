@@ -51,6 +51,7 @@ if(WIN32)
         src/capture/windows/CursorShape.cpp
         src/capture/windows/Win32Cursor.cpp
         src/convert/windows/ColorConvert.cpp
+        src/convert/windows/PictureConverter.cpp
         src/convert/windows/d3d12/ComputeConvert.cpp
         src/input/windows/Win32Input.cpp
         src/input/windows/VigemGamepad.cpp

@@ -20,6 +20,7 @@
 #include "../../capture/windows/DxgiDuplication.h"
 #include "../../capture/windows/WgcCapture.h"
 #include "../../convert/windows/ColorConvert.h"
+#include "../../convert/windows/PictureConverter.h"
 #include "../../core/CadenceAlign.h"
 #include "../../core/CursorPositionGate.h"
 #include "../../core/FrameCadence.h"
@@ -833,7 +834,7 @@ private:
         // On the encoder's device — the capture's, unless a bridge carries the
         // frames to another GPU, in which case both stages live over there and
         // read the bridge's copy.
-        m_Converter = std::make_unique<convert::ColorConvert>();
+        m_Converter = std::make_unique<convert::PictureConverter>();
         // HDR only while the capture REALLY hands FP16 over, whatever was
         // negotiated: a rebuild happens after a mode change, and turning
         // Windows HDR off is one of the changes that triggers it. The
@@ -869,12 +870,15 @@ private:
             }
         }
 
-        if (!m_Converter->init(pipelineDevice(), m_Capture->format(), m_Capture->width(),
-                               m_Capture->height(), outputWidth, outputHeight,
+        if (!m_Converter->init(wantsComputeConversion(), pipelineDevice(), m_Capture->format(),
+                               m_Capture->width(), m_Capture->height(), outputWidth, outputHeight,
                                m_Target.yuv444 ? convert::ColorConvert::Chroma::C444
                                                : convert::ColorConvert::Chroma::C420,
                                hdr, filter, error))
             return false;
+        if (m_Converter->onCompute())
+            log::info("[native] pipeline: hybrid — the conversion on a D3D12 compute queue, beside "
+                      "the 3D queue a game fills; the encoder as it was, on D3D11");
         if (m_Converter->toneMapsToSdr())
             log::info("[native] SDR stream of an HDR desktop — tone-mapped on the GPU");
         // A new converter starts at the 80-nit default; the display's real
@@ -1257,6 +1261,33 @@ private:
                    : FrameSize{m_FullWidth, m_FullHeight};
     }
 
+    /// Whether this session's conversion is asked to leave the D3D11 device for
+    /// a D3D12 compute queue (EncoderTuning::Pipeline). Asked, not granted: the
+    /// converter falls back by itself, and says why, on what it cannot serve.
+    /// What is settled here is what the session knows and the converter cannot.
+    bool wantsComputeConversion() const
+    {
+        using Pipeline = EncoderTuning::Pipeline;
+        const Pipeline pipeline = m_Config.tuning.pipeline;
+        if (pipeline != Pipeline::Hybrid && pipeline != Pipeline::D3d12) return false;
+
+        const char* refusal = nullptr;
+        if (m_Bridge)
+            refusal = "the frames cross to another GPU through system memory";
+        else if (m_CaptureApi != CaptureApi::DxgiDuplication)
+            refusal = "Windows.Graphics.Capture surfaces cannot be opened in D3D12";
+        else if (m_Target.encoder != EncoderApi::Nvenc && m_Target.encoder != EncoderApi::Amf &&
+                 m_Target.encoder != EncoderApi::Vpl)
+            refusal = "the fallback tier has no GPU queue to get out of";
+        if (refusal) {
+            log::info(std::string("[native] pipeline: D3D11 — ") + refusal);
+            return false;
+        }
+        if (pipeline == Pipeline::D3d12)
+            log::info("[native] pipeline=d3d12: no D3D12 encoder in this build yet — hybrid");
+        return true;
+    }
+
     Microsoft::WRL::ComPtr<ID3D11Texture2D> makeBlank(std::string& error)
     {
         Microsoft::WRL::ComPtr<ID3D11Texture2D> blank;
@@ -1286,6 +1317,14 @@ private:
         desc.SampleDesc.Count = 1;
         desc.Usage = D3D11_USAGE_IMMUTABLE;
         desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        // A converter on D3D12 opens what it reads through a shared handle, and
+        // only a DEFAULT render target can have one.
+        const UINT shared = m_Converter ? m_Converter->sessionTextureMiscFlags() : 0u;
+        if (shared) {
+            desc.Usage = D3D11_USAGE_DEFAULT;
+            desc.BindFlags |= D3D11_BIND_RENDER_TARGET;
+            desc.MiscFlags = shared;
+        }
 
         const size_t pitch = static_cast<size_t>(width) * bytesPerPixel;
         std::vector<uint8_t> zeros(pitch * static_cast<size_t>(height), 0);
@@ -1295,6 +1334,8 @@ private:
         if (FAILED(device->CreateTexture2D(&desc, &initial, blank.GetAddressOf()))) {
             error = "the GPU refused a blank picture";
             blank.Reset();
+        } else if (shared) {
+            m_Converter->wroteOnD3d11(m_Capture->context());
         }
         return blank;
     }
@@ -2483,6 +2524,11 @@ private:
             desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
             desc.CPUAccessFlags = 0;
             desc.MiscFlags = 0;
+            // Shareable when the converter reads it from D3D12 — see makeBlank().
+            if (const UINT shared = m_Converter ? m_Converter->sessionTextureMiscFlags() : 0u) {
+                desc.BindFlags |= D3D11_BIND_RENDER_TARGET;
+                desc.MiscFlags = shared;
+            }
             if (FAILED(m_Capture->device()->CreateTexture2D(&desc, nullptr,
                                                             m_DesktopCopy.GetAddressOf()))) {
                 error = "the GPU refused a scratch copy of the desktop";
@@ -2495,6 +2541,9 @@ private:
         // this screen, and it is what buys a cursor that moves on a still
         // desktop.
         m_Capture->context()->CopyResource(m_DesktopCopy.Get(), source);
+        // This copy waits in the 3D queue; a D3D12 converter must not read the
+        // texture before it has run. No-op on the D3D11 path.
+        if (m_Converter) m_Converter->wroteOnD3d11(m_Capture->context());
         return true;
     }
 
@@ -2689,7 +2738,7 @@ private:
     std::unique_ptr<CrossGpuBridge> m_Bridge;
     /// Held from start() to stop(); see StreamPriority.
     StreamPriority m_Priority;
-    std::unique_ptr<convert::ColorConvert> m_Converter;
+    std::unique_ptr<convert::PictureConverter> m_Converter;
     /// The SDR white the converter holds, in scRGB; 0 until a pipeline has
     /// read one, so the first read after a rebuild is always applied and
     /// logged. Capture thread only — see applySdrWhite.

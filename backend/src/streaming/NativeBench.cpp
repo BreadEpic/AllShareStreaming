@@ -109,7 +109,11 @@ const char* const kUsage =
     "  fallback=1|mf|mfsw|mfcpu|cpu  pretend no GPU encodes: the fallback tier (1), Media\n"
     "                   Foundation (mf), Microsoft's software transform even where a hardware\n"
     "                   one exists (mfsw), the hardware transform fed through system memory\n"
-    "                   (mfcpu), or OpenH264 (cpu) — how they get measured beside NVENC\n";
+    "                   (mfcpu), or OpenH264 (cpu) — how they get measured beside NVENC\n"
+    "  pipeline=d3d11|hybrid|d3d12  Windows: what carries the picture to the encoder — the\n"
+    "                   D3D11 device's single queue (d3d11, the default), a D3D12 compute\n"
+    "                   queue for the conversion and the same D3D11 encoder (hybrid), or\n"
+    "                   D3D12 for both (d3d12)\n";
 
 bool parseChoice(const QString& value, mw::native::EncoderTuning::Choice& out)
 {
@@ -165,6 +169,16 @@ bool applyTuningKey(const QString& key, const QString& value, mw::native::Encode
             tuning.fallback = Fallback::MediaFoundationCpuInput;
         else if (value.compare("cpu", Qt::CaseInsensitive) == 0)
             tuning.fallback = Fallback::Cpu;
+        else
+            ok = false;
+    } else if (key == "pipeline") {
+        using Pipeline = mw::native::EncoderTuning::Pipeline;
+        if (value.compare("d3d11", Qt::CaseInsensitive) == 0)
+            tuning.pipeline = Pipeline::D3d11;
+        else if (value.compare("hybrid", Qt::CaseInsensitive) == 0)
+            tuning.pipeline = Pipeline::Hybrid;
+        else if (value.compare("d3d12", Qt::CaseInsensitive) == 0)
+            tuning.pipeline = Pipeline::D3d12;
         else
             ok = false;
     } else if (key == "lowpower")

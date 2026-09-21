@@ -21,7 +21,7 @@
 #define NOMINMAX // <windows.h>'s min/max macros break std::min/std::max
 #endif
 
-#include <d3d11.h>
+#include <d3d11_4.h>
 #include <d3d12.h>
 #include <dxgi1_2.h>
 #include <wrl/client.h>
@@ -92,6 +92,17 @@ public:
     /// cannot be shared (Windows.Graphics.Capture's).
     ID3D12Resource* open(ID3D11Texture2D* captured, std::string& error);
 
+    /// Order the compute queue after what @p context has been asked so far.
+    ///
+    /// For the textures the D3D11 device writes and this one reads (the
+    /// session's desktop copy): the two APIs know nothing of each other's
+    /// queues, and the write sits in the 3D queue, behind the game. A fence
+    /// shared between the two devices is signalled from the D3D11 side here,
+    /// and the next submitAndWait() makes the compute queue wait for it — on the
+    /// GPU; the CPU is not held. On a system without shared fences (before
+    /// Windows 10 1703) this only flushes, which is the best D3D11 offers.
+    void after(ID3D11DeviceContext* context);
+
     /// Forget the opened surfaces — the capture was restarted, and the old ones
     /// would only pin VRAM nobody draws to any more.
     void forgetSurfaces() { m_Surfaces.clear(); }
@@ -116,6 +127,25 @@ private:
     UINT64 m_FenceValue = 0;
     HANDLE m_Event = nullptr;
     bool m_Debug = false;
+
+    // MW_D3D12_TIMING=1: how long the GPU worked on each submission, against
+    // how long the CPU waited for it. The difference is the queue.
+    bool m_Timing = false;
+    Microsoft::WRL::ComPtr<ID3D12QueryHeap> m_TimingHeap;
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_TimingReadback;
+    UINT64 m_TimingFrequency = 0;
+    UINT64 m_TimingFrames = 0;
+    double m_TimingGpuMs = 0.0;
+    double m_TimingGpuMaxMs = 0.0;
+    double m_TimingWallMs = 0.0;
+    double m_TimingWallMaxMs = 0.0;
+
+    Microsoft::WRL::ComPtr<ID3D12Fence> m_SharedFence;
+    Microsoft::WRL::ComPtr<ID3D11Fence> m_SharedFence11;
+    ID3D11Device* m_SharedFenceFor = nullptr;
+    bool m_SharedFenceRefused = false;
+    UINT64 m_SharedValue = 0;
+    UINT64 m_SharedWaited = 0;
     std::vector<Surface> m_Surfaces;
 };
 

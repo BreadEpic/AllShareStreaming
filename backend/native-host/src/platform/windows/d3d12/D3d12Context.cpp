@@ -55,6 +55,11 @@ D3d12Context::~D3d12Context()
 void D3d12Context::close()
 {
     m_Surfaces.clear();
+    m_SharedFence11.Reset();
+    m_SharedFence.Reset();
+    m_SharedFenceFor = nullptr;
+    m_SharedFenceRefused = false;
+    m_SharedValue = m_SharedWaited = 0;
     m_List.Reset();
     m_Allocator.Reset();
     m_Fence.Reset();
@@ -125,6 +130,28 @@ bool D3d12Context::init(IDXGIAdapter* adapter, std::string& error)
         close();
         return false;
     }
+
+    const DWORD t = ::GetEnvironmentVariableA("MW_D3D12_TIMING", value, sizeof(value));
+    m_Timing = t > 0 && t < sizeof(value) && value[0] == '1';
+    if (m_Timing) {
+        D3D12_QUERY_HEAP_DESC heap = {D3D12_QUERY_HEAP_TYPE_TIMESTAMP, 2, 0};
+        D3D12_HEAP_PROPERTIES readback = {};
+        readback.Type = D3D12_HEAP_TYPE_READBACK;
+        D3D12_RESOURCE_DESC buffer = {};
+        buffer.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        buffer.Width = 2 * sizeof(UINT64);
+        buffer.Height = 1;
+        buffer.DepthOrArraySize = 1;
+        buffer.MipLevels = 1;
+        buffer.SampleDesc.Count = 1;
+        buffer.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        m_Timing = SUCCEEDED(m_Device->CreateQueryHeap(&heap, IID_PPV_ARGS(&m_TimingHeap))) &&
+                   SUCCEEDED(m_Device->CreateCommittedResource(
+                       &readback, D3D12_HEAP_FLAG_NONE, &buffer, D3D12_RESOURCE_STATE_COPY_DEST,
+                       nullptr, IID_PPV_ARGS(&m_TimingReadback))) &&
+                   SUCCEEDED(m_ComputeQueue->GetTimestampFrequency(&m_TimingFrequency)) &&
+                   m_TimingFrequency > 0;
+    }
     return true;
 }
 
@@ -140,6 +167,7 @@ ID3D12GraphicsCommandList* D3d12Context::begin(std::string& error)
         error = "could not reset the compute command list (" + hresultToString(hr) + ")";
         return nullptr;
     }
+    if (m_Timing) m_List->EndQuery(m_TimingHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 0);
     return m_List.Get();
 }
 
@@ -161,11 +189,22 @@ void D3d12Context::relayMessages()
 
 bool D3d12Context::submitAndWait(std::string& error)
 {
+    if (m_Timing) {
+        m_List->EndQuery(m_TimingHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 1);
+        m_List->ResolveQueryData(m_TimingHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 0, 2,
+                                 m_TimingReadback.Get(), 0);
+    }
+    LARGE_INTEGER started = {}, frequency = {};
+    ::QueryPerformanceCounter(&started);
     HRESULT hr = m_List->Close();
     relayMessages();
     if (FAILED(hr)) {
         error = "the compute command list was refused (" + hresultToString(hr) + ")";
         return false;
+    }
+    if (m_SharedValue > m_SharedWaited) {
+        m_ComputeQueue->Wait(m_SharedFence.Get(), m_SharedValue);
+        m_SharedWaited = m_SharedValue;
     }
     ID3D12CommandList* lists[] = {m_List.Get()};
     m_ComputeQueue->ExecuteCommandLists(1, lists);
@@ -180,7 +219,76 @@ bool D3d12Context::submitAndWait(std::string& error)
                 hresultToString(m_Device->GetDeviceRemovedReason()) + ")";
         return false;
     }
+
+    UINT64* stamps = nullptr;
+    const D3D12_RANGE read = {0, 2 * sizeof(UINT64)};
+    if (m_Timing && SUCCEEDED(m_TimingReadback->Map(0, &read, reinterpret_cast<void**>(&stamps)))) {
+        LARGE_INTEGER ended = {};
+        ::QueryPerformanceCounter(&ended);
+        ::QueryPerformanceFrequency(&frequency);
+        const double gpuMs = stamps[1] >= stamps[0]
+                                 ? 1000.0 * static_cast<double>(stamps[1] - stamps[0]) /
+                                       static_cast<double>(m_TimingFrequency)
+                                 : 0.0;
+        const double wallMs = 1000.0 * static_cast<double>(ended.QuadPart - started.QuadPart) /
+                              static_cast<double>(frequency.QuadPart);
+        const D3D12_RANGE nothing = {0, 0};
+        m_TimingReadback->Unmap(0, &nothing);
+        m_TimingGpuMs += gpuMs;
+        m_TimingWallMs += wallMs;
+        if (gpuMs > m_TimingGpuMaxMs) m_TimingGpuMaxMs = gpuMs;
+        if (wallMs > m_TimingWallMaxMs) m_TimingWallMaxMs = wallMs;
+        if (++m_TimingFrames % 300 == 0) {
+            char line[200];
+            std::snprintf(line, sizeof(line),
+                          "[native] D3D12 compute, last 300 submissions: GPU work %.2f ms mean "
+                          "(max %.2f), submit to done %.2f ms mean (max %.2f)",
+                          m_TimingGpuMs / 300.0, m_TimingGpuMaxMs, m_TimingWallMs / 300.0,
+                          m_TimingWallMaxMs);
+            log::info(line);
+            m_TimingGpuMs = m_TimingWallMs = m_TimingGpuMaxMs = m_TimingWallMaxMs = 0.0;
+        }
+    }
     return true;
+}
+
+void D3d12Context::after(ID3D11DeviceContext* context)
+{
+    if (!context || !m_Device) return;
+    ComPtr<ID3D11Device> device;
+    context->GetDevice(&device);
+    if (device.Get() != m_SharedFenceFor) {
+        m_SharedFence11.Reset();
+        m_SharedFence.Reset();
+        m_SharedFenceFor = device.Get();
+        m_SharedFenceRefused = false;
+        m_SharedValue = m_SharedWaited = 0;
+    }
+    if (!m_SharedFence11 && !m_SharedFenceRefused) {
+        ComPtr<ID3D11Device5> device5;
+        HANDLE handle = nullptr;
+        HRESULT hr =
+            m_Device->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&m_SharedFence));
+        if (SUCCEEDED(hr))
+            hr = m_Device->CreateSharedHandle(m_SharedFence.Get(), nullptr, GENERIC_ALL, nullptr,
+                                              &handle);
+        if (SUCCEEDED(hr)) hr = device.As(&device5);
+        if (SUCCEEDED(hr)) hr = device5->OpenSharedFence(handle, IID_PPV_ARGS(&m_SharedFence11));
+        if (handle) ::CloseHandle(handle);
+        if (FAILED(hr)) {
+            m_SharedFenceRefused = true;
+            m_SharedFence11.Reset();
+            m_SharedFence.Reset();
+            log::info("[native] D3D12: no fence shared with the D3D11 device (" +
+                      hresultToString(hr) + ") — its writes are flushed, not waited for");
+        }
+    }
+    ComPtr<ID3D11DeviceContext4> context4;
+    if (m_SharedFence11 && SUCCEEDED(context->QueryInterface(IID_PPV_ARGS(&context4))) &&
+        SUCCEEDED(context4->Signal(m_SharedFence11.Get(), m_SharedValue + 1)))
+        ++m_SharedValue;
+    // The signal only counts once it has left the D3D11 runtime for the queue.
+    context->Flush();
 }
 
 ID3D12Resource* D3d12Context::open(ID3D11Texture2D* captured, std::string& error)
