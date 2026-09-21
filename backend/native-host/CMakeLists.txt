@@ -40,6 +40,7 @@ if(WIN32)
         src/platform/windows/WindowsEncoderProbe.cpp
         src/platform/windows/WindowsSession.cpp
         src/platform/windows/CrossGpuBridge.cpp
+        src/platform/windows/StreamPriority.cpp
         src/capture/windows/DxgiDuplication.cpp
         src/capture/windows/WgcCapture.cpp
         src/capture/windows/CursorShape.cpp
@@ -74,8 +75,6 @@ if(WIN32)
     # d3dcompiler builds the colour-conversion shaders at session start (~1 ms,
     # once) — precompiling them would add fxc to the build for no runtime gain.
     # setupapi is ViGEmClient's: it finds the virtual bus by device interface.
-    # winmm is timeBeginPeriod: the capture loop waits for the stream's next
-    # due time, and without a 1 ms scheduler period that wait lands 15 ms late.
     # avrt is MMCSS: the capture thread registers as a "Games" task so the
     # scheduler favours it over the desktop's background work (and the audio
     # thread as "Pro Audio").
@@ -90,7 +89,7 @@ if(WIN32)
     # properties). `mfplat.dll` itself is loaded at run time (MfApi.h) so that
     # an N edition of Windows — where it is simply absent — still starts.
     target_link_libraries(mw-native-host PRIVATE dxgi d3d11 d3dcompiler user32 gdi32 setupapi
-                                                 winmm avrt ole32 oleaut32 runtimeobject mfuuid
+                                                 avrt ole32 oleaut32 runtimeobject mfuuid
                                                  strmiids)
 elseif(APPLE)
     set(MW_NATIVE_PLATFORM "macos")

@@ -38,6 +38,7 @@
 #include "../../encode/windows/VplEncoder.h"
 #include "../../input/windows/Win32Input.h"
 #include "CrossGpuBridge.h"
+#include "StreamPriority.h"
 
 // GetCursorInfo/LoadCursorW, for naming the pointer — see currentCursorKind().
 #include <windows.h>
@@ -416,6 +417,8 @@ public:
         // The first frame must be a keyframe — a client has nothing to decode
         // against otherwise.
         m_ForceKeyframe.store(true);
+        // Out of EcoQoS, ahead of the game on the GPU, awake: see StreamPriority.
+        m_Priority.engage();
         m_Running.store(true);
         m_Thread = std::thread([this] { run(); });
         return true;
@@ -449,6 +452,7 @@ public:
         // undone by passing no mode — and by the OS itself, should this
         // process die first).
         restoreDisplayMode();
+        m_Priority.release();
 
         if (!wasRunning && !m_Encoder && !m_Capture) return;
 
@@ -820,6 +824,11 @@ private:
         m_DesktopCopy.Reset();
         m_Encoder.reset();
         m_Converter.reset();
+
+        // Ahead of the game in the GPU's queue, on every (re)build: a lost
+        // duplication comes back on a new device. See StreamPriority.
+        StreamPriority::raiseDevice(m_Capture->device(), "capture");
+        if (m_Bridge) StreamPriority::raiseDevice(m_Bridge->device(), "encoder");
 
         // On the encoder's device — the capture's, unless a bridge carries the
         // frames to another GPU, in which case both stages live over there and
@@ -2677,6 +2686,8 @@ private:
     /// carries every frame across, and owns the device the converter and the
     /// encoder are then built on. See CrossGpuBridge.
     std::unique_ptr<CrossGpuBridge> m_Bridge;
+    /// Held from start() to stop(); see StreamPriority.
+    StreamPriority m_Priority;
     std::unique_ptr<convert::ColorConvert> m_Converter;
     /// The SDR white the converter holds, in scRGB; 0 until a pipeline has
     /// read one, so the first read after a rebuild is always applied and
