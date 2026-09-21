@@ -97,8 +97,10 @@ def _load_fleet():
             m["ssh"] = entry["sshAlias"]
         elif kind == "local":
             m["kind"] = "local"
-        elif entry.get("password") and m["os"] != "windows":
-            # No sshpass on a Windows desk; WSL has one.
+        elif entry.get("password"):
+            # No sshpass on a Windows desk; WSL has one. This says nothing about
+            # the remote's OS — the dual-boot mini PC answers here under Windows
+            # too, and run_script picks the shell from m["os"], not from this.
             m["kind"] = "wsl-sshpass"
             m["user"] = entry.get("user", "")
             m["password"] = entry["password"]
@@ -150,6 +152,51 @@ def ssh_argv(m):
     return argv
 
 
+# A Windows box's default ssh shell is cmd.exe on some of these machines and
+# PowerShell on others, and the difference is not cosmetic: `< NUL` and `type`
+# are cmd builtins, and PowerShell answers "The '<' operator is reserved for
+# future use" and then reads a file that was never written — which looks
+# exactly like a script that printed nothing. Probed once per machine, because
+# it cannot change under us mid-run. `%COMPUTERNAME%` is the tell: cmd expands
+# it, PowerShell hands it back verbatim.
+_SHELL_CACHE = {}
+
+
+def _windows_shell(mid, runner):
+    if mid in _SHELL_CACHE:
+        return _SHELL_CACHE[mid]
+    probe = runner("echo %COMPUTERNAME%", 60)
+    out = (probe.stdout or "").strip()
+    shell = "powershell" if "%COMPUTERNAME%" in out else "cmd"
+    _SHELL_CACHE[mid] = shell
+    return shell
+
+
+def _win_run_cmd(script_path, log_path, shell):
+    """The one-liner that runs a .ps1 to a log file, severing inherited handles.
+
+    An installer hands its handles to a process that outlives the ssh session,
+    and ssh waits for every one of them: without the redirection the channel
+    hangs for the full timeout with the work long since finished.
+    """
+    inner = ('powershell -NoProfile -ExecutionPolicy Bypass -File "%s" '
+             '> "%s" 2>&1 < NUL' % (script_path, log_path))
+    if shell == "cmd":
+        return inner
+    # --% stops PowerShell parsing the rest, so cmd receives it verbatim.
+    return "cmd --% /c " + inner
+
+
+def _win_cat(path, shell):
+    return ('type "%s"' % path) if shell == "cmd" else ('Get-Content -Raw "%s"' % path)
+
+
+def _win_del(paths, shell):
+    if shell == "cmd":
+        return "del /q " + " ".join('"%s"' % p for p in paths)
+    return "Remove-Item -Force -ErrorAction SilentlyContinue " + ", ".join('"%s"' % p for p in paths)
+
+
 def run_script(mid, script, timeout=600, shell=None):
     """Run a script on a machine. Always by file — never interpolated into ssh.
 
@@ -173,7 +220,12 @@ def run_script(mid, script, timeout=600, shell=None):
             return p.returncode, p.stdout, p.stderr
 
         if m["kind"] == "wsl-sshpass":
-            remote = "/tmp/" + name
+            # The transport and the remote OS are independent. sshpass is what
+            # this desk has for a machine that only takes a password, and one
+            # of those machines is a Windows box: sending it `sh script` would
+            # fail in a way that reads like the script itself being wrong.
+            windows = m["os"] == "windows"
+            remote = ("C:/Windows/Temp/" + name) if windows else ("/tmp/" + name)
             sent = _run(["wsl", "-u", "root", "--", "bash", "-c",
                          "sshpass -p %s scp %s %s %s@%s:%s" % (
                              shlex.quote(m["password"]), " ".join(SSH_OPTS),
@@ -181,12 +233,28 @@ def run_script(mid, script, timeout=600, shell=None):
                         timeout=timeout)
             if sent.returncode != 0:
                 raise RemoteError("scp to %s failed: %s" % (mid, sent.stderr.strip()))
-            p = _run(["wsl", "-u", "root", "--", "bash", "-c",
-                      "sshpass -p %s ssh %s %s@%s %s" % (
-                          shlex.quote(m["password"]), " ".join(SSH_OPTS),
-                          m["user"], m["address"],
-                          shlex.quote("sh %s; rc=$?; rm -f %s; exit $rc" % (remote, remote)))],
-                     timeout=timeout)
+
+            def _sshpass(cmd, tmo):
+                return _run(["wsl", "-u", "root", "--", "bash", "-c",
+                             "sshpass -p %s ssh %s %s@%s %s" % (
+                                 shlex.quote(m["password"]), " ".join(SSH_OPTS),
+                                 m["user"], m["address"], shlex.quote(cmd))],
+                            timeout=tmo)
+
+            if windows:
+                # Same inherited-handle trap as the plain-ssh Windows path: run
+                # to a file, then fetch the file in a second session.
+                # Backslashes throughout — cmd.exe reads a leading forward
+                # slash as the start of an option.
+                win = remote.replace("/", "\\")
+                log = win + ".out"
+                sh = _windows_shell(mid, _sshpass)
+                p = _sshpass(_win_run_cmd(win, log, sh), timeout)
+                back = _sshpass(_win_cat(log, sh), 120)
+                _sshpass(_win_del([win, log], sh), 60)
+                return p.returncode, back.stdout, (p.stderr or "") + (back.stderr or "")
+
+            p = _sshpass("sh %s; rc=$?; rm -f %s; exit $rc" % (remote, remote), timeout)
             return p.returncode, p.stdout, p.stderr
 
         # plain ssh
@@ -214,11 +282,10 @@ def run_script(mid, script, timeout=600, shell=None):
             # reads exactly like a script that printed nothing.
             win = remote.replace("/", "\\")
             log = win + ".out"
-            run_cmd = ('powershell -NoProfile -ExecutionPolicy Bypass -File "%s" '
-                       '> "%s" 2>&1 < NUL' % (win, log))
-            p = _run(ssh_argv(m) + [run_cmd], timeout=timeout)
-            back = _run(ssh_argv(m) + ['type "%s"' % log], timeout=120)
-            _run(ssh_argv(m) + ['del /q "%s" "%s"' % (win, log)], timeout=60)
+            sh = _windows_shell(mid, lambda c, t: _run(ssh_argv(m) + [c], timeout=t))
+            p = _run(ssh_argv(m) + [_win_run_cmd(win, log, sh)], timeout=timeout)
+            back = _run(ssh_argv(m) + [_win_cat(log, sh)], timeout=120)
+            _run(ssh_argv(m) + [_win_del([win, log], sh)], timeout=60)
             return p.returncode, back.stdout, (p.stderr or "") + (back.stderr or "")
 
         cmd = "sh %s; rc=$?; rm -f %s; exit $rc" % (remote, remote)
