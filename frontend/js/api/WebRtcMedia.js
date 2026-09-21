@@ -25,6 +25,7 @@ import {
     signAnswer,
     verifyHostSignature,
     extractFingerprint,
+    IDENTITY_REFUSED,
 } from '../util/pairingCrypto.js';
 import { defaultIceServers } from './IceServers.js';
 import { isViewMessage } from './hostMessages.js';
@@ -723,10 +724,13 @@ export class WebRtcMedia {
         if (this._mwBind?.hostPublicKey) {
             const ok = await verifyHostSignature(this._mwBind, msg);
             if (!ok) {
-                this._onError(
-                    'This host could not prove its identity — refusing to connect. ' +
+                // Final: see IDENTITY_REFUSED — the launch ends here, whatever
+                // transports are left in the chain.
+                console.error(
+                    '[MW-BIND] This host could not prove its identity — refusing to connect. ' +
                         'If you re-installed MoonlightWeb on it, pair again with a PIN.',
                 );
+                this._onError(IDENTITY_REFUSED);
                 return;
             }
             console.log('[MW-BIND] Host signature verified');
@@ -810,7 +814,10 @@ export class WebRtcMedia {
                     answerMsg.sdp,
                 );
                 if (!sig) {
-                    this._onError('Could not sign this connection — refusing to continue.');
+                    console.error(
+                        '[MW-BIND] Could not sign this connection — refusing to continue.',
+                    );
+                    this._onError(IDENTITY_REFUSED);
                     return;
                 }
                 answerMsg.sig = sig;

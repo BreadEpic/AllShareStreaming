@@ -57,6 +57,19 @@ function recordId(forHost) {
 }
 
 const PROTOCOL = 'MW-BIND-v1';
+
+/**
+ * The reason a transport reports when the binding fails — the host's signature
+ * does not verify, or we could not sign our own half.
+ *
+ * It ends the launch; it is never a cue to try the next transport. The wss rung
+ * carries the stream over the signalling socket itself, with no DTLS and so
+ * nothing to bind: falling back to it after a refusal would hand the session to
+ * exactly the peer that just failed to prove itself. A check whose failure can be
+ * walked around is no check at all.
+ */
+export const IDENTITY_REFUSED = 'identity_refused';
+
 const ALGORITHM = { name: 'ECDSA', namedCurve: 'P-256' };
 const SIGN_PARAMS = { name: 'ECDSA', hash: { name: 'SHA-256' } };
 

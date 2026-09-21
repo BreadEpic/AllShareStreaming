@@ -639,6 +639,7 @@
         "unavailableRemote": "« {{mode}} » n'est pas disponible via le lien distant — diffusion en {{used}} à la place",
         "connectFailed": "Connexion {{from}} échouée — tentative avec {{to}}…",
         "allFailed": "Échec de la connexion — tous les modes de transport ont échoué",
+        "identityRefused": "Cet hôte n'a pas pu prouver son identité, le stream n'a donc pas été lancé. Si MoonlightWeb y a été réinstallé, appairez à nouveau ce navigateur avec un PIN.",
         "launchFailed": "L'hôte n'a pas démarré le stream — réessayez dans un instant"
     },
     "launch": {

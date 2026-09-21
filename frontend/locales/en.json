@@ -639,6 +639,7 @@
         "unavailableRemote": "\"{{mode}}\" is not available through the remote link — streaming over {{used}} instead",
         "connectFailed": "{{from}} connection failed — trying {{to}}…",
         "allFailed": "Connection failed — all transport modes failed",
+        "identityRefused": "This host could not prove its identity, so the stream was not started. If MoonlightWeb was reinstalled on it, pair this browser again with a PIN.",
         "launchFailed": "The host did not start the stream — try again in a moment"
     },
     "launch": {

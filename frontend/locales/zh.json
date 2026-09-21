@@ -639,6 +639,7 @@
         "unavailableRemote": "通过远程链接无法使用「{{mode}}」——改用 {{used}} 传输",
         "connectFailed": "{{from}} 连接失败——正在尝试 {{to}}…",
         "allFailed": "连接失败——所有传输模式均失败",
+        "identityRefused": "该主机无法证明其身份，因此未启动串流。如果该主机上重新安装了 MoonlightWeb，请使用 PIN 重新配对此浏览器。",
         "launchFailed": "主机未启动串流——请稍后重试"
     },
     "launch": {

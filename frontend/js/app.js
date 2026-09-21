@@ -80,6 +80,7 @@ import { startAspectProbe } from './stream/AspectProbe.js';
 import * as iosAudioUnlock from './audio/iosAudioUnlock.js';
 import { init as i18nInit, applyDOM, t } from './i18n/i18n.js';
 import { escapeHtml } from './util/escapeHtml.js';
+import { IDENTITY_REFUSED } from './util/pairingCrypto.js';
 import {
     startTunnel,
     tunnelHostId,
@@ -3000,6 +3001,23 @@ const MoonlightApp = {
                 `[MW] Launch failed on ${chain[cur] || '?'} — retrying the same transport`,
             );
             this._relaunchTransport(cur);
+            return;
+        }
+
+        // MW-BIND refused the host (or we could not sign): the launch ends here.
+        // Not retried, not walked down the chain — the wss rung carries the
+        // stream with no DTLS and so nothing to bind, and reaching it after a
+        // refusal would stream to the very peer that failed to prove itself.
+        // Before this, a browser whose pairing had gone stale spent 10–20 s on
+        // three refused attempts and then streamed over wss without a word.
+        if (reason === IDENTITY_REFUSED) {
+            console.error(
+                `[MW] ${chain[cur] || '?'}: the host failed MW-BIND — ending the launch, ` +
+                    'no fallback transport',
+            );
+            Toast.error(t('transport.identityRefused'));
+            this._hideRelaunchLoader();
+            if (this.streamView) this.streamView.quit({ silent: true });
             return;
         }
 
