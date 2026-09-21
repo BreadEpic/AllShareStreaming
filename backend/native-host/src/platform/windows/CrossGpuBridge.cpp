@@ -62,7 +62,10 @@ CrossGpuBridge::CrossGpuBridge(uint64_t encodeAdapterLuid)
     : m_AdapterLuid(encodeAdapterLuid)
 {}
 
-CrossGpuBridge::~CrossGpuBridge() = default;
+CrossGpuBridge::~CrossGpuBridge()
+{
+    closeDma();
+}
 
 bool CrossGpuBridge::open(std::string& error)
 {
@@ -180,21 +183,31 @@ ID3D11Texture2D* CrossGpuBridge::transfer(ID3D11Device* sourceDevice,
 
     const int64_t startUs = steadyNowUs();
 
-    sourceContext->CopyResource(m_Staging.Get(), source);
-
-    // Map blocks until the copy above has landed: this is where the wait for
-    // the source GPU happens, and it is the first of the two real costs.
+    // The copy engine first (see the class comment); the 3D queue when this
+    // source or this GPU cannot take it.
+    UINT inPitch = 0;
+    const uint8_t* src = readBackDma(sourceDevice, source, inPitch);
+    const bool dma = src != nullptr;
     D3D11_MAPPED_SUBRESOURCE in = {};
-    HRESULT hr = sourceContext->Map(m_Staging.Get(), 0, D3D11_MAP_READ, 0, &in);
-    if (FAILED(hr)) {
-        error = "cross-GPU copy: could not read the frame back (" + hresultToString(hr) + ")";
-        return nullptr;
+    if (!dma) {
+        sourceContext->CopyResource(m_Staging.Get(), source);
+
+        // Map blocks until the copy above has landed: this is where the wait
+        // for the source GPU happens, and it is the first of the two real
+        // costs.
+        const HRESULT hr = sourceContext->Map(m_Staging.Get(), 0, D3D11_MAP_READ, 0, &in);
+        if (FAILED(hr)) {
+            error = "cross-GPU copy: could not read the frame back (" + hresultToString(hr) + ")";
+            return nullptr;
+        }
+        src = static_cast<const uint8_t*>(in.pData);
+        inPitch = in.RowPitch;
     }
 
     D3D11_MAPPED_SUBRESOURCE out = {};
-    hr = m_Context->Map(m_Upload.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &out);
+    const HRESULT hr = m_Context->Map(m_Upload.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &out);
     if (FAILED(hr)) {
-        sourceContext->Unmap(m_Staging.Get(), 0);
+        if (!dma) sourceContext->Unmap(m_Staging.Get(), 0);
         error = "cross-GPU copy: could not write the frame to the encoding GPU (" +
                 hresultToString(hr) + ")";
         return nullptr;
@@ -203,24 +216,229 @@ ID3D11Texture2D* CrossGpuBridge::transfer(ID3D11Device* sourceDevice,
     // Row by row: the two pitches are each GPU's own and rarely agree. The
     // second real cost — a memcpy of the whole frame.
     const size_t rowBytes = static_cast<size_t>(m_Width) * m_BytesPerPixel;
-    const uint8_t* src = static_cast<const uint8_t*>(in.pData);
     uint8_t* dst = static_cast<uint8_t*>(out.pData);
-    if (in.RowPitch == out.RowPitch && in.RowPitch == rowBytes) {
+    if (inPitch == out.RowPitch && inPitch == rowBytes) {
         std::memcpy(dst, src, rowBytes * m_Height);
     } else {
         for (UINT y = 0; y < m_Height; ++y)
             std::memcpy(dst + static_cast<size_t>(y) * out.RowPitch,
-                        src + static_cast<size_t>(y) * in.RowPitch, rowBytes);
+                        src + static_cast<size_t>(y) * inPitch, rowBytes);
     }
 
     m_Context->Unmap(m_Upload.Get(), 0);
-    sourceContext->Unmap(m_Staging.Get(), 0);
+    if (!dma) sourceContext->Unmap(m_Staging.Get(), 0);
+    if (dma) m_DmaTransfers++;
 
     const int64_t tookUs = steadyNowUs() - startUs;
     m_Transfers++;
     m_TotalUs += tookUs;
     if (tookUs > m_MaxUs) m_MaxUs = tookUs;
     return m_Upload.Get();
+}
+
+bool CrossGpuBridge::openDma(ID3D11Device* sourceDevice)
+{
+    char value[8] = {};
+    const DWORD n = ::GetEnvironmentVariableA("MW_BRIDGE_DMA", value, sizeof(value));
+    if (n > 0 && n < sizeof(value) && _stricmp(value, "off") == 0) {
+        log::info("[native] cross-GPU copy: MW_BRIDGE_DMA=off — readback through the 3D queue");
+        return false;
+    }
+
+    ComPtr<IDXGIDevice> dxgi;
+    ComPtr<IDXGIAdapter> adapter;
+    if (FAILED(sourceDevice->QueryInterface(IID_PPV_ARGS(&dxgi))) ||
+        FAILED(dxgi->GetAdapter(&adapter))) {
+        log::info("[native] cross-GPU copy: the capture's adapter is unknown — readback through "
+                  "the 3D queue");
+        return false;
+    }
+
+    HRESULT hr = ::D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&m_D12));
+    if (FAILED(hr)) {
+        log::info("[native] cross-GPU copy: no D3D12 on the display's GPU (" + hresultToString(hr) +
+                  ") — readback through the 3D queue");
+        return false;
+    }
+
+    D3D12_COMMAND_QUEUE_DESC queue = {};
+    queue.Type = D3D12_COMMAND_LIST_TYPE_COPY;
+    // HIGH, not GLOBAL_REALTIME: the latter needs a privilege this process
+    // does not hold, and the DMA engine is not contended the way 3D is.
+    queue.Priority = D3D12_COMMAND_QUEUE_PRIORITY_HIGH;
+    hr = m_D12->CreateCommandQueue(&queue, IID_PPV_ARGS(&m_CopyQueue));
+    if (SUCCEEDED(hr))
+        hr = m_D12->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COPY,
+                                           IID_PPV_ARGS(&m_CopyAllocator));
+    if (SUCCEEDED(hr))
+        hr = m_D12->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_COPY, m_CopyAllocator.Get(),
+                                      nullptr, IID_PPV_ARGS(&m_CopyList));
+    if (SUCCEEDED(hr)) hr = m_CopyList->Close();
+    if (SUCCEEDED(hr))
+        hr = m_D12->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_CopyFence));
+    if (SUCCEEDED(hr)) {
+        m_CopyEvent = ::CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        if (!m_CopyEvent) hr = HRESULT_FROM_WIN32(::GetLastError());
+    }
+    if (FAILED(hr)) {
+        log::info("[native] cross-GPU copy: no D3D12 copy queue on the display's GPU (" +
+                  hresultToString(hr) + ") — readback through the 3D queue");
+        closeDma();
+        return false;
+    }
+
+    DXGI_ADAPTER_DESC desc = {};
+    adapter->GetDesc(&desc);
+    char name[128] = {};
+    ::WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, name, sizeof(name) - 1, nullptr,
+                          nullptr);
+    log::info(std::string("[native] cross-GPU copy: readback on the copy engine of '") + name +
+              "' (D3D12), out of the 3D queue's way");
+    return true;
+}
+
+void CrossGpuBridge::closeDma()
+{
+    if (m_Readback && m_ReadbackData) {
+        const D3D12_RANGE none = {0, 0};
+        m_Readback->Unmap(0, &none);
+    }
+    m_ReadbackData = nullptr;
+    m_Readback.Reset();
+    m_DmaSources.clear();
+    m_CopyList.Reset();
+    m_CopyAllocator.Reset();
+    m_CopyQueue.Reset();
+    m_CopyFence.Reset();
+    m_CopyFenceValue = 0;
+    if (m_CopyEvent) ::CloseHandle(m_CopyEvent);
+    m_CopyEvent = nullptr;
+    m_D12.Reset();
+    m_DmaDevice = nullptr;
+    m_DmaOff = false;
+}
+
+ID3D12Resource* CrossGpuBridge::dmaSourceFor(ID3D11Texture2D* source)
+{
+    for (const DmaSource& known : m_DmaSources)
+        if (known.d3d11.Get() == source) return known.d3d12.Get();
+
+    // Desktop Duplication's surfaces carry an NT handle; a surface that does
+    // not (WGC's, say) is one for the 3D queue, and so will the next be.
+    ComPtr<IDXGIResource1> shareable;
+    HANDLE handle = nullptr;
+    HRESULT hr = source->QueryInterface(IID_PPV_ARGS(&shareable));
+    if (SUCCEEDED(hr))
+        hr = shareable->CreateSharedHandle(nullptr, DXGI_SHARED_RESOURCE_READ, nullptr, &handle);
+    ComPtr<ID3D12Resource> opened;
+    if (SUCCEEDED(hr)) {
+        hr = m_D12->OpenSharedHandle(handle, IID_PPV_ARGS(&opened));
+        ::CloseHandle(handle);
+    }
+    if (FAILED(hr)) {
+        log::info("[native] cross-GPU copy: the captured surface cannot be opened in D3D12 (" +
+                  hresultToString(hr) + ") — readback through the 3D queue");
+        m_DmaOff = true;
+        return nullptr;
+    }
+
+    // A rotation is a handful; more means the capture is allocating afresh,
+    // and holding on to old surfaces would only pin their memory.
+    if (m_DmaSources.size() >= 8) m_DmaSources.clear();
+    m_DmaSources.push_back({source, opened});
+    return opened.Get();
+}
+
+const uint8_t* CrossGpuBridge::readBackDma(ID3D11Device* sourceDevice, ID3D11Texture2D* source,
+                                           UINT& rowPitch)
+{
+    // A capture restart brings a new device, and with it a new chance.
+    if (sourceDevice != m_DmaDevice) {
+        closeDma();
+        const bool opened = openDma(sourceDevice);
+        // After openDma, whose failure path clears the device: a refusal is
+        // then remembered for this device rather than retried every frame.
+        m_DmaDevice = sourceDevice;
+        m_DmaOff = !opened;
+    }
+    if (m_DmaOff) return nullptr;
+
+    ID3D12Resource* surface = dmaSourceFor(source);
+    if (!surface) return nullptr;
+
+    const D3D12_RESOURCE_DESC desc = surface->GetDesc();
+    if (!m_Readback || m_Footprint.Footprint.Width != desc.Width ||
+        m_Footprint.Footprint.Height != desc.Height ||
+        m_Footprint.Footprint.Format != desc.Format) {
+        if (m_Readback && m_ReadbackData) {
+            const D3D12_RANGE none = {0, 0};
+            m_Readback->Unmap(0, &none);
+        }
+        m_ReadbackData = nullptr;
+        m_Readback.Reset();
+
+        UINT64 total = 0;
+        m_D12->GetCopyableFootprints(&desc, 0, 1, 0, &m_Footprint, nullptr, nullptr, &total);
+        D3D12_HEAP_PROPERTIES heap = {};
+        heap.Type = D3D12_HEAP_TYPE_READBACK;
+        D3D12_RESOURCE_DESC buffer = {};
+        buffer.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        buffer.Width = total;
+        buffer.Height = 1;
+        buffer.DepthOrArraySize = 1;
+        buffer.MipLevels = 1;
+        buffer.SampleDesc.Count = 1;
+        buffer.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        void* mapped = nullptr;
+        HRESULT hr = m_D12->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &buffer,
+                                                    D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                                    IID_PPV_ARGS(&m_Readback));
+        if (SUCCEEDED(hr)) hr = m_Readback->Map(0, nullptr, &mapped);
+        if (FAILED(hr)) {
+            log::info("[native] cross-GPU copy: no D3D12 readback buffer (" + hresultToString(hr) +
+                      ") — readback through the 3D queue");
+            m_Readback.Reset();
+            m_DmaOff = true;
+            return nullptr;
+        }
+        m_ReadbackData = static_cast<const uint8_t*>(mapped);
+    }
+
+    // One copy, waited for here: the frame is needed before the conversion
+    // anyway, and the wait is the copy itself, not a game's frame.
+    HRESULT hr = m_CopyAllocator->Reset();
+    if (SUCCEEDED(hr)) hr = m_CopyList->Reset(m_CopyAllocator.Get(), nullptr);
+    if (SUCCEEDED(hr)) {
+        D3D12_TEXTURE_COPY_LOCATION to = {};
+        to.pResource = m_Readback.Get();
+        to.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        to.PlacedFootprint = m_Footprint;
+        D3D12_TEXTURE_COPY_LOCATION from = {};
+        from.pResource = surface;
+        from.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        from.SubresourceIndex = 0;
+        m_CopyList->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
+        hr = m_CopyList->Close();
+    }
+    if (SUCCEEDED(hr)) {
+        ID3D12CommandList* lists[] = {m_CopyList.Get()};
+        m_CopyQueue->ExecuteCommandLists(1, lists);
+        hr = m_CopyQueue->Signal(m_CopyFence.Get(), ++m_CopyFenceValue);
+    }
+    if (SUCCEEDED(hr) && m_CopyFence->GetCompletedValue() < m_CopyFenceValue) {
+        hr = m_CopyFence->SetEventOnCompletion(m_CopyFenceValue, m_CopyEvent);
+        if (SUCCEEDED(hr) && ::WaitForSingleObject(m_CopyEvent, 1000) != WAIT_OBJECT_0)
+            hr = HRESULT_FROM_WIN32(ERROR_TIMEOUT);
+    }
+    if (FAILED(hr)) {
+        log::info("[native] cross-GPU copy: the copy engine failed a readback (" +
+                  hresultToString(hr) + ") — readback through the 3D queue from now on");
+        m_DmaOff = true;
+        return nullptr;
+    }
+
+    rowPitch = m_Footprint.Footprint.RowPitch;
+    return m_ReadbackData + m_Footprint.Offset;
 }
 
 } // namespace mw::native

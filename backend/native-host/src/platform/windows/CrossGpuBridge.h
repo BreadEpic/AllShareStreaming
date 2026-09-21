@@ -18,10 +18,12 @@
 #pragma once
 
 #include <d3d11.h>
+#include <d3d12.h>
 #include <wrl/client.h>
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace mw::native {
 
@@ -51,6 +53,22 @@ namespace mw::native {
 /// The time it takes is counted inside the frame's `convert` stage — the bridge
 /// runs between the acquire and the colour pass — and logged on its own at the
 /// end of the session, so a session that paid for it says so in numbers.
+///
+/// ── The readback runs on the copy engine ─────────────────────────────────────
+///
+/// A D3D11 CopyResource goes into the source GPU's 3D queue. With a game
+/// holding that engine, the readback waits its turn behind the game's frame:
+/// 15 ms on average and 64 ms at p99 for a 1440p frame on the Arc A380 under
+/// Resident Evil Requiem, where the copy itself takes 1.6 ms (21/09/2026).
+/// A D3D12 COPY queue runs on the GPU's DMA engine instead, which the game
+/// does not use: the same readback measured 1.6 ms mean, 2.3 ms p99, under the
+/// same load. The captured surface is opened in D3D12 through its NT handle
+/// (Desktop Duplication hands out a shareable one), and the pixels were
+/// checked equal to the D3D11 path's.
+///
+/// Any step of that refused — a surface without a shared handle, a GPU without
+/// D3D12 — and the frame takes the D3D11 path above, said once in the log.
+/// MW_BRIDGE_DMA=off forces the D3D11 path, for the before and after.
 class CrossGpuBridge
 {
 public:
@@ -86,9 +104,19 @@ public:
     /// Bytes one frame costs to move, once the first has been.
     size_t bytesPerFrame() const { return m_BytesPerFrame; }
 
+    /// How many of those went through the copy engine.
+    int64_t dmaTransfers() const { return m_DmaTransfers; }
+
 private:
     bool ensureBuffers(ID3D11Device* sourceDevice, const D3D11_TEXTURE2D_DESC& desc,
                        std::string& error);
+
+    /// The copy-engine readback of @p source into system memory. Null when this
+    /// source cannot take it; the caller then reads back through D3D11.
+    const uint8_t* readBackDma(ID3D11Device* sourceDevice, ID3D11Texture2D* source, UINT& rowPitch);
+    bool openDma(ID3D11Device* sourceDevice);
+    void closeDma();
+    ID3D12Resource* dmaSourceFor(ID3D11Texture2D* source);
 
     const uint64_t m_AdapterLuid;
 
@@ -112,6 +140,34 @@ private:
     int64_t m_Transfers = 0;
     int64_t m_TotalUs = 0;
     int64_t m_MaxUs = 0;
+    int64_t m_DmaTransfers = 0;
+
+    // ── Copy-engine readback, on the SOURCE adapter ──────────────────────────
+    /// Off for good once refused (or by MW_BRIDGE_DMA=off); retried only when
+    /// the source device changes.
+    bool m_DmaOff = false;
+    ID3D11Device* m_DmaDevice = nullptr;
+    Microsoft::WRL::ComPtr<ID3D12Device> m_D12;
+    Microsoft::WRL::ComPtr<ID3D12CommandQueue> m_CopyQueue;
+    Microsoft::WRL::ComPtr<ID3D12CommandAllocator> m_CopyAllocator;
+    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> m_CopyList;
+    Microsoft::WRL::ComPtr<ID3D12Fence> m_CopyFence;
+    UINT64 m_CopyFenceValue = 0;
+    HANDLE m_CopyEvent = nullptr;
+    /// Stays mapped: a readback heap may be, and it saves a map per frame.
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_Readback;
+    const uint8_t* m_ReadbackData = nullptr;
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT m_Footprint = {};
+
+    /// The capture hands out a handful of surfaces in rotation; each is opened
+    /// in D3D12 once. The D3D11 reference is held so a pointer cannot be
+    /// reused by a different surface while its entry is here.
+    struct DmaSource
+    {
+        Microsoft::WRL::ComPtr<ID3D11Texture2D> d3d11;
+        Microsoft::WRL::ComPtr<ID3D12Resource> d3d12;
+    };
+    std::vector<DmaSource> m_DmaSources;
 };
 
 } // namespace mw::native

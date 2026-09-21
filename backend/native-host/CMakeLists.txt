@@ -78,6 +78,9 @@ if(WIN32)
     # avrt is MMCSS: the capture thread registers as a "Games" task so the
     # scheduler favours it over the desktop's background work (and the audio
     # thread as "Pro Audio").
+    # d3d12 is the cross-GPU copy's readback only: its COPY queue runs on the
+    # GPU's DMA engine, out of the way of a game holding the 3D engine
+    # (CrossGpuBridge).
     # ole32 is COM: WASAPI's device enumerator is a COM object.
     # runtimeobject is the Windows Runtime's ABI entry points — RoInitialize,
     # RoGetActivationFactory, the HSTRING helpers — which is how the WGC
@@ -88,7 +91,7 @@ if(WIN32)
     # are static tables of GUID constants (the media types, and the ICodecAPI
     # properties). `mfplat.dll` itself is loaded at run time (MfApi.h) so that
     # an N edition of Windows — where it is simply absent — still starts.
-    target_link_libraries(mw-native-host PRIVATE dxgi d3d11 d3dcompiler user32 gdi32 setupapi
+    target_link_libraries(mw-native-host PRIVATE dxgi d3d11 d3d12 d3dcompiler user32 gdi32 setupapi
                                                  avrt ole32 oleaut32 runtimeobject mfuuid
                                                  strmiids)
 elseif(APPLE)

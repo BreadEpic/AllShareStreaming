@@ -2624,7 +2624,8 @@ private:
             std::snprintf(peak, sizeof(peak), "%.2f", m_Bridge->maxUs() / 1000.0);
             log::info("[native] cross-GPU copy: " + std::to_string(m_Bridge->transfers()) +
                       " frames of " + std::to_string(m_Bridge->bytesPerFrame() / (1024 * 1024)) +
-                      " MB, " + mean + " ms mean, " + peak + " ms max");
+                      " MB, " + mean + " ms mean, " + peak + " ms max, " +
+                      std::to_string(m_Bridge->dmaTransfers()) + " on the copy engine");
         }
     }
 
