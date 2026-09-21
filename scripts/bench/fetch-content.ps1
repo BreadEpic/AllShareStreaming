@@ -5,8 +5,15 @@
 # put a quarter of a gigabyte of binary into every clone forever, so this script
 # resolves it from a local cache and tells the caller the file:// URL to open.
 #
-#   .\fetch-content.ps1                 # report where the clip is, or is not
-#   .\fetch-content.ps1 -From <path>    # adopt a copy you already have
+# cod_120fps.webm is a second clip in the same cache, captured natively at
+# 120 fps: it exists specifically for run-campaign.ps1's `-Content cod-120`
+# (the 720p120/1080p120/1440p120 sweep entries), because replaying the 60fps
+# clip at a 120fps pass measures either doubled frames or motion no client
+# will see at that cadence — not real 120fps conditions.
+#
+#   .\fetch-content.ps1                                        # report where the clip is, or is not
+#   .\fetch-content.ps1 -From <path>                           # adopt a copy you already have
+#   .\fetch-content.ps1 -From <path> -Name cod_120fps.webm     # the 120fps clip
 #
 # The cache is %USERPROFILE%\.mw-bench\content (~/.mw-bench/content elsewhere),
 # shared by every campaign and every worktree.

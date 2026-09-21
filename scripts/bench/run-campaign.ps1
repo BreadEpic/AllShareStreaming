@@ -44,7 +44,12 @@ param(
     # -1 picks the PRIMARY screen, which is the physical one on every bench
     # here. Click-to-photon needs that: see the monitor pairing below.
     [int]    $Display = -1,
-    [ValidateSet('cod', 'scroll', 'still')] [string] $Content = 'cod',
+    # 'cod-120' is a second clip, captured natively at 120 fps, for the
+    # 720p120/1080p120/1440p120 sweep entries: 'cod' is 1440p60 footage, so a
+    # 120fps pass against it is either measuring 60fps motion at double the
+    # cadence (every frame repeated) or, worse, motion nobody's client will
+    # actually see at 120 — neither is what the sweep is meant to catch.
+    [ValidateSet('cod', 'cod-120', 'scroll', 'still')] [string] $Content = 'cod',
     [string] $KioskRect = '',
     [string] $Exe = "$PSScriptRoot\..\..\build\MoonlightWeb.exe"
 )
@@ -310,7 +315,8 @@ $provenance = [ordered]@{
     commit     = $inventory.commit
     clipSha256 = $null
 }
-$clipForHash = Join-Path $env:USERPROFILE '.mw-bench\content\cod.webm'
+$clipForHashName = if ($Content -eq 'cod-120') { 'cod_120fps.webm' } else { 'cod.webm' }
+$clipForHash = Join-Path $env:USERPROFILE ".mw-bench\content\$clipForHashName"
 if (Test-Path $clipForHash) {
     $provenance.clipSha256 = (Get-FileHash -Path $clipForHash -Algorithm SHA256).Hash.Substring(0, 16)
 }
@@ -337,14 +343,15 @@ if ($PlanOnly) {
 # ── 3. Content on the captured display ──────────────────────────────────────
 
 $contentUrl = $null
-if ($Content -eq 'cod') {
-    $clip = Join-Path $env:USERPROFILE '.mw-bench\content\cod.webm'
+if ($Content -eq 'cod' -or $Content -eq 'cod-120') {
+    $clipName = if ($Content -eq 'cod-120') { 'cod_120fps.webm' } else { 'cod.webm' }
+    $clip = Join-Path $env:USERPROFILE ".mw-bench\content\$clipName"
     if (Test-Path $clip) {
         $src = 'file:///' + ($clip -replace '\\', '/')
         $page = 'file:///' + (((Join-Path $PSScriptRoot 'content\cod.html')) -replace '\\', '/')
         $contentUrl = "$page`?src=$([uri]::EscapeDataString($src))"
     } else {
-        Write-Warning "no clip in the cache — run fetch-content.ps1; falling back to the scrolling text"
+        Write-Warning "no $clipName in the cache — run fetch-content.ps1 -Name $clipName; falling back to the scrolling text"
         $Content = 'scroll'
     }
 }

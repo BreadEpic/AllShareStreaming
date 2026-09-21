@@ -46,6 +46,12 @@ enhancer on, 4:4:4 on, HDR on, mute off.
 **The sweep** — resolution and cadence, everything else at the reference:
 720p60, 720p120, 1080p120, 1440p60, 1440p120.
 
+The 120 entries need `-Content cod-120`. The reference clip is 1440p60 footage,
+so a 120fps pass against it is either doubling every frame or showing motion no
+client will ever see at that cadence — neither is a real 120fps condition. A
+second clip, `cod_120fps.webm`, captured natively at 120 fps, exists for exactly
+these entries — see §10.
+
 **The reference is replayed at the head and the tail.** If the two disagree by
 more than 15 %, the machine was not in a steady state and nothing inside that
 matrix means anything. That check is worth more than any single number in it.
@@ -333,6 +339,9 @@ mutes.
 # 0. once: put the reference clip in the cache (it is NOT in the repository)
 scripts\bench\fetch-content.ps1 -From <path to cod.webm>
 
+# 0b. once: the second clip, for the 120fps sweep entries (-Content cod-120)
+scripts\bench\fetch-content.ps1 -From <path to cod_120fps.webm> -Name cod_120fps.webm
+
 # 1. what is here today
 scripts\bench\discover.ps1
 
@@ -602,7 +611,8 @@ wherever the machine allows it.
 | Your fleet | `scripts/bench/hosts.local.json` (**ignored**), shape in `hosts.local.example.json` |
 | Raw results | `scripts/bench/results/` (ignored) — unscrubbed, unlike the report |
 | Report | `bench-out/report.html` (ignored) |
-| Reference clip | `~/.mw-bench/content/cod.webm` — **outside the repository**, 263 MB |
+| Reference clip | `~/.mw-bench/content/cod.webm` — **outside the repository**, 263 MB, 1440p60 |
+| 120fps clip | `~/.mw-bench/content/cod_120fps.webm` — same cache, captured natively at 120 fps; `-Content cod-120` for the 720p120/1080p120/1440p120 sweep entries |
 | Past verdicts | `docs/bench-native-host.md` |
 | Keyboard check | `keyboard-check.ps1` + the layout tables in `scripts/bench/keyboard/` |
 | Host screen follow | `display-follow.ps1` → `results/display.jsonl` |
