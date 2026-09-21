@@ -156,8 +156,17 @@ foreach ($spec in $Specs) {
         $tail = if ($said.Count) { ($said | Select-Object -Last 2) -join ' ' }
                 elseif ($errLines.Count) { ($errLines | Select-Object -Last 2) -join ' ' }
                 else { ($stdout -split "`n" | Select-Object -Last 2) -join ' ' }
+        # An engine that never started writes NOTHING to either stream, and
+        # every branch above then yields an empty array rather than a string:
+        # calling .Trim() on it threw and took the whole matrix down with it,
+        # hiding the one fact that mattered — the exe did not run. A missing
+        # Qt runtime beside a bare payload .exe looks exactly like this.
+        $tail = (@($tail) -join ' ').Trim()
+        if (-not $tail) {
+            $tail = "the engine wrote nothing to stdout or stderr — it did not start (missing runtime beside $Exe?)"
+        }
         Write-Warning "  no CSV produced — the pass failed: $tail"
-        $row.error = $tail.Trim()
+        $row.error = $tail
         $results += [pscustomobject]$row
         continue
     }
@@ -173,7 +182,7 @@ foreach ($spec in $Specs) {
     # chroma and HDR as NEGOTIATED, which is not always what was asked for.
     $negotiated = ($stdout -split "`n" | Where-Object { $_ -match '^native-bench: ' } |
                    Select-Object -First 1) -replace '^native-bench: ', ''
-    $row.negotiated = $negotiated.Trim()
+    $row.negotiated = (@($negotiated) -join ' ').Trim()
     foreach ($k in $stats.Keys) { $row[$k] = $stats[$k] }
     $results += [pscustomobject]$row
     Write-Host ("  encode {0} / {1} / {2} ms   {3} KB   QP {4}   {5} fps" -f `
