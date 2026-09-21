@@ -583,6 +583,22 @@ bool ColorConvert::init(ID3D11Device* device, DXGI_FORMAT sourceFormat, int sour
     return true;
 }
 
+bool ColorConvert::dropResample()
+{
+    if (m_Filter == ScaleFilter::Bilinear || m_Letterboxed) return false;
+    // convert() branches on m_Filter alone, so this is the whole switch: the
+    // conversion samples the capture again, as init() would have set it up.
+    // The scaler's textures go with it — VRAM an iGPU shares with the desktop.
+    m_Filter = ScaleFilter::Bilinear;
+    m_ScaledView.Reset();
+    m_ScaledTarget.Reset();
+    m_Scaled.Reset();
+    m_ScaledMidView.Reset();
+    m_ScaledMidTarget.Reset();
+    m_ScaledMid.Reset();
+    return true;
+}
+
 bool ColorConvert::createScaler(std::string& error)
 {
     const int pictureWidth = static_cast<int>(m_PictureWidth);

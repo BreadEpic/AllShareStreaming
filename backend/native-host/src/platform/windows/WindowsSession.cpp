@@ -851,9 +851,10 @@ private:
             char value[16] = {};
             const DWORD n = ::GetEnvironmentVariableA("MW_SCALER", value, sizeof(value));
             if (n > 0 && n < sizeof(value)) {
-                if (convert::parseScaleFilter(value, filter))
+                if (convert::parseScaleFilter(value, filter)) {
+                    m_ScalerPinned = true;
                     log::info(std::string("[native] MW_SCALER in effect: ") + toString(filter));
-                else
+                } else
                     log::info(std::string("[native] MW_SCALER=") + value +
                               " is not a filter (bilinear, lanczos2) — ignored");
             }
@@ -871,6 +872,10 @@ private:
         // level goes in before the first frame, and the log says what it was.
         m_SdrWhite = 0.0f;
         if (m_Converter->scRgbSource()) applySdrWhite(readSdrWhite());
+        // A new converter is back on the filter chosen above: the guard judges
+        // it afresh rather than on the previous pipeline's frames.
+        m_ScalerWindowUs = 0;
+        m_ScalerWindowFrames = 0;
 
         // The encoder the Selector chose, not one guessed from the display.
         switch (m_Target.encoder) {
@@ -2001,6 +2006,7 @@ private:
             // what keeps the GPU→CPU copy at exactly one per frame.
             m_Callbacks.onVideo(out);
             noteEncodeLoad(out, stamps);
+            noteScalerLoad(out, stamps);
         }
         m_Encoder->releaseOutput();
         return true;
@@ -2030,6 +2036,54 @@ private:
                                                        : 0;
         if (m_LoadCap.note(encodedUs - convertedUs, intervalUs, encodedUs))
             m_PendingResize.store(true);
+    }
+
+    /// The resample pass priced against the frame interval — on the hardware
+    /// encoders, the ones that get Lanczos-2.
+    ///
+    /// Measured on bench-intel (N95, 16-EU UHD Graphics, 21/09/2026), 1440p
+    /// desktop to a 1080p60 stream, oneVPL: 24 fps with Lanczos-2 against 46
+    /// with bilinear, alternated three times over. The two 1-D passes cost the
+    /// iGPU ~12 ms a frame on top of a 3D engine the desktop already keeps 60 %
+    /// busy, and the encoder waits for them: submit-to-encoded was 29 ms, so the
+    /// loop, which encodes one picture at a time, captured one present in two.
+    /// A sharper picture at half the frames is the wrong trade for a stream —
+    /// so once a window of frames shows the conversion and the encode together
+    /// eating most of the interval, the resample goes, for this pipeline.
+    /// The discrete GPUs it was chosen on spend a millisecond or two there and
+    /// never come near the threshold.
+    void noteScalerLoad(const EncodedFrame& out, const FrameStamps& stamps)
+    {
+        // A window of deltas, a second at 60 fps: long enough that a keyframe
+        // or a scheduler hiccup does not decide it, short enough that the
+        // viewer has barely seen the half-rate stream.
+        constexpr int kWindowFrames = 60;
+        // Most of the interval rather than all of it: past this the loop has
+        // no room left for the acquire, and presents start being skipped.
+        constexpr int64_t kBudgetPercent = 75;
+
+        if (m_ScalerPinned || m_Target.encoder == EncoderApi::Software) return;
+        if (m_Converter->scaleFilter() == convert::ColorConvert::ScaleFilter::Bilinear) return;
+        if (out.keyframe || stamps.resend) return;
+        if (out.encodedUs <= out.submittedUs) return;
+        const int64_t intervalUs = m_Cadence.enabled() ? m_Cadence.intervalUs()
+                                   : m_CadenceFps > 0  ? 1000000 / m_CadenceFps
+                                                       : 0;
+        if (intervalUs <= 0) return;
+
+        m_ScalerWindowUs += out.encodedUs - out.submittedUs;
+        if (++m_ScalerWindowFrames < kWindowFrames) return;
+        const int64_t meanUs = m_ScalerWindowUs / m_ScalerWindowFrames;
+        m_ScalerWindowUs = 0;
+        m_ScalerWindowFrames = 0;
+        if (meanUs * 100 <= intervalUs * kBudgetPercent) return;
+
+        if (m_Converter->dropResample())
+            log::info("[native] resample dropped: conversion + encode took " +
+                      std::to_string(meanUs / 1000) + " ms a frame against a " +
+                      std::to_string(intervalUs / 1000) +
+                      " ms interval — this GPU cannot afford Lanczos-2 at this rate, the "
+                      "stream goes on scaled bilinear (MW_SCALER=lanczos2 keeps it)");
     }
 
     /// Rebuild at the size the cap now asks for. Between frames, never inside
@@ -2719,6 +2773,12 @@ private:
     int m_ModeChangedHz = 0;
     encode::EncodeLoadCap m_LoadCap;
     std::atomic<bool> m_PendingResize{false};
+    /// The resample guard (noteScalerLoad): GPU time of the frames seen so far
+    /// in the current window, and whether MW_SCALER pinned the filter, which
+    /// the guard then leaves alone — an A/B is not to be overruled.
+    int64_t m_ScalerWindowUs = 0;
+    int m_ScalerWindowFrames = 0;
+    bool m_ScalerPinned = false;
     /// Frames the receiver reported lost, waiting for the capture thread to
     /// tell the encoder — see invalidateReference(). Bounded: past the DPB's
     /// reach a keyframe is the honest answer.

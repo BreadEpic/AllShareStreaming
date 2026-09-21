@@ -132,6 +132,14 @@ public:
     /// whatever was asked — the resample pass has no work at 1:1.
     ScaleFilter scaleFilter() const { return m_Filter; }
 
+    /// Give up the resample pass for the bilinear fetch of the conversion,
+    /// between two frames, without rebuilding anything: the output texture —
+    /// the one the encoder registered — stays the same. For a GPU that cannot
+    /// afford Lanczos-2 at the stream's rate. False, and nothing changed, when
+    /// there is no resample pass, or when the picture is letterboxed (the
+    /// bilinear path stretches instead, a different picture mid-stream).
+    bool dropResample();
+
     /// Whether the picture sits between bars: a source of another shape than
     /// the output, on the resample path. The stretch of the bilinear path is
     /// not letterboxing.
