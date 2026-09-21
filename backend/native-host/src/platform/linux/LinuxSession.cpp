@@ -30,6 +30,7 @@
 #include "../../encode/EncodeLoadCap.h"
 #include "../../encode/RateControl.h"
 #include "../../encode/RateGovernor.h"
+#include "SleepInhibit.h"
 #include "../../convert/linux/CpuConvert.h"
 #include "../../encode/OpenH264Encoder.h"
 #include "../../encode/linux/VaapiEncoder.h"
@@ -477,6 +478,8 @@ public:
             m_Pipeline->describe(m_Target.capture == CaptureApi::PipeWire ? "portal" : "KMS") +
             (m_Info.audio ? ", with the host's audio (PipeWire, 48 kHz stereo)" : ""));
 
+        m_SleepInhibit.engage();
+
         m_Running.store(true);
         m_Thread = std::thread([this] { run(); });
         return true;
@@ -507,6 +510,7 @@ public:
         // and the session manager would walk a running tap onto it.
         m_HostMute.release();
 #endif
+        m_SleepInhibit.release();
         if (!wasRunning && !m_Pipeline && !m_Capture) return;
         m_Pipeline.reset();
         m_Capture.reset();
@@ -1714,6 +1718,7 @@ private:
     ResolvedTarget m_Target;
     SessionCallbacks m_Callbacks;
     SessionInfo m_Info;
+    SleepInhibit m_SleepInhibit;
 
     std::string m_CardPath;
     uint32_t m_ConnectorId = 0;

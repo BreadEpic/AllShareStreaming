@@ -193,6 +193,7 @@ else()
             target_sources(mw-native-host PRIVATE
                 src/platform/linux/LinuxProbe.cpp
                 src/platform/linux/LinuxSession.cpp
+                src/platform/linux/SleepInhibit.cpp
                 src/capture/linux/KmsCapture.cpp
                 src/convert/linux/GlConvert.cpp
                 src/convert/linux/CpuConvert.cpp
