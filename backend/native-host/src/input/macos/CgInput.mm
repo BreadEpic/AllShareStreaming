@@ -23,12 +23,15 @@
 #include <ApplicationServices/ApplicationServices.h>
 #include <Carbon/Carbon.h>
 #include <CoreFoundation/CoreFoundation.h>
+#include <IOKit/IOKitLib.h>
 #include <IOKit/hidsystem/IOHIDLib.h>
 #include <IOKit/hidsystem/IOHIDParameter.h>
+#include <IOKit/hidsystem/IOHIDShared.h>
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <vector>
 
 namespace mw::native::input {
@@ -209,6 +212,21 @@ bool pointerLocation(double& x, double& y)
     return true;
 }
 
+/// A connection to IOHIDSystem, the door a relative move goes through when it
+/// should be treated like a mouse's (see injectMouseMove). 0 when it cannot be
+/// opened, and the caller then falls back to posting positions.
+io_connect_t openHidSystem()
+{
+    io_service_t service =
+        IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching(kIOHIDSystemClass));
+    if (!service) return 0;
+    io_connect_t connect = 0;
+    if (IOServiceOpen(service, mach_task_self(), kIOHIDParamConnectType, &connect) != KERN_SUCCESS)
+        connect = 0;
+    IOObjectRelease(service);
+    return connect;
+}
+
 } // namespace
 
 CgInput::~CgInput()
@@ -240,6 +258,12 @@ bool CgInput::start(std::string& error)
 
     // Where the pointer is now, so relative motion starts from the truth.
     pointerLocation(m_X, m_Y);
+    m_PointerStale = false;
+    m_HidSystem = openHidSystem();
+    if (!m_HidSystem)
+        log::warning("[native] input: IOHIDSystem could not be opened — relative motion is "
+                     "posted as positions, and a game that holds the pointer still will see "
+                     "it move");
     m_Accel.start();
     m_Recentre.reset();
     m_Modifiers = 0;
@@ -259,6 +283,10 @@ void CgInput::stop()
     releaseAll();
     log::info("[native] input: " + std::to_string(m_Injected.load(std::memory_order_relaxed)) +
               " event(s) injected this session");
+    if (m_HidSystem) {
+        IOServiceClose(m_HidSystem);
+        m_HidSystem = 0;
+    }
     m_Started = false;
 }
 
@@ -310,6 +338,7 @@ void CgInput::releaseAll()
         CGEventSetFlags(up, static_cast<CGEventFlags>(m_Modifiers));
         post(up);
     }
+    syncPointer();
     for (int button : buttons)
         postButton(button, false, m_X, m_Y);
     m_Modifiers = 0;
@@ -656,11 +685,11 @@ void CgInput::injectMouseMove(int deltaX, int deltaY)
     // What arrives are the MOUSE'S OWN COUNTS — the client asks its browser
     // for unadjusted movement precisely so that nothing accelerates them
     // twice. Windows and Linux then hand them to the OS, which applies the
-    // host's pointer speed on the way in; macOS has no such door. CGEventPost
-    // takes a position we computed and the HID driver, where all of Apple's
-    // acceleration lives, never sees the motion. Left alone, one count moved
-    // the pointer one point while the Mac's own mouse got its whole curve,
-    // and aiming through the stream took several times the desk.
+    // host's pointer speed on the way in; nothing posted on macOS gets it.
+    // The acceleration lives in the HID driver, per device, and both doors
+    // below enter after it — measured on macOS 15: a relative post moves the
+    // pointer one point per count at every speed. Left alone, aiming through
+    // the stream took several times the desk the Mac's own mouse does.
     //
     // So the curve is applied here, before the event exists, which is where
     // the driver would have applied it. m_Accel follows the host's tracking
@@ -671,13 +700,90 @@ void CgInput::injectMouseMove(int deltaX, int deltaY)
     m_Accel.apply(deltaX, deltaY, pointsX, pointsY);
     if (pointsX == 0 && pointsY == 0) return;
 
+    if (m_HidSystem && postRelative(pointsX, pointsY)) return;
+
+    syncPointer();
     moveTo(m_X + pointsX, m_Y + pointsY, pointsX, pointsY);
+}
+
+bool CgInput::postRelative(int deltaX, int deltaY)
+{
+    // Why not a Quartz event: a Quartz event carries a POSITION, and the
+    // window server puts the pointer there, whatever the frontmost app asked.
+    // A game that aims with the mouse — Roblox while the right button is held,
+    // any first-person camera — detaches the pointer from the mouse
+    // (CGAssociateMouseAndMouseCursorPosition) and reads motion only; on the
+    // Mac the pointer then stands still, and through the stream it went on
+    // wandering across the picture, because we kept telling it where to be.
+    // Nothing reports whether the pointer is detached, not even privately.
+    //
+    // A relative post through IOHIDSystem is a mouse's own report: the window
+    // server decides where the pointer goes, exactly as it does for the real
+    // one. Measured against a frontmost app holding the pointer detached, a
+    // position post moved it 50 points and this one 0, while the app still
+    // received the motion, one point per count as before.
+    //
+    // Deprecated since 10.12 like every IOHIDSystem call, and nothing public
+    // replaced it. If it ever stops answering, positions take over again.
+    UInt32 type = NX_MOUSEMOVED;
+    if (m_HeldButtons.count(1))
+        type = NX_LMOUSEDRAGGED;
+    else if (m_HeldButtons.count(3))
+        type = NX_RMOUSEDRAGGED;
+    else if (!m_HeldButtons.empty())
+        type = NX_OMOUSEDRAGGED;
+    // The event type is ours to give: with the buttons pressed through Quartz,
+    // IOHIDSystem does not know one is held and would call a drag a move.
+
+    NXEventData data;
+    std::memset(&data, 0, sizeof data);
+    data.mouseMove.dx = deltaX;
+    data.mouseMove.dy = deltaY;
+    const IOGPoint unused = {0, 0};
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    const kern_return_t posted =
+        IOHIDPostEvent(m_HidSystem, type, unused, &data, kNXEventDataVersion,
+                       static_cast<IOOptionBits>(m_Modifiers), kIOHIDSetRelativeCursorPosition);
+#pragma clang diagnostic pop
+    if (posted != KERN_SUCCESS) {
+        log::warning("[native] input: IOHIDSystem refused a relative move (" +
+                     std::to_string(posted) +
+                     ") — relative motion is posted as positions from now on");
+        IOServiceClose(m_HidSystem);
+        m_HidSystem = 0;
+        return false;
+    }
+    m_PointerStale = true;
+
+    // Kept on the display, as moveTo does for positions. Where the pointer
+    // went is the window server's call now, so it is read back; a pointer the
+    // game holds still never leaves, and one that did is not detached, so
+    // placing it back cannot fight a game.
+    double hereX = 0;
+    double hereY = 0;
+    if (m_Right > m_Left && m_Bottom > m_Top && pointerLocation(hereX, hereY)) {
+        const double x =
+            std::clamp(hereX, static_cast<double>(m_Left), static_cast<double>(m_Right - 1));
+        const double y =
+            std::clamp(hereY, static_cast<double>(m_Top), static_cast<double>(m_Bottom - 1));
+        if (x != hereX || y != hereY) moveTo(x, y, 0, 0);
+    }
+    return true;
+}
+
+void CgInput::syncPointer()
+{
+    if (!m_PointerStale) return;
+    m_PointerStale = false;
+    pointerLocation(m_X, m_Y);
 }
 
 void CgInput::injectMousePosition(const InputEvent& event)
 {
     if (event.referenceWidth <= 0 || event.referenceHeight <= 0) return;
     if (m_Right <= m_Left || m_Bottom <= m_Top) return;
+    syncPointer();
     double x =
         m_Left + static_cast<double>(event.positionX) * (m_Right - m_Left) / event.referenceWidth;
     double y =
@@ -735,6 +841,9 @@ void CgInput::injectMouseButton(int button, bool down)
         m_HeldButtons.insert(button);
     else
         m_HeldButtons.erase(button);
+    // Pressed where the pointer IS: after relative moves only the window
+    // server knows, and a click at a stale spot would move a detached pointer.
+    syncPointer();
     postButton(button, down, m_X, m_Y);
 }
 

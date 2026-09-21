@@ -21,6 +21,8 @@
 #include "../RecentreDetector.h"
 #include "MacPointerAccel.h"
 
+#include <IOKit/IOTypes.h>
+
 #include <atomic>
 #include <cstdint>
 #include <mutex>
@@ -50,10 +52,11 @@
 //    held is a "dragged" event, not a "moved" one.
 // 3. Pointer speed is nobody's. A relative move on Windows or Linux goes in
 //    through the OS, which applies the host's own acceleration on the way;
-//    here the event is posted at a position we computed ourselves and the HID
-//    driver is never in the path. So the host's curve is applied on this side,
-//    by MacPointerAccel, or a stream's mouse is several times slower than the
-//    Mac's own.
+//    here every door enters after the HID driver that holds it. So the host's
+//    curve is applied on this side, by MacPointerAccel, or a stream's mouse is
+//    several times slower than the Mac's own. And the move itself is posted
+//    as a mouse report (postRelative), not as a position, so that a game which
+//    holds the pointer still to aim keeps it still.
 //
 // ── Permission ──────────────────────────────────────────────────────────────
 //
@@ -113,6 +116,13 @@ private:
     void postPointer(double x, double y, int deltaX, int deltaY);
     void postButton(int button, bool down, double x, double y);
     void moveTo(double x, double y, int deltaX, int deltaY);
+    /// A relative move posted as a mouse report through IOHIDSystem, so the
+    /// window server places the pointer — or keeps it still for a game that
+    /// detached it. False when that door is shut; the caller posts a position.
+    bool postRelative(int deltaX, int deltaY);
+    /// Bring m_X/m_Y back to where the pointer is, after relative moves only
+    /// the window server has followed.
+    void syncPointer();
 
     /// Guards everything below: inject() comes from the libdatachannel thread
     /// while stop() runs on another.
@@ -155,6 +165,13 @@ private:
     int m_Top = 0;
     int m_Right = 0;
     int m_Bottom = 0;
+
+    /// IOHIDSystem, for relative moves (postRelative). 0 when it could not be
+    /// opened or stopped answering, and positions are posted instead.
+    io_connect_t m_HidSystem = 0;
+    /// m_X/m_Y lag behind the pointer: a relative move went through
+    /// IOHIDSystem, and only the window server knows where it landed.
+    bool m_PointerStale = false;
 
     /// The host's pointer speed and acceleration, which CGEventPost does not
     /// apply for us. Only ever on the TRUE relative path (injectMouseMove):
