@@ -43,6 +43,8 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -229,6 +231,22 @@ public:
             if (m_Display.isAsleep) log::info("[native] display was asleep — woken for the stream");
         }
 
+        // The process has no window of its own, so macOS may nap it: timers
+        // coalesced, the capture and encode threads put on efficiency cores
+        // and slowed down. The same opt-out a game takes, for the session's
+        // life — MW_APPNAP=keep leaves it to the OS for A/B benches.
+        {
+            const char* appNap = std::getenv("MW_APPNAP");
+            if (appNap && std::strcmp(appNap, "keep") == 0) {
+                log::info("[native] priority: MW_APPNAP=keep — macOS may still nap this process");
+            } else if (!m_Activity) {
+                m_Activity = [[NSProcessInfo processInfo]
+                    beginActivityWithOptions:(NSActivityUserInitiated | NSActivityLatencyCritical)
+                                      reason:@"MoonlightWeb is streaming this display"];
+                log::info("[native] priority: out of App Nap, latency-critical");
+            }
+        }
+
         {
             std::string line;
             m_EncodeFps =
@@ -358,6 +376,10 @@ public:
         if (m_Wake != kIOPMNullAssertionID) {
             IOPMAssertionRelease(m_Wake);
             m_Wake = kIOPMNullAssertionID;
+        }
+        if (m_Activity) {
+            [[NSProcessInfo processInfo] endActivity:m_Activity];
+            m_Activity = nil;
         }
         if (!wasRunning && !m_Encoder && !m_Capture && !m_Audio) {
             // Nothing was streaming, but a mute may still have been engaged by
@@ -1412,6 +1434,8 @@ private:
     platform::MacDisplay m_Display;
     IOPMAssertionID m_KeepAwake = kIOPMNullAssertionID;
     IOPMAssertionID m_Wake = kIOPMNullAssertionID;
+    /// The App Nap opt-out, held from start() to stop().
+    id<NSObject> m_Activity = nil;
 
     int m_DisplayMilliHz = 0;
     int m_EncodeFps = 0;
