@@ -277,6 +277,10 @@ async fn ws_loop(
 
                 match event {
                     MoonlightStreamEvent::Audio(AudioStreamEvent::OnFrame(frame)) => {
+                        if ws_stopped {
+                            continue;
+                        }
+
                         let mut buffer = vec![0; 1 + frame.buffer.len()];
                         buffer[1..].copy_from_slice(&frame.buffer);
 
@@ -290,6 +294,10 @@ async fn ws_loop(
                         }
                     }
                     MoonlightStreamEvent::Video(VideoStreamEvent::OnFrame(frame)) => {
+                        if ws_stopped {
+                            continue;
+                        }
+
                         // TODO: avoid using payloading and depayloading the frame like this
                         let mut buffer = vec![0; 1 + 5 + frame.raw().len()];
                         buffer[(1 + 5)..].copy_from_slice(frame.raw());
@@ -384,6 +392,15 @@ async fn ws_loop(
                         {
                             send_ws_message(&mut ws_sender, WebSocketClientboundMessage::Stats(StreamStatsClientboundMessage::Pong(id)));
                         }
+                    }
+                    Message::Close(_) => {
+                        // The client closed the web socket. Stop the host stream,
+                        // but keep driving it so the host gets a graceful
+                        // disconnect, and stop relaying video and audio to the
+                        // closed connection.
+                        info!("client closed the web socket, stopping the host stream");
+                        ws_stopped = true;
+                        let _ = stream.disconnect();
                     }
                     _ => {}
                 }
