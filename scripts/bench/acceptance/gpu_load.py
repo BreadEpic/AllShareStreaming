@@ -116,3 +116,122 @@ class Load:
                 self.proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 self.proc.kill()
+
+
+# ── a Windows host of the fleet ─────────────────────────────────────────────
+#
+# The same tool, deployed as a folder (the exe beside the Qt DLLs windeployqt
+# put there) and started in the CONSOLE session through an Interactive
+# scheduled task: an ssh session lands in session 0, which has no desktop, so
+# a window started from there would never render (install.py does the same for
+# the app). Its JSON log is read back over ssh.
+
+REMOTE_DIR = r"C:\mw-gpu-load"
+REMOTE_JSON = REMOTE_DIR + r"\run.jsonl"
+TASK = "MWBenchGpuLoad"
+
+
+def _fleet():
+    import fleet  # the orchestrator's module; imported late so local runs need no fleet
+    return fleet
+
+
+def deploy_windows(mid, package_zip):
+    """Push the packaged tool (a zip of the windeployqt'd build folder)."""
+    f = _fleet()
+    f.push_file(mid, package_zip, "C:/Users/Public/gpuload-win.zip")
+    rc, out, err = f.run_script(mid, r"""
+$d = '%s'
+Get-Process -Name 'mw-gpu-load' -ErrorAction SilentlyContinue | Stop-Process -Force
+if (Test-Path $d) { Remove-Item $d -Recurse -Force }
+Expand-Archive C:\Users\Public\gpuload-win.zip -DestinationPath $d -Force
+Write-Output ('DEPLOYED ' + (Test-Path "$d\mw-gpu-load.exe"))
+""" % REMOTE_DIR, timeout=300)
+    if "DEPLOYED True" not in (out or ""):
+        raise Unavailable("mw-gpu-load could not be deployed on %s" % mid)
+
+
+def remote_encoder_gpu(mid, target, port=48080):
+    if target != "display":
+        raise Unavailable("the load needs a physical display target, not %r" % target)
+    rc, out, err = _fleet().run_script(
+        mid, "(& curl.exe -s -m 5 http://127.0.0.1:%d/api/native/status) -join ''" % port, timeout=60)
+    try:
+        status = json.loads((out or "").strip().splitlines()[-1])
+        return status["displays"][0]["gpu"]
+    except (ValueError, KeyError, IndexError):
+        raise Unavailable("%s names no GPU for its first display" % mid)
+
+
+class RemoteLoad(Load):
+    def __init__(self, mid, gpu, level=None, allow_no_sensor=False):
+        self.mid = mid
+        self.gpu = gpu
+        args = ['--gpu', '"%s"' % gpu, '--autostart', '--json', REMOTE_JSON]
+        if level:
+            args += ["--level", str(level)]
+        if allow_no_sensor:
+            args.append("--allow-no-sensor")
+        rc, out, err = _fleet().run_script(mid, r"""
+Get-Process -Name 'mw-gpu-load' -ErrorAction SilentlyContinue | Stop-Process -Force
+Remove-Item '%s' -ErrorAction SilentlyContinue
+$who = (Get-CimInstance Win32_ComputerSystem).UserName
+if (-not $who) { $who = "$env:USERDOMAIN\$env:USERNAME" }
+$act = New-ScheduledTaskAction -Execute '%s\mw-gpu-load.exe' -Argument '%s'
+$pr  = New-ScheduledTaskPrincipal -UserId $who -LogonType Interactive -RunLevel Highest
+Register-ScheduledTask -TaskName '%s' -Action $act -Principal $pr -Force | Out-Null
+Start-ScheduledTask -TaskName '%s'
+Write-Output ('STARTED as ' + $who)
+""" % (REMOTE_JSON, REMOTE_DIR, " ".join(args), TASK, TASK), timeout=120)
+        if "STARTED" not in (out or ""):
+            raise Unavailable("mw-gpu-load could not be started on %s" % mid)
+        self.started = time.time()
+
+    def _lines(self):
+        rc, out, err = _fleet().run_script(
+            self.mid, "Get-Content -Encoding utf8 '%s' -ErrorAction SilentlyContinue" % REMOTE_JSON,
+            timeout=60)
+        lines = []
+        for raw in (out or "").splitlines():
+            raw = raw.strip().lstrip("\ufeff")
+            if raw.startswith("{"):
+                try:
+                    lines.append(json.loads(raw))
+                except ValueError:
+                    pass
+        return lines
+
+    def wait_calibrated(self, timeout=40):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            for line in self._lines():
+                if line.get("event") == "calibrated":
+                    return line
+                if line.get("event") in ("refused", "end"):
+                    raise Unavailable("mw-gpu-load on %s: %s %s" % (
+                        self.mid, line.get("reason", ""), line.get("detail", "")))
+            time.sleep(2)
+        raise Unavailable("mw-gpu-load did not calibrate on %s within %d s" % (self.mid, timeout))
+
+    def snapshot(self, seconds):
+        lines = self._lines()
+        ticks = [l for l in lines if "fps" in l and l.get("phase") == "locked"]
+        recent = ticks[-max(1, int(seconds)):]
+        end = next((l for l in lines if l.get("event") == "end"), None)
+        calibrated = next((l for l in lines if l.get("event") == "calibrated"), {})
+
+        def mean(key):
+            vals = [l[key] for l in recent if l.get(key) is not None]
+            return round(sum(vals) / len(vals), 1) if vals else None
+
+        return {"gpu": self.gpu, "level": round(calibrated.get("level", 0), 1),
+                "fps": mean("fps"), "gpuMs": mean("gpuMs"),
+                "tempC": max((l.get("tempC", -1) for l in recent), default=None),
+                "running": end is None, "end": end}
+
+    def stop(self):
+        _fleet().run_script(self.mid, r"""
+Get-Process -Name 'mw-gpu-load' -ErrorAction SilentlyContinue | Stop-Process -Force
+Start-Sleep -Seconds 1
+Unregister-ScheduledTask -TaskName '%s' -Confirm:$false -ErrorAction SilentlyContinue
+""" % TASK, timeout=60)

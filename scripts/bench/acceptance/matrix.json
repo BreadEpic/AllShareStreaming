@@ -214,6 +214,14 @@
           "target": "display"
         },
         {
+          "id": "load-gpu",
+          "factor": "native Display + GPU load (vs target-display)",
+          "settings": {},
+          "target": "display",
+          "load": "gpu",
+          "loadAllowNoSensor": true
+        },
+        {
           "id": "target-sunshine",
           "factor": "target Sunshine",
           "settings": {},

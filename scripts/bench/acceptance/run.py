@@ -195,13 +195,21 @@ def run_pass(d, chapter, machine, spec, base, seconds, settle, access):
             # The load comes first and is calibrated before the stream exists:
             # were it tuned while the encoder runs, it would hand back the GPU
             # time the pass means to take away.
-            if machine != "local":
-                raise drive.NotApplicable("the GPU load runs on this machine only for now")
             try:
-                gpu = gpu_load.encoder_gpu(rec["target"])
-                load = gpu_load.Load(gpu, os.path.join(
-                    RESULTS, "gpu-load-%s-%s-%s.jsonl" % (chapter, machine, spec["id"])),
-                    level=spec.get("loadLevel"))
+                if machine == "local":
+                    gpu = gpu_load.encoder_gpu(rec["target"])
+                    load = gpu_load.Load(gpu, os.path.join(
+                        RESULTS, "gpu-load-%s-%s-%s.jsonl" % (chapter, machine, spec["id"])),
+                        level=spec.get("loadLevel"))
+                elif fleet.MACHINES[machine]["os"] == "windows":
+                    # Deployed beforehand with gpu_load.deploy_windows(). An iGPU
+                    # whose driver reports no temperature is covered by the
+                    # SoC's own thermal protection, hence loadAllowNoSensor.
+                    gpu = gpu_load.remote_encoder_gpu(machine, rec["target"])
+                    load = gpu_load.RemoteLoad(machine, gpu, level=spec.get("loadLevel"),
+                                               allow_no_sensor=spec.get("loadAllowNoSensor", False))
+                else:
+                    raise gpu_load.Unavailable("the GPU load runs on Windows hosts only for now")
                 load.wait_calibrated()
             except gpu_load.Unavailable as e:
                 raise drive.NotApplicable(str(e))
