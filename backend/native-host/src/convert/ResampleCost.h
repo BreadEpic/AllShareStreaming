@@ -34,10 +34,11 @@ namespace mw::native::convert {
 /// on the GPU and on nothing a session can name: 1440p → 1080p, measured on
 /// 22/09/2026 by A/B against the bilinear fetch, ~0 ms on an RTX 5060 Ti,
 /// 0.8 ms on an Arc A380, 4.5 ms on the two-CU iGPU of a Ryzen 7000, 12 ms on
-/// an N95. "Integrated" was the obvious proxy, but it names a class, not a
-/// cost: integrated GPUs run from two compute units to forty, and a small
-/// discrete card can be slower than a large iGPU. So the pass is timed with
-/// GPU timestamps and kept only where it is cheap — latency comes before
+/// an N95; and 1080p → 720p, 0.95 ms on a Radeon 780M under Linux.
+/// "Integrated" was the obvious proxy, but it names a class, not a cost:
+/// integrated GPUs run from two compute units to forty, and a small discrete
+/// card can be slower than a large iGPU. So the pass is timed with GPU
+/// timestamps and kept only where it is cheap — latency comes before
 /// sharpness.
 ///
 /// ── The rule ────────────────────────────────────────────────────────────────

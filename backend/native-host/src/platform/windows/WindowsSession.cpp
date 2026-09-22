@@ -2103,7 +2103,9 @@ private:
             }
             log::info(std::string("[native] resample: Lanczos-2 costs ") + ms +
                       " ms of GPU a frame here — kept" +
-                      (affordable ? "" : " (MW_SCALER=lanczos2)"));
+                      (affordable       ? ""
+                       : m_ScalerPinned ? " (MW_SCALER=lanczos2)"
+                                        : " (letterboxed: bilinear would stretch the picture)"));
         }
 
         if (m_ScalerPinned) return;

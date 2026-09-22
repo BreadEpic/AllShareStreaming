@@ -20,6 +20,7 @@
 #include "../../capture/CaptureTypes.h"
 #include "../../capture/linux/KmsCapture.h"
 #include "../CursorDraw.h"
+#include "../ResampleCost.h"
 #include "../ScaleFilter.h"
 
 #include <cstdint>
@@ -92,6 +93,15 @@ public:
 
     /// The filter in effect: Bilinear at 1:1 whatever was asked.
     ScaleFilter scaleFilter() const { return m_Filter; }
+    /// Give up the resample pass for the rest of the session: the conversion
+    /// samples the scanout again, bilinear, as a Bilinear init() would have
+    /// set it up. False when there is none, or when the picture is
+    /// letterboxed — the bilinear pass would stretch it instead. Called on
+    /// the thread that converts.
+    bool dropResample();
+    /// What the resample costs this GPU (ResampleCost.h), once: true the first
+    /// time the measurement is complete, with its median in @p costUs.
+    bool takeResampleCost(int64_t& costUs);
     /// Whether the picture sits between black bars (a source of another
     /// shape, on the resample path; the bilinear path stretches instead).
     bool letterboxed() const { return m_Letterboxed; }
@@ -122,6 +132,12 @@ private:
     /// The resample pass: two programs, the intermediate and the scaled
     /// picture. Only when scaling with Lanczos2.
     bool createScaler(std::string& error);
+    /// Delete the resample pass's objects. Only with the context current —
+    /// otherwise stop() gets them.
+    void releaseScaler();
+    /// Read the frame's resample timing into m_ResampleCost. After the finish,
+    /// when the result is in.
+    void collectResampleTiming();
     /// Bind the context to the calling thread if it is not already. convert()
     /// runs on the capture thread, init() on whoever built the session.
     bool makeCurrent(std::string& error);
@@ -143,6 +159,8 @@ private:
     uint64_t m_CursorShapeVersion = 0;
     ScaleFilter m_Filter = ScaleFilter::Bilinear;
     bool m_Letterboxed = false;
+    ResampleCost m_ResampleCost;
+    bool m_ResampleCostTaken = false;
     /// Where the picture lands in the scaled texture: all of it, or the
     /// fitted rectangle between the bars.
     int m_PictureX = 0;

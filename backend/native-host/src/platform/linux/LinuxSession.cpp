@@ -180,14 +180,16 @@ public:
             return false;
         // The resample filter for a stream smaller than the screen: the
         // bench's pick (Lanczos-2 dilated, linear light — docs/bench-native-host
-        // §8j), the GPU tier being the one with a GPU to spend on it. The
-        // 780M's own figure is what settles whether it stays the default
-        // here; MW_SCALER=bilinear|lanczos2 is the A/B on a real stream.
+        // §8j), the GPU tier being the one with a GPU to spend on it — kept
+        // only where it is cheap, see noteResampleCost().
+        // MW_SCALER=bilinear|lanczos2 is the A/B on a real stream.
         convert::ScaleFilter filter = convert::ScaleFilter::Lanczos2;
+        m_ScalerPinned = false;
         if (const char* value = std::getenv("MW_SCALER"); value && *value) {
-            if (convert::parseScaleFilter(value, filter))
+            if (convert::parseScaleFilter(value, filter)) {
+                m_ScalerPinned = true;
                 log::info(std::string("[native] MW_SCALER in effect: ") + toString(filter));
-            else
+            } else
                 log::info(std::string("[native] MW_SCALER=") + value +
                           " is not a filter (bilinear, lanczos2) — ignored");
         }
@@ -201,7 +203,9 @@ public:
     bool convert(const capture::KmsFrame& frame, const capture::CursorState& cursor,
                  const convert::CursorDraw& draw, std::string& error) override
     {
-        return m_Converter->convert(frame, cursor, draw, error);
+        if (!m_Converter->convert(frame, cursor, draw, error)) return false;
+        noteResampleCost();
+        return true;
     }
     bool encode(bool forceKeyframe, uint32_t frameNumber, encode::EncoderOutput& out,
                 std::string& error) override
@@ -236,8 +240,36 @@ public:
     }
 
 private:
+    /// The measured rule of ResampleCost.h, as on Windows: GlConvert times the
+    /// resample on the GPU during the stream's first frames, and a pass that
+    /// adds more than ResampleCost::kBudgetUs to every frame's latency goes —
+    /// convert() waits for the GPU, so its whole cost is latency. On the
+    /// Radeon 780M, 1080p to 720p, it was 0.95 ms (22/09/2026): kept.
+    void noteResampleCost()
+    {
+        int64_t costUs = 0;
+        if (!m_Converter->takeResampleCost(costUs)) return;
+        char ms[16], budget[16];
+        std::snprintf(ms, sizeof(ms), "%.1f", costUs / 1000.0);
+        std::snprintf(budget, sizeof(budget), "%.1f", convert::ResampleCost::kBudgetUs / 1000.0);
+        const bool affordable = convert::ResampleCost::affordable(costUs);
+        if (!affordable && !m_ScalerPinned && m_Converter->dropResample()) {
+            log::info(std::string("[native] resample dropped: Lanczos-2 costs ") + ms +
+                      " ms of GPU a frame here, over the " + budget +
+                      " ms it may add to every frame — the stream goes on scaled bilinear "
+                      "(MW_SCALER=lanczos2 keeps it)");
+            return;
+        }
+        log::info(std::string("[native] resample: Lanczos-2 costs ") + ms +
+                  " ms of GPU a frame here — kept" +
+                  (affordable       ? ""
+                   : m_ScalerPinned ? " (MW_SCALER=lanczos2)"
+                                    : " (letterboxed: bilinear would stretch the picture)"));
+    }
+
     std::unique_ptr<convert::GlConvert> m_Converter;
     std::unique_ptr<encode::VaapiEncoder> m_Encoder;
+    bool m_ScalerPinned = false;
 };
 
 /// KMS → DMA-BUF mmap → CPU → OpenH264: the converter owns the I420 planes, the

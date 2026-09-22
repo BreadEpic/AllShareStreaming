@@ -355,6 +355,11 @@ struct GlConvert::Impl
     GLuint scaledMidFbo = 0;
     GLuint scaledTexture = 0;
     GLuint scaledFbo = 0;
+    // The resample timed on the GPU (ResampleCost.h), with the
+    // GL_EXT_disjoint_timer_query elapsed-time query. One query, not the ring
+    // D3D11 needs: convert() finishes the GPU before it returns, so the result
+    // is in by then.
+    GLuint resampleQuery = 0;
 };
 
 GlConvert::GlConvert()
@@ -465,6 +470,8 @@ bool GlConvert::init(const std::string& renderNode, uint32_t sourceFourcc, int s
     }
 
     m_SourceFourcc = sourceFourcc;
+    m_ResampleCost.reset();
+    m_ResampleCostTaken = false;
     m_SourceWidth = sourceWidth;
     m_SourceHeight = sourceHeight;
     m_OutputWidth = (outputWidth > 0 ? outputWidth : sourceWidth) & ~1;
@@ -586,7 +593,64 @@ bool GlConvert::createScaler(std::string& error)
         error = "GL reported an error building the resample pass";
         return false;
     }
+
+    // Without a GPU timer the cost cannot be known, and the pass stays: the
+    // rule that drops it is about a measured cost, never a guessed one.
+    if (extensions && std::strstr(extensions, "GL_EXT_disjoint_timer_query"))
+        glGenQueries(1, &d->resampleQuery);
+    else
+        log::info("[native] no GPU timer on this GL (GL_EXT_disjoint_timer_query) — the "
+                  "resample pass is kept without its cost measured");
     return true;
+}
+
+bool GlConvert::dropResample()
+{
+    if (m_Filter == ScaleFilter::Bilinear || m_Letterboxed) return false;
+    // convert() branches on m_Filter alone, so this is the whole switch: the
+    // conversion samples the scanout again, as init() would have set it up.
+    m_Filter = ScaleFilter::Bilinear;
+    releaseScaler();
+    return true;
+}
+
+bool GlConvert::takeResampleCost(int64_t& costUs)
+{
+    if (m_ResampleCostTaken || !m_ResampleCost.done()) return false;
+    m_ResampleCostTaken = true;
+    costUs = m_ResampleCost.medianUs();
+    return true;
+}
+
+void GlConvert::releaseScaler()
+{
+    // The objects go with the pass — VRAM an iGPU shares with the desktop —
+    // when the context is at hand; stop() deletes whatever is left.
+    if (d->context == EGL_NO_CONTEXT || eglGetCurrentContext() != d->context) return;
+    if (d->scaledMidFbo) glDeleteFramebuffers(1, &d->scaledMidFbo);
+    if (d->scaledFbo) glDeleteFramebuffers(1, &d->scaledFbo);
+    const GLuint textures[] = {d->scaledMidTexture, d->scaledTexture};
+    glDeleteTextures(2, textures);
+    if (d->scaleHProgram) glDeleteProgram(d->scaleHProgram);
+    if (d->scaleVProgram) glDeleteProgram(d->scaleVProgram);
+    if (d->resampleQuery) glDeleteQueries(1, &d->resampleQuery);
+    d->scaledMidFbo = d->scaledFbo = d->scaledMidTexture = d->scaledTexture = 0;
+    d->scaleHProgram = d->scaleVProgram = d->resampleQuery = 0;
+}
+
+void GlConvert::collectResampleTiming()
+{
+    GLuint available = 0;
+    glGetQueryObjectuiv(d->resampleQuery, GL_QUERY_RESULT_AVAILABLE, &available);
+    // After glFinish it is; a driver that says otherwise loses one sample.
+    if (!available) return;
+    GLuint ns = 0;
+    glGetQueryObjectuiv(d->resampleQuery, GL_QUERY_RESULT, &ns);
+    // A disjoint interval (the GPU changed clock mid-way, or was reset) says
+    // nothing reliable: dropped, the next frame is timed instead.
+    GLint disjoint = 0;
+    glGetIntegerv(GL_GPU_DISJOINT_EXT, &disjoint);
+    if (!disjoint) m_ResampleCost.add(static_cast<int64_t>(ns / 1000));
 }
 
 bool GlConvert::makeCurrent(std::string& error)
@@ -725,6 +789,14 @@ bool GlConvert::convert(const capture::KmsFrame& frame, const capture::CursorSta
     // at 1:1. Bars, if any, are cleared to black first — the vertical pass
     // only paints the fitted rectangle.
     const bool resampled = m_Filter != ScaleFilter::Bilinear;
+    const bool timed = resampled && d->resampleQuery && m_ResampleCost.timeThisFrame(0);
+    if (timed) {
+        // Reading the flag clears it: what it says after the query is about
+        // this frame alone.
+        GLint disjoint = 0;
+        glGetIntegerv(GL_GPU_DISJOINT_EXT, &disjoint);
+        glBeginQuery(GL_TIME_ELAPSED_EXT, d->resampleQuery);
+    }
     if (resampled) {
         const auto scale = [&](GLuint program, GLuint fbo, GLuint input, int x, int y, int w,
                                int h) {
@@ -747,6 +819,7 @@ bool GlConvert::convert(const capture::KmsFrame& frame, const capture::CursorSta
         scale(d->scaleVProgram, d->scaledFbo, d->scaledMidTexture, m_PictureX, m_PictureY,
               m_PictureWidth, m_PictureHeight);
     }
+    if (timed) glEndQuery(GL_TIME_ELAPSED_EXT);
     const GLuint scene = resampled ? d->scaledTexture : d->sourceTexture;
 
     const bool drawCursor = cursor.visible && d->haveCursorTextures && cursor.width > 0 &&
@@ -798,6 +871,7 @@ bool GlConvert::convert(const capture::KmsFrame& frame, const capture::CursorSta
     // handed to VA-API would let the two overlap, and is the refinement to
     // measure for when the convert stage shows up in the stats.
     glFinish();
+    if (timed) collectResampleTiming();
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     if (glGetError() != GL_NO_ERROR) {
         error = "GL reported an error during conversion";
@@ -827,6 +901,7 @@ void GlConvert::stop()
         if (d->chromaProgram) glDeleteProgram(d->chromaProgram);
         if (d->scaleHProgram) glDeleteProgram(d->scaleHProgram);
         if (d->scaleVProgram) glDeleteProgram(d->scaleVProgram);
+        if (d->resampleQuery) glDeleteQueries(1, &d->resampleQuery);
         if (d->sourceImage != EGL_NO_IMAGE_KHR) pDestroyImage(d->display, d->sourceImage);
         if (d->lumaImage != EGL_NO_IMAGE_KHR) pDestroyImage(d->display, d->lumaImage);
         if (d->chromaImage != EGL_NO_IMAGE_KHR) pDestroyImage(d->display, d->chromaImage);
