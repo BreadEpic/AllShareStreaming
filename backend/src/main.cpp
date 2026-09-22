@@ -1233,6 +1233,10 @@ static constexpr quint16 kForeignPortFloor = 48100;
 // on two hosts at once (see concurrentSessionCap) plus the reserved block. It
 // is a ceiling, not an allocation — the pool creates slots on demand.
 static constexpr int kSlotHardCeiling = 24;
+// How long the Sunshine /cancel of a worker that ended on its own is held back,
+// waiting for the same browser to relaunch (see the worker's ended handler).
+// The transport chain relaunches within a second; a closed tab waits this out.
+static constexpr int kHostCancelGraceMs = 10000;
 
 // Where a slot's two signaling ports live, and how many slots fit.
 //
@@ -1856,6 +1860,24 @@ int main(int argc, char* argv[])
     // the parent carries the hint: a launch for a live uid goes straight to
     // /resume — Sunshine rejects /launch while an app is running.
     QSet<QString> g_LiveSunshineUids;
+    // Sunshine /cancels held back after a stream worker ended on its own (see
+    // its ended handler), keyed by uniqueid. A /start from the same browser to
+    // the same host within the grace window drops it: that browser is walking
+    // its transport chain, and needs the app session it is about to /resume.
+    struct PendingHostCancel
+    {
+        QPointer<QTimer> timer;
+        QString hostUuid;
+    };
+    QHash<QString, PendingHostCancel> g_PendingHostCancels;
+    auto dropPendingHostCancel = [&g_PendingHostCancels](const QString& uid,
+                                                         const QString& hostUuid) {
+        auto it = g_PendingHostCancels.find(uid);
+        if (it == g_PendingHostCancels.end() || it->hostUuid != hostUuid) return false;
+        if (it->timer) it->timer->deleteLater();
+        g_PendingHostCancels.erase(it);
+        return true;
+    };
 
     // Close a co-op backend's session host-side once its stream is over.
     //
@@ -2356,7 +2378,8 @@ int main(int argc, char* argv[])
                                                         &g_ActiveRelayRoot, &g_ActiveClientUniqueId,
                                                         &g_ActiveHostUuid, &g_HostAspect, &g_Pool,
                                                         &g_DualSupport, &g_LastStandbyStartMs,
-                                                        &g_LiveSunshineUids, &detachWorkerSlot,
+                                                        &g_LiveSunshineUids, &g_PendingHostCancels,
+                                                        &dropPendingHostCancel, &detachWorkerSlot,
                                                         &slotSignalingPort, &slotWsPath,
                                                         &anyOtherSlotLive, &reapCoopSession,
                                                         &server, &appSettings, &authManager,
@@ -2759,6 +2782,11 @@ int main(int argc, char* argv[])
             if (u.isDigit() || (u >= 'A' && u <= 'F')) reqClientUniqueId += u;
             if (reqClientUniqueId.size() >= 32) break;
         }
+
+        // This browser is back for the session its last worker left behind.
+        if (!reqClientUniqueId.isEmpty() && dropPendingHostCancel(reqClientUniqueId, host->uuid))
+            qInfo() << "[Session] Relaunch within the grace window — keeping the host session "
+                       "(no /cancel)";
 
         qInfo() << "[Session] Per-request streaming settings:"
                 << "codec=" << AppSettings::videoCodecToString(reqCodec)
@@ -3354,9 +3382,9 @@ int main(int argc, char* argv[])
             QObject::connect(
                 worker, &StreamWorkerHost::ended, qApp,
                 [worker, &g_Pool, &g_DualSupport, &g_LastStandbyStartMs, &g_LiveSunshineUids,
-                 &anyOtherSlotLive, &computerManager, &authManager, &reapCoopSession,
-                 &sessionMetrics, sessionFacts, sessionStartedAt, reqSlot, host, hostUuidCopy, uid,
-                 sessionToken, coopSessionId]() {
+                 &g_PendingHostCancels, &dropPendingHostCancel, &anyOtherSlotLive, &computerManager,
+                 &authManager, &reapCoopSession, &sessionMetrics, sessionFacts, sessionStartedAt,
+                 reqSlot, host, hostUuidCopy, uid, sessionToken, coopSessionId]() {
                     qInfo() << "[main] Stream worker ended (slot" << reqSlot << ", uid=" << uid
                             << ")";
                     // Pairs with the start above: a non-zero timestamp is proof
@@ -3384,28 +3412,74 @@ int main(int argc, char* argv[])
                     // sessionEnded auto-quit) — but ONLY when no sibling slot
                     // is still streaming: Sunshine sessions share the running
                     // app, and a /cancel would terminate it for the survivor.
+                    //
+                    // Held back for a grace window rather than sent now. A
+                    // worker that ends on its own — an ICE timeout, a launch
+                    // that failed — is usually one rung of the browser's
+                    // transport chain, and the browser relaunches at once,
+                    // retiring the old leg and expecting to /resume the app.
+                    // A /cancel sent then crosses that relaunch: Sunshine
+                    // answers it before its teardown is done, the /launch that
+                    // follows (the uid no longer counts as live) arrives in the
+                    // middle of it, and Sunshine stops answering /launch at all
+                    // — every later rung timed out, 2026-09-21 on an Arch host
+                    // and reproduced on mw-debian. The /start that comes back
+                    // drops the cancel (dropPendingHostCancel); a browser that
+                    // does not come back still gets its app closed.
                     const bool siblingLive = anyOtherSlotLive(reqSlot, hostUuidCopy);
                     if (!siblingLive) {
-                        auto* identity = IdentityManager::get();
-                        auto* quitReply = computerManager.http()->quitAppAsync(
-                            host->activeAddress, host->activeHttpsPort, identity->getCertificate(),
-                            identity->getPrivateKey(), uid);
-                        // Report the outcome. This /cancel used to be pure
-                        // fire-and-forget, so a refused or failed one left
-                        // Sunshine holding the app with nothing in the log to
-                        // say so — and the next /launch (a transport fallback,
-                        // typically) stalled against a host we believed free.
-                        QObject::connect(quitReply, &QNetworkReply::finished, quitReply,
-                                         [quitReply] {
-                                             quitReply->deleteLater();
-                                             if (quitReply->error() != QNetworkReply::NoError)
-                                                 qWarning() << "[main] Sunshine /cancel failed:"
-                                                            << quitReply->errorString();
-                                             else
-                                                 qInfo() << "[main] Sunshine /cancel OK, body="
-                                                         << quitReply->readAll().left(200);
-                                         });
-                        g_LiveSunshineUids.remove(uid);
+                        // The native host is not a GameStream server and
+                        // keeps its immediate /cancel.
+                        const int graceMs = host->backendType == NativeHostBackend::typeName()
+                                                ? 0
+                                                : kHostCancelGraceMs;
+                        dropPendingHostCancel(uid, hostUuidCopy);
+                        auto* timer = new QTimer(qApp);
+                        timer->setSingleShot(true);
+                        g_PendingHostCancels.insert(uid, {timer, hostUuidCopy});
+                        QObject::connect(
+                            timer, &QTimer::timeout, qApp,
+                            [timer, &g_PendingHostCancels, &g_LiveSunshineUids, &computerManager,
+                             &anyOtherSlotLive, reqSlot, hostUuidCopy, uid, graceMs]() {
+                                timer->deleteLater();
+                                auto it = g_PendingHostCancels.find(uid);
+                                if (it == g_PendingHostCancels.end() || it->timer != timer) return;
+                                g_PendingHostCancels.erase(it);
+                                NvComputer* h = computerManager.getHost(hostUuidCopy);
+                                if (!h) return;
+                                // Checked again: a sibling may have started since.
+                                if (anyOtherSlotLive(reqSlot, hostUuidCopy)) {
+                                    qInfo() << "[main] Sibling slot streaming now — dropping the "
+                                               "held Sunshine /cancel";
+                                    return;
+                                }
+                                if (graceMs > 0)
+                                    qInfo() << "[main] No relaunch within" << graceMs / 1000
+                                            << "s — sending the held Sunshine /cancel";
+                                auto* identity = IdentityManager::get();
+                                auto* quitReply = computerManager.http()->quitAppAsync(
+                                    h->activeAddress, h->activeHttpsPort,
+                                    identity->getCertificate(), identity->getPrivateKey(), uid);
+                                // Report the outcome. This /cancel used to be
+                                // pure fire-and-forget, so a refused or failed
+                                // one left Sunshine holding the app with nothing
+                                // in the log to say so.
+                                QObject::connect(
+                                    quitReply, &QNetworkReply::finished, quitReply, [quitReply] {
+                                        quitReply->deleteLater();
+                                        if (quitReply->error() != QNetworkReply::NoError)
+                                            qWarning() << "[main] Sunshine /cancel failed:"
+                                                       << quitReply->errorString();
+                                        else
+                                            qInfo() << "[main] Sunshine /cancel OK, body="
+                                                    << quitReply->readAll().left(200);
+                                    });
+                                g_LiveSunshineUids.remove(uid);
+                            });
+                        timer->start(graceMs);
+                        if (graceMs > 0)
+                            qInfo() << "[main] Holding the Sunshine /cancel for" << graceMs / 1000
+                                    << "s in case this browser relaunches";
                     } else {
                         qInfo() << "[main] Sibling slot still streaming — skipping Sunshine "
                                    "/cancel (shared app session)";
@@ -3659,7 +3733,7 @@ int main(int argc, char* argv[])
         "/api/hosts/:id/quit",
         [&computerManager, &g_ActiveRelay, &g_ActiveStreamRelay, &g_ActiveMediaTrackRelay,
          &g_ActiveSession, &g_ActiveClientUniqueId, &g_ActiveHostUuid, &g_Pool, &g_LiveSunshineUids,
-         &detachWorkerSlot,
+         &dropPendingHostCancel, &detachWorkerSlot,
          &endPlayerSessions](const HttpRequest& req, const ResponseCallback& respond) {
             QString uuid = req.pathParams.value("id");
             qInfo() << "[quit] ENTER — uuid=" << uuid << "relay=" << g_ActiveRelay.data()
@@ -3831,6 +3905,8 @@ int main(int argc, char* argv[])
                 return;
             }
 
+            // Sent here and now, so a /cancel still held for this browser is moot.
+            dropPendingHostCancel(quitUniqueId, host->uuid);
             qInfo() << "[quit] Sending quitAppAsync to Sunshine ...";
             g_LiveSunshineUids.remove(quitUniqueId);
             auto* identity = IdentityManager::get();

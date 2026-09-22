@@ -2975,8 +2975,10 @@ const MoonlightApp = {
                         `[MW] Launch failed on ${chain[cur]} after a transport failure —` +
                             ` moving to ${chain[nextRung]} rather than ending here`,
                     );
+                    // Not "connection failed": this rung never got as far as
+                    // a connection, the host did not start it.
                     Toast.warning(
-                        t('transport.connectFailed', {
+                        t('transport.launchFailedNext', {
                             from: this._transportLabel(chain[cur]),
                             to: this._transportLabel(chain[nextRung]),
                         }),
