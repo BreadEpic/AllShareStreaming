@@ -332,12 +332,17 @@ def packages_for(package_dir):
                 return path
         return None
 
+    # The mini PC is a dual boot: which artifact it takes depends on the OS it
+    # has booted TODAY, and that is what the fleet file says (its "os"). Wired to
+    # the .deb, chapter 1 uninstalled the Windows app it had booted into and
+    # then tried to install a Debian package on it (21/09/2026).
+    um790pro_is_windows = fleet.MACHINES.get("um790pro", {}).get("os") == "windows"
     return {
         "local":     pick("win", "x64", ".exe"),
         "mw-intel":  pick("win", "x64", ".exe"),
         "mw-arm":    pick("win", "arm64", ".exe"),
         "mw-mac":    pick(".pkg"),
-        "um790pro":  pick(".deb"),
+        "um790pro":  pick("win", "x64", ".exe") if um790pro_is_windows else pick(".deb"),
         "mw-debian": pick(".deb"),
     }
 
