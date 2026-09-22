@@ -46,11 +46,19 @@ enhancer on, 4:4:4 on, HDR on, mute off.
 **The sweep** — resolution and cadence, everything else at the reference:
 720p60, 720p120, 1080p120, 1440p60, 1440p120.
 
-The 120 entries need `-Content cod-120`. The reference clip is 1440p60 footage,
-so a 120fps pass against it is either doubling every frame or showing motion no
-client will ever see at that cadence — neither is a real 120fps condition. A
-second clip, `cod_120fps.webm`, captured natively at 120 fps, exists for exactly
-these entries — see §10.
+The 120 entries need `-Content cod-120`, and a captured screen that really
+refreshes at 120 Hz or more (the desk's M27Qs sit at 59-60 Hz until told
+otherwise — the client screen too, or the browser cannot present 120). The
+reference clip is 1440p60 footage, so a 120fps pass against it hands the encoder
+every frame twice — half the measurement would be about how cheap a duplicate
+is. `cod-120` plays `cod_120fps.webm` through `cod.html?fps=120`, which
+**measures the clip's real cadence and sets the playback speed** that makes the
+decoder emit 120 distinct frames per second. It does not trust the file's name:
+on 21/09/2026 `cod_120fps.webm` turned out to carry 59 fps (packet timestamps,
+not `ffprobe`'s `r_frame_rate`, which a `.webm` derives from its time base and
+reports as 59.94 for any clip), and a whole "120 fps" sweep captured at 60.
+Check a new clip with `ffprobe -show_entries packet=pts_time -read_intervals
+"37%+3"` and count the packets. See §10.
 
 **The reference is replayed at the head and the tail.** If the two disagree by
 more than 15 %, the machine was not in a steady state and nothing inside that
@@ -612,7 +620,7 @@ wherever the machine allows it.
 | Raw results | `scripts/bench/results/` (ignored) — unscrubbed, unlike the report |
 | Report | `bench-out/report.html` (ignored) |
 | Reference clip | `~/.mw-bench/content/cod.webm` — **outside the repository**, 263 MB, 1440p60 |
-| 120fps clip | `~/.mw-bench/content/cod_120fps.webm` — same cache, captured natively at 120 fps; `-Content cod-120` for the 720p120/1080p120/1440p120 sweep entries |
+| 120fps clip | `~/.mw-bench/content/cod_120fps.webm` — same cache; `-Content cod-120` for the 720p120/1080p120/1440p120 sweep entries. Played through `?fps=120`, which tunes the speed from the clip's measured cadence (the file carries 59 fps — see §2) |
 | Past verdicts | `docs/bench-native-host.md` |
 | Keyboard check | `keyboard-check.ps1` + the layout tables in `scripts/bench/keyboard/` |
 | Host screen follow | `display-follow.ps1` → `results/display.jsonl` |

@@ -162,9 +162,8 @@ if (-not $Tile) {
 # encoder is what broke the Arc A380 matrix, and the scroll matrix holds.
 $contentName = Get-Prop $matrix 'content' 'cod'
 if (-not $contentName) { $contentName = 'cod' }
-# 'cod-120' shares the cod.html player, pointed at the 120fps-native clip
-# instead of the 1440p60 one — see run-campaign.ps1 for why the two are kept
-# separate rather than upsampling one into the other.
+# 'cod-120' shares the cod.html player, pointed at cod_120fps.webm and asked
+# for 120 distinct frames per second (&fps=120) — see run-campaign.ps1.
 $contentPage = if ($contentName -eq 'cod-120') { 'cod' } else { $contentName }
 $content = 'file:///' + ((Join-Path $PSScriptRoot "content\$contentPage.html") -replace '\\', '/')
 if ($contentName -eq 'cod' -or $contentName -eq 'cod-120') {
@@ -172,6 +171,7 @@ if ($contentName -eq 'cod' -or $contentName -eq 'cod-120') {
     $clip = Join-Path $env:USERPROFILE ".mw-bench\content\$clipName"
     if (Test-Path $clip) {
         $content += '?src=' + [uri]::EscapeDataString('file:///' + ($clip -replace '\\', '/'))
+        if ($contentName -eq 'cod-120') { $content += '&fps=120' }
     }
 }
 Write-Host "content      : $contentName"

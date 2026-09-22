@@ -28,7 +28,8 @@
 //     settings is a comparison between two different explosions.
 //
 // ?t=<seconds> moves the start, ?src=<url> points at a different file,
-// ?rate=<n> changes the playback speed.
+// ?rate=<n> changes the playback speed, ?fps=<n> asks for n DISTINCT frames per
+// second whatever the clip's own cadence is (see below).
 //
 // rate is how a 60 fps clip feeds a 120 fps test: at ×2 the decoder emits 120
 // distinct frames per second, so every frame the encoder is asked for has new
@@ -38,7 +39,14 @@
 const v = document.getElementById("v");
 const q = new URLSearchParams(location.search);
 const start = Number(q.get("t") ?? 37);
-const rate = Number(q.get("rate") ?? 1);
+let rate = Number(q.get("rate") ?? 1);
+// ?fps=120 measures the clip's real cadence during the first second of playback
+// and sets the speed that makes the decoder emit that many distinct frames per
+// second: ×2 for a 60 fps clip, ×1 for a true 120 fps one. Measured, never read
+// from the file's name or from ffprobe — a .webm reports a rate derived from its
+// time base, and cod_120fps.webm turned out to carry 59 fps (21/09/2026), which
+// made a whole "120 fps" sweep capture at 60.
+const wantFps = Number(q.get("fps") ?? 0);
 // The clip is ~260 MB and does not belong in a git repository: fetch-content.ps1
 // puts it in the local cache and passes its file:// URL here.
 v.src = q.get("src") ?? "cod.webm";
@@ -58,6 +66,26 @@ v.addEventListener("error", () => {
 const applyRate = () => { if (v.playbackRate !== rate) v.playbackRate = rate; };
 v.addEventListener("play", applyRate);
 v.addEventListener("ratechange", applyRate);
+function tuneToFps() {
+  if (!(wantFps > 0) || !("requestVideoFrameCallback" in v)) return;
+  let first = null, last = null, n = 0;
+  const onFrame = (_now, meta) => {
+    if (first === null) first = meta.mediaTime;
+    last = meta.mediaTime; n++;
+    if (n < 45) { v.requestVideoFrameCallback(onFrame); return; }
+    const span = last - first;
+    // Frames per second of MEDIA time, measured at the speed the clip is playing
+    // at right now (1), so it is the clip's own cadence.
+    const clipFps = span > 0 ? (n - 1) / (span / v.playbackRate) : 0;
+    if (clipFps > 1) {
+      rate = wantFps / clipFps;
+      applyRate();
+      console.log("clip cadence " + clipFps.toFixed(1) + " fps -> playbackRate " + rate.toFixed(3));
+    }
+  };
+  v.requestVideoFrameCallback(onFrame);
+}
+v.addEventListener("playing", tuneToFps, { once: true });
 setTimeout(() => { applyRate(); v.play().catch(e => console.log("play refused: " + e)); }, 3000);
 </script>
 <script src="escape.js"></script>

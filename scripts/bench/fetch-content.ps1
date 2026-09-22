@@ -5,11 +5,11 @@
 # put a quarter of a gigabyte of binary into every clone forever, so this script
 # resolves it from a local cache and tells the caller the file:// URL to open.
 #
-# cod_120fps.webm is a second clip in the same cache, captured natively at
-# 120 fps: it exists specifically for run-campaign.ps1's `-Content cod-120`
-# (the 720p120/1080p120/1440p120 sweep entries), because replaying the 60fps
-# clip at a 120fps pass measures either doubled frames or motion no client
-# will see at that cadence — not real 120fps conditions.
+# cod_120fps.webm is a second clip in the same cache, for run-campaign.ps1's
+# `-Content cod-120` (the 720p120/1080p120/1440p120 sweep entries): replaying
+# the 60fps clip at a 120fps pass hands the encoder every frame twice. Its name
+# is a claim, not a fact — packet timestamps say it carries 59 fps (21/09/2026)
+# — so the page (?fps=120) measures the cadence and sets the playback speed.
 #
 #   .\fetch-content.ps1                                        # report where the clip is, or is not
 #   .\fetch-content.ps1 -From <path>                           # adopt a copy you already have

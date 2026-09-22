@@ -44,11 +44,12 @@ param(
     # -1 picks the PRIMARY screen, which is the physical one on every bench
     # here. Click-to-photon needs that: see the monitor pairing below.
     [int]    $Display = -1,
-    # 'cod-120' is a second clip, captured natively at 120 fps, for the
-    # 720p120/1080p120/1440p120 sweep entries: 'cod' is 1440p60 footage, so a
-    # 120fps pass against it is either measuring 60fps motion at double the
-    # cadence (every frame repeated) or, worse, motion nobody's client will
-    # actually see at 120 — neither is what the sweep is meant to catch.
+    # 'cod-120' plays the second clip, cod_120fps.webm, tuned to emit 120 DISTINCT
+    # frames per second (?fps=120 on the page: it measures the clip's real cadence
+    # and sets the speed). 'cod' is 60 fps footage, so a 120fps pass against it
+    # hands the encoder every frame twice — and the file NAMED 120fps carries 59
+    # (measured 21/09/2026), so the name alone proves nothing. Needs a screen
+    # that really refreshes at 120 Hz or more, or the capture stays at 60.
     [ValidateSet('cod', 'cod-120', 'scroll', 'still')] [string] $Content = 'cod',
     [string] $KioskRect = '',
     [string] $Exe = "$PSScriptRoot\..\..\build\MoonlightWeb.exe"
@@ -191,11 +192,29 @@ if (-not $KioskRect) {
     # Same pairing rule as above, in the same direction: never by index. When
     # the chosen display IS the primary one, take the primary monitor rather
     # than the first of that size, so two identical screens cannot be swapped.
+    #
+    # "The chosen display IS the primary one" has to be established, not assumed
+    # from the size: a desk with two identical screens has a primary monitor of
+    # the right size whichever display was asked for, and taking it for an
+    # explicit -Display that is not the primary put the content on the wrong
+    # screen — a whole matrix at 23 fps of an idle desktop, 21/09/2026.
+    $primaryDisplayFound = if ($primaryMonitor) {
+        Find-DisplayForMonitor $primaryMonitor $local.native.displays 3>$null
+    } else { $null }
+    $displayIsPrimary = $primaryDisplayFound -and ([int]$primaryDisplayFound.id -eq $Display)
+    $sameSize = @($monitors | Where-Object { $_.w -eq $w -and $_.h -eq $h })
     $match = $null
-    if ($primaryMonitor -and $primaryMonitor.w -eq $w -and $primaryMonitor.h -eq $h) {
+    if ($displayIsPrimary) {
         $match = $primaryMonitor
     } else {
-        $match = $monitors | Where-Object { $_.w -eq $w -and $_.h -eq $h } | Select-Object -First 1
+        $others = @($sameSize | Where-Object { -not $_.primary })
+        if ($others.Count -gt 0) { $match = $others[0] }
+        if ($others.Count -gt 1) {
+            Write-Warning ("$($others.Count) non-primary monitors measure ${w}x${h} and the two " +
+                           "lists cannot be told apart by size — taking $($match.device). " +
+                           "Pass -KioskRect, and check the capture is moving (about 60 fps).")
+        }
+        if (-not $match) { $match = $sameSize | Select-Object -First 1 }
     }
     if (-not $match) {
         Write-Warning ("no monitor measures ${w}x${h}: falling back to 0,0, which is the " +
@@ -350,6 +369,7 @@ if ($Content -eq 'cod' -or $Content -eq 'cod-120') {
         $src = 'file:///' + ($clip -replace '\\', '/')
         $page = 'file:///' + (((Join-Path $PSScriptRoot 'content\cod.html')) -replace '\\', '/')
         $contentUrl = "$page`?src=$([uri]::EscapeDataString($src))"
+        if ($Content -eq 'cod-120') { $contentUrl += '&fps=120' }
     } else {
         Write-Warning "no $clipName in the cache — run fetch-content.ps1 -Name $clipName; falling back to the scrolling text"
         $Content = 'scroll'
