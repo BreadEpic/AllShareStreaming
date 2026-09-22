@@ -92,6 +92,9 @@ const char* const kUsage =
     "  preset=1..7      NVENC P1 (fastest) .. P7 (best)\n"
     "  tuning=ull|ll    NVENC latency tuning\n"
     "  multipass=off|quarter|full   NVENC two-pass rate control\n"
+    "  nvminqp=<qp>     NVENC QP floor (AV1: qindex 1..255); -1 = none, default 18 / AV1 32\n"
+    "  nvirperiod=<frames>  NVENC frames between intra-refresh sweep starts (with intra=1)\n"
+    "  nvircnt=<frames>     NVENC frames one sweep takes (with intra=1)\n"
     "  aq=0|1           spatial adaptive quantization (NVENC AQ, AMF VBAQ/CAQ)\n"
     "  taq=0|1          NVENC temporal AQ\n"
     "  preanalysis=0|1  AMF pre-analysis\n"
@@ -171,6 +174,16 @@ bool applyTuningKey(const QString& key, const QString& value, mw::native::Encode
             ok = ok && tuning.vplQvbrQuality >= 1 && tuning.vplQvbrQuality <= 51;
         } else
             ok = false;
+    } else if (key == "nvminqp") {
+        tuning.nvencMinQp = value.toInt(&ok);
+        ok =
+            ok && (tuning.nvencMinQp == -1 || (tuning.nvencMinQp >= 1 && tuning.nvencMinQp <= 255));
+    } else if (key == "nvirperiod") {
+        tuning.nvencIntraRefreshPeriod = value.toInt(&ok);
+        ok = ok && tuning.nvencIntraRefreshPeriod >= 1 && tuning.nvencIntraRefreshPeriod <= 3600;
+    } else if (key == "nvircnt") {
+        tuning.nvencIntraRefreshCount = value.toInt(&ok);
+        ok = ok && tuning.nvencIntraRefreshCount >= 1 && tuning.nvencIntraRefreshCount <= 3600;
     } else if (key == "irqp") {
         tuning.vplIntraRefreshQpDelta = value.toInt(&ok);
         ok = ok && tuning.vplIntraRefreshQpDelta >= -51 && tuning.vplIntraRefreshQpDelta <= 51;

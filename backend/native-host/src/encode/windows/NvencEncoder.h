@@ -43,8 +43,10 @@ using NvencOutput = EncoderOutput;
 ///    every couple of seconds, and MediaTrackRelay documents what those spikes
 ///    do to a congested link: loss, then PLI storms, then collapse. Refreshing
 ///    a band of the picture on every frame spreads that cost flat.
-///  - **CBR.** The link has a budget; the encoder should spend it evenly rather
-///    than saving up for a burst that arrives as loss.
+///  - **CBR, with a QP floor.** The link has a budget; the encoder should spend
+///    it evenly rather than saving up for a burst that arrives as loss. The
+///    floor keeps it from spending that budget refining a picture that does
+///    not change (see init).
 ///  - **SPS/PPS on every keyframe.** The browser's decoder configures itself
 ///    from the parameter sets. A client that joins late, or loses the first
 ///    keyframe, must be able to start from the next one.
@@ -85,6 +87,10 @@ public:
     bool setBitrate(int bitrateKbps, std::string& error) override;
 
     bool intraRefreshEnabled() const override { return m_IntraRefresh; }
+    int intraRefreshHorizonFrames() const override
+    {
+        return m_IntraRefresh ? m_IntraRefreshHorizon : 0;
+    }
 
 private:
     bool registerInput(ID3D11Texture2D* texture, std::string& error);
@@ -112,6 +118,7 @@ private:
     int m_Width = 0;
     int m_Height = 0;
     bool m_IntraRefresh = false;
+    int m_IntraRefreshHorizon = 0;
     /// The bench's VBV override, kept so setBitrate() resizes the buffer by the
     /// same rule init() used. 0 is the engine's own rule.
     int m_VbvFrames = 0;

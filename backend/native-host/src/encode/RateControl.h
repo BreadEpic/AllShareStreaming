@@ -138,8 +138,8 @@ inline int intraRefreshCountFrames(int fps)
 /// (22/09/2026, headless: back to back 21.6 KB a frame, gap of four periods
 /// 7.3 KB). Bruno's call, for links that are not always fast: the bits matter
 /// more than how soon a loss heals. The price is that a loss may now take up
-/// to the whole gap to repair — the picture keeps moving, damaged in places,
-/// for up to eight seconds — and the receiver is told that horizon
+/// to the whole gap plus one sweep to repair — the picture keeps moving,
+/// damaged in places, for up to ten seconds — and the receiver is told that horizon
 /// (SessionInfo::intraRefreshFrames) so its ride-out watchdog waits for it
 /// instead of asking for the keyframe the gap exists to avoid.
 constexpr int kIntraRefreshSpacing = 4;

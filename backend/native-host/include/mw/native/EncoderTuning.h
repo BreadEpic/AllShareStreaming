@@ -70,6 +70,16 @@ struct EncoderTuning
     };
     MultiPass nvencMultiPass = MultiPass::Default;
 
+    /// NVENC: the QP the rate control never goes below. 0 is the engine's own
+    /// (18, qindex 32 for AV1 — see NvencEncoder.cpp), -1 none at all.
+    int nvencMinQp = 0;
+
+    /// NVENC intra-refresh: frames from one sweep's start to the next
+    /// (intraRefreshPeriod) and frames the band takes to cross the picture
+    /// (intraRefreshCnt). 0 is the engine's own for each.
+    int nvencIntraRefreshPeriod = 0;
+    int nvencIntraRefreshCount = 0;
+
     /// Spatial adaptive quantization: NVENC `enableAQ`, AMF VBAQ, AMF AV1 CAQ.
     Choice spatialAq = Choice::Default;
     /// NVENC only: temporal AQ.
@@ -182,15 +192,17 @@ struct EncoderTuning
     bool isDefault() const
     {
         return nvencPreset == 0 && nvencTuning == Latency::Default &&
-               nvencMultiPass == MultiPass::Default && spatialAq == Choice::Default &&
-               temporalAq == Choice::Default && preAnalysis == Choice::Default &&
-               amfQuality == AmfQuality::Default && amfLowLatency == Choice::Default &&
-               vplTargetUsage == 0 && vplLowPower == Choice::Default &&
-               vplMbBrc == Choice::Default && vplExtBrc == Choice::Default &&
-               vplLowDelayBrc == Choice::Default && vplGamingScenario == Choice::Default &&
-               vplWinBrcFrames == 0 && vplRateControl == VplRateControl::Default &&
-               vplIntraRefreshQpDelta == 0 && vplIntraRefreshDist == 0 && vbvFrames == 0 &&
-               dpbFrames == 0 && fallback == Fallback::None;
+               nvencMultiPass == MultiPass::Default && nvencMinQp == 0 &&
+               nvencIntraRefreshPeriod == 0 && nvencIntraRefreshCount == 0 &&
+               spatialAq == Choice::Default && temporalAq == Choice::Default &&
+               preAnalysis == Choice::Default && amfQuality == AmfQuality::Default &&
+               amfLowLatency == Choice::Default && vplTargetUsage == 0 &&
+               vplLowPower == Choice::Default && vplMbBrc == Choice::Default &&
+               vplExtBrc == Choice::Default && vplLowDelayBrc == Choice::Default &&
+               vplGamingScenario == Choice::Default && vplWinBrcFrames == 0 &&
+               vplRateControl == VplRateControl::Default && vplIntraRefreshQpDelta == 0 &&
+               vplIntraRefreshDist == 0 && vbvFrames == 0 && dpbFrames == 0 &&
+               fallback == Fallback::None;
     }
 
     /// One line naming every field that is NOT at its default, for the log and
@@ -209,6 +221,10 @@ struct EncoderTuning
         if (nvencMultiPass == MultiPass::Off) add("multipass=off");
         if (nvencMultiPass == MultiPass::QuarterRes) add("multipass=quarter");
         if (nvencMultiPass == MultiPass::FullRes) add("multipass=full");
+        if (nvencMinQp != 0) add("nvminqp=" + std::to_string(nvencMinQp));
+        if (nvencIntraRefreshPeriod > 0)
+            add("nvirperiod=" + std::to_string(nvencIntraRefreshPeriod));
+        if (nvencIntraRefreshCount > 0) add("nvircnt=" + std::to_string(nvencIntraRefreshCount));
         if (spatialAq != Choice::Default) add(std::string("aq=") + choice(spatialAq));
         if (temporalAq != Choice::Default) add(std::string("taq=") + choice(temporalAq));
         if (preAnalysis != Choice::Default) add(std::string("preanalysis=") + choice(preAnalysis));

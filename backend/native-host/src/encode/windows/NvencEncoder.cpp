@@ -216,6 +216,24 @@ bool NvencEncoder::init(ID3D11Device* device, Codec codec, int width, int height
     // floor rather than being one frame at any refresh rate.
     m_Config.rcParams.vbvBufferSize = vbvBits(m_Config.rcParams.averageBitRate, fps, m_VbvFrames);
     m_Config.rcParams.vbvInitialDelay = m_Config.rcParams.vbvBufferSize;
+    // ── A QP floor ──────────────────────────────────────────────────────────
+    // CBR without one spends the whole budget on a picture that barely moves:
+    // a page of text with a spinner on it was refined down to QP 7, 14 KB a
+    // frame — 7.7 Mbps for a desktop (HEVC, 1080p60 at 20 Mbps, RTX 5060 Ti,
+    // 22/09/2026), and AV1 16 Mbps. A capped VBR changed nothing and the VBR
+    // target quality is ignored at P1/ULL; the floor is what stops it. Motion
+    // never reaches it (a scroll at 20 Mbps sits at QP 32, the same with and
+    // without), so it only ever cuts what a still picture would have wasted.
+    // QP 18 is visually lossless for text; AV1 counts on a 0-255 scale, where
+    // qindex 32 is the same quantizer step. Together with the spaced sweep
+    // below: 7.7 → 1.0 Mbps (HEVC), 16 → 2.6 Mbps (AV1).
+    if (tuning.nvencMinQp >= 0) {
+        const auto qp = static_cast<uint32_t>(tuning.nvencMinQp > 0 ? tuning.nvencMinQp
+                                              : codec == Codec::Av1 ? 32
+                                                                    : 18);
+        m_Config.rcParams.enableMinQP = 1;
+        m_Config.rcParams.minQP = {qp, qp, qp};
+    }
 
     // ── Codec-specific: parameter sets and intra-refresh ────────────────────
     // repeatSPSPPS matters for the browser: its decoder configures itself from
@@ -247,12 +265,20 @@ bool NvencEncoder::init(ID3D11Device* device, Codec codec, int width, int height
     // receiver that decodes through damage can collect — see SessionConfig.
     m_IntraRefresh = intraRefresh;
     const uint32_t refreshEnabled = intraRefresh ? 1u : 0u;
-    // The wave replaces the periodic keyframe: every frame carries a band of
-    // intra blocks, and after one period the whole picture has been refreshed.
-    // Two seconds' worth at the rate frames are really encoded — see
-    // RateControl.h for why it is a duration and not a frame count.
-    const auto refreshPeriod = static_cast<uint32_t>(intraRefreshPeriodFrames(fps));
-    const auto refreshCount = static_cast<uint32_t>(intraRefreshCountFrames(fps));
+    // The wave replaces the periodic keyframe: a band of intra blocks crosses
+    // the picture over refreshCount frames, and a new sweep starts every
+    // refreshPeriod. The sweeps are spaced as on Intel, one every eight
+    // seconds (encode::intraRefreshDistanceFrames): with the QP floor above, a
+    // still page went from 5.8 KB a frame with a sweep every two seconds to
+    // 2.1 KB. A loss may take the gap plus one sweep to heal, and the receiver
+    // is told so.
+    const auto refreshPeriod =
+        static_cast<uint32_t>(tuning.nvencIntraRefreshPeriod > 0 ? tuning.nvencIntraRefreshPeriod
+                                                                 : intraRefreshDistanceFrames(fps));
+    const auto refreshCount =
+        static_cast<uint32_t>(tuning.nvencIntraRefreshCount > 0 ? tuning.nvencIntraRefreshCount
+                                                                : intraRefreshCountFrames(fps));
+    m_IntraRefreshHorizon = static_cast<int>(refreshPeriod + refreshCount);
 
     // ── A DPB deep enough to lose a frame in ────────────────────────────────
     // Reference invalidation (design §9.2) only works when the encoder has
@@ -392,7 +418,11 @@ bool NvencEncoder::init(ID3D11Device* device, Codec codec, int width, int height
               "@" + std::to_string(fps) + " " + toString(codec) +
               (m_Hdr ? " Main10 (BT.2020 PQ)" : "") + " CBR " + std::to_string(bitrateKbps) +
               " kbps, VBV " + std::to_string(m_Config.rcParams.vbvBufferSize / 8 / 1024) + " KB" +
-              (m_IntraRefresh ? ", intra-refresh over " + std::to_string(refreshPeriod) + " frames"
+              (m_Config.rcParams.enableMinQP
+                   ? ", QP >= " + std::to_string(m_Config.rcParams.minQP.qpInterP)
+                   : "") +
+              (m_IntraRefresh ? ", intra-refresh over " + std::to_string(refreshCount) +
+                                    " frames every " + std::to_string(refreshPeriod)
                               : ", keyframes") +
               ", P" + std::to_string(presetNumber) +
               (tuningInfo == NV_ENC_TUNING_INFO_LOW_LATENCY ? "/LL" : "/ULL") +

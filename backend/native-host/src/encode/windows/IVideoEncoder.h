@@ -104,8 +104,9 @@ public:
     virtual bool intraRefreshEnabled() const = 0;
 
     /// How many frames a loss may take to heal by the refresh: the sweep's
-    /// period, unless the encoder leaves a gap between sweeps. 0 = the period
-    /// (encode::intraRefreshPeriodFrames), which is every encoder but oneVPL.
+    /// period, unless the encoder leaves a gap between sweeps — then the gap
+    /// plus one sweep. 0 = the period (encode::intraRefreshPeriodFrames), which
+    /// is every encoder but oneVPL and NVENC.
     virtual int intraRefreshHorizonFrames() const { return 0; }
 
 protected:
