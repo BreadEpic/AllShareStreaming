@@ -78,6 +78,23 @@ static bool isPlainAuthority(const QString& authority)
     return true;
 }
 
+// QTcpServer answers any accept() failure it does not class as temporary (a
+// peer that reset while still in the backlog, a transient lack of buffers) with
+// pauseAccepting() — for good: nothing resumes it. The event loop lives on, the
+// other listener keeps answering, and the port silently fills its backlog
+// until the process restarts (mw-intel's HTTPS under a burst of bench
+// connections, 21/09). Log the failure and resume after a beat, which keeps a
+// persistent error from turning into a busy loop.
+static void keepAccepting(QTcpServer* server, const QString& label)
+{
+    QObject::connect(
+        server, &QTcpServer::acceptError, server, [server, label](QAbstractSocket::SocketError) {
+            Logger::warning(
+                QString("[%1] accept failed (%2), resuming").arg(label, server->errorString()));
+            QTimer::singleShot(100, server, [server]() { server->resumeAccepting(); });
+        });
+}
+
 // --- SslServer: creates QSslSocket directly from native handle ----------------
 // Avoids descriptor-transfer hack (get descriptor → setSocketDescriptor(-1) →
 // recreate QSslSocket) which fails on Windows because QTcpSocket's
@@ -418,6 +435,7 @@ bool HttpServer::start(quint16 preferredHttpsPort)
 
         if (httpOk) {
             connect(m_HttpServer, &QTcpServer::newConnection, this, &HttpServer::onHttpConnection);
+            keepAccepting(m_HttpServer, "HTTP");
             Logger::info("HTTP server on port " + QString::number(m_HttpPort));
         } else {
             Logger::error("HTTP server failed: no available port in any range");
@@ -524,7 +542,10 @@ QTcpServer* HttpServer::createHttpsServer(quint16 port)
             if (socket->bytesAvailable() > 0) onReadyReadSocket(socket);
         },
         &m_ConnGuard, this);
-    if (ssl->listen(QHostAddress::Any, port)) return ssl;
+    if (ssl->listen(QHostAddress::Any, port)) {
+        keepAccepting(ssl, "HTTPS");
+        return ssl;
+    }
     delete ssl;
     return nullptr;
 }
