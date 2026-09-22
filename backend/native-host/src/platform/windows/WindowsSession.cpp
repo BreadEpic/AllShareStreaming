@@ -2068,6 +2068,12 @@ private:
     /// eating most of the interval, the resample goes, for this pipeline.
     /// The discrete GPUs it was chosen on spend a millisecond or two there and
     /// never come near the threshold.
+    ///
+    /// That rule is about throughput, and latency goes first. The pass is also
+    /// timed on the GPU during the stream's first frames (ResampleCost): on the
+    /// two-CU iGPU of DualRTX it was 4.5 ms of every frame's latency, under
+    /// that threshold on a still desktop and so kept for as long as nothing
+    /// moved. Above ResampleCost::kBudgetUs the resample goes at once.
     void noteScalerLoad(const EncodedFrame& out, const FrameStamps& stamps)
     {
         // A window of deltas, a second at 60 fps: long enough that a keyframe
@@ -2078,8 +2084,29 @@ private:
         // no room left for the acquire, and presents start being skipped.
         constexpr int64_t kBudgetPercent = 75;
 
-        if (m_ScalerPinned || m_Target.encoder == EncoderApi::Software) return;
+        if (m_Target.encoder == EncoderApi::Software) return;
         if (m_Converter->scaleFilter() == convert::ColorConvert::ScaleFilter::Bilinear) return;
+
+        int64_t costUs = 0;
+        if (m_Converter->takeResampleCost(costUs)) {
+            char ms[16], budget[16];
+            std::snprintf(ms, sizeof(ms), "%.1f", costUs / 1000.0);
+            std::snprintf(budget, sizeof(budget), "%.1f",
+                          convert::ResampleCost::kBudgetUs / 1000.0);
+            const bool affordable = convert::ResampleCost::affordable(costUs);
+            if (!affordable && !m_ScalerPinned && m_Converter->dropResample()) {
+                log::info(std::string("[native] resample dropped: Lanczos-2 costs ") + ms +
+                          " ms of GPU a frame here, over the " + budget +
+                          " ms it may add to every frame — the stream goes on scaled bilinear "
+                          "(MW_SCALER=lanczos2 keeps it)");
+                return;
+            }
+            log::info(std::string("[native] resample: Lanczos-2 costs ") + ms +
+                      " ms of GPU a frame here — kept" +
+                      (affordable ? "" : " (MW_SCALER=lanczos2)"));
+        }
+
+        if (m_ScalerPinned) return;
         if (out.keyframe || stamps.resend) return;
         if (out.encodedUs <= out.submittedUs) return;
         const int64_t intervalUs = m_Cadence.enabled() && !m_Cadence.isCeiling()

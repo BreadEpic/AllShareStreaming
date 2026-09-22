@@ -19,6 +19,7 @@
 
 #include "../../capture/windows/IWindowsCapture.h"
 #include "../CursorDraw.h"
+#include "../ResampleCost.h"
 #include "../ScaleFilter.h"
 
 #include <d3d11.h>
@@ -140,6 +141,12 @@ public:
     /// bilinear path stretches instead, a different picture mid-stream).
     bool dropResample();
 
+    /// What the resample pass costs this GPU, once: true exactly once per
+    /// init(), when enough frames have been timed, with the median GPU time in
+    /// @p costUs. The call to act on it — see ResampleCost. The timing runs on
+    /// the first few dozen frames of the pass and never again.
+    bool takeResampleCost(int64_t& costUs);
+
     /// Whether the picture sits between bars: a source of another shape than
     /// the output, on the resample path. The stretch of the bilinear path is
     /// not letterboxing.
@@ -192,6 +199,14 @@ private:
     /// Re-upload the cursor's small textures, and tell the shader where to put
     /// them. Cheap on every frame but the ones where the shape changed.
     bool updateCursorResources(const capture::CursorState& cursor, std::string& error);
+
+    /// GPU timestamps around the resample pass: which slot this frame's pair
+    /// went into (-1 for none), then the end stamp; and, at the next frame,
+    /// whatever the GPU has finished, read without waiting for it.
+    int beginResampleTiming();
+    void endResampleTiming(int slot);
+    void collectResampleTiming();
+    void releaseResampleTiming();
 
     Microsoft::WRL::ComPtr<ID3D11Device> m_Device;
     Microsoft::WRL::ComPtr<ID3D11DeviceContext> m_Context;
@@ -249,6 +264,21 @@ private:
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_ScaledView;
     ScaleFilter m_Filter = ScaleFilter::Bilinear;
     bool m_Letterboxed = false;
+
+    /// A few frames' worth of timestamp queries in flight: the GPU answers a
+    /// frame or two late, and a slot still pending is simply not reused.
+    struct TimingSlot
+    {
+        Microsoft::WRL::ComPtr<ID3D11Query> disjoint;
+        Microsoft::WRL::ComPtr<ID3D11Query> begin;
+        Microsoft::WRL::ComPtr<ID3D11Query> end;
+        bool pending = false;
+    };
+    static constexpr int kTimingSlots = 4;
+    TimingSlot m_Timing[kTimingSlots];
+    int m_TimingNext = 0;
+    ResampleCost m_ResampleCost;
+    bool m_ResampleCostTaken = false;
     /// Where the picture lands in m_Scaled: the whole of it, or the fitted
     /// rectangle between the bars.
     float m_PictureX = 0.0f;
