@@ -170,8 +170,26 @@ bool VplEncoder::init(ID3D11Device* device, Codec codec, int width, int height, 
 
     mfxStatus started = m_Session.api()->EncodeInit(m_Session.handle(), &m_Params);
 
+    // The gap between sweeps is newer than the sweep itself: a runtime that
+    // refuses it still gets its sweeps, back to back, before losing them all.
+    if (intraRefresh && !accepted(started) && m_Tuning.vplIntraRefreshDist >= 0) {
+        log::warning(std::string("[native] oneVPL declined the gap between intra-refresh "
+                                 "sweeps (") +
+                     VplApi::statusToString(started) + ") — sweeping back to back");
+        m_Tuning.vplIntraRefreshDist = -1;
+        attachEncodeOptions(m_Params, m_CodingOption, m_CodingOption2, m_CodingOption3,
+                            m_SignalInfo, m_ExtBuffers, m_Fps, true, m_Tuning, hdr);
+        started = m_Session.api()->EncodeInit(m_Session.handle(), &m_Params);
+    }
+
     if (intraRefresh && accepted(started)) {
         m_IntraRefresh = true;
+        // How long a loss may take to heal: the gap when there is one, the
+        // sweep itself otherwise. The receiver's watchdog waits that long.
+        m_IntraRefreshHorizon = m_Tuning.vplIntraRefreshDist < 0 ? intraRefreshPeriodFrames(m_Fps)
+                                : m_Tuning.vplIntraRefreshDist > 0
+                                    ? m_Tuning.vplIntraRefreshDist
+                                    : intraRefreshDistanceFrames(m_Fps);
     } else if (intraRefresh) {
         // Intra-refresh is an optimisation, not a requirement. A generation
         // that refuses it must still stream — falling back to keyframes costs
@@ -243,25 +261,28 @@ bool VplEncoder::init(ID3D11Device* device, Codec codec, int width, int height, 
     m_Slots = ReferenceSlots(longTerm ? slots : 0, ReferenceSlots::strideFor(m_Fps, slots));
 
     const std::string overrides = tuning.describe();
-    log::info(
-        "[native] oneVPL ready: " + std::to_string(width) + "x" + std::to_string(height) + "@" +
-        std::to_string(m_Fps) + " " + toString(codec) +
-        (hdr ? " HDR (Main10, BT.2020 PQ) 4:2:0 " : " 4:2:0 ") +
-        (m_Params.mfx.RateControlMethod == MFX_RATECONTROL_CBR    ? "CBR "
-         : m_Params.mfx.RateControlMethod == MFX_RATECONTROL_QVBR ? "QVBR "
-                                                                  : "capped VBR ") +
-        std::to_string(bitrateKbps) + " kbps, VBV " +
-        std::to_string(m_Params.mfx.BufferSizeInKB * m_Params.mfx.BRCParamMultiplier) + " KB" +
-        (m_IntraRefresh
-             ? ", intra-refresh over " + std::to_string(intraRefreshPeriodFrames(m_Fps)) + " frames"
-             : ", keyframes on demand") +
-        ", TU" + std::to_string(m_Params.mfx.TargetUsage) +
-        (m_Slots.enabled()
-             ? ", " + std::to_string(m_Slots.count()) + " long-term references every " +
-                   std::to_string(m_Slots.stride()) + " frames (reach " +
-                   std::to_string(m_Slots.reachFrames()) + " frames)"
-             : ", no reference invalidation") +
-        (overrides.empty() ? "" : " [bench: " + overrides + "]"));
+    log::info("[native] oneVPL ready: " + std::to_string(width) + "x" + std::to_string(height) +
+              "@" + std::to_string(m_Fps) + " " + toString(codec) +
+              (hdr ? " HDR (Main10, BT.2020 PQ) 4:2:0 " : " 4:2:0 ") +
+              (m_Params.mfx.RateControlMethod == MFX_RATECONTROL_CBR    ? "CBR "
+               : m_Params.mfx.RateControlMethod == MFX_RATECONTROL_QVBR ? "QVBR "
+                                                                        : "capped VBR ") +
+              std::to_string(bitrateKbps) + " kbps, VBV " +
+              std::to_string(m_Params.mfx.BufferSizeInKB * m_Params.mfx.BRCParamMultiplier) +
+              " KB" +
+              (m_IntraRefresh ? ", intra-refresh over " +
+                                    std::to_string(intraRefreshPeriodFrames(m_Fps)) + " frames" +
+                                    (m_IntraRefreshHorizon > intraRefreshPeriodFrames(m_Fps)
+                                         ? " every " + std::to_string(m_IntraRefreshHorizon)
+                                         : std::string(", back to back"))
+                              : ", keyframes on demand") +
+              ", TU" + std::to_string(m_Params.mfx.TargetUsage) +
+              (m_Slots.enabled()
+                   ? ", " + std::to_string(m_Slots.count()) + " long-term references every " +
+                         std::to_string(m_Slots.stride()) + " frames (reach " +
+                         std::to_string(m_Slots.reachFrames()) + " frames)"
+                   : ", no reference invalidation") +
+              (overrides.empty() ? "" : " [bench: " + overrides + "]"));
     return true;
 }
 

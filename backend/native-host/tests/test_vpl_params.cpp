@@ -5,6 +5,7 @@
 #include "native_test_framework.h"
 
 #if defined(_WIN32)
+#include "encode/RateControl.h"
 #include "encode/windows/VplApi.h"
 #include "encode/windows/VplSession.h"
 #endif
@@ -132,11 +133,16 @@ void run_vpl_params_tests()
         mfxExtVideoSignalInfo signal = {};
         std::vector<mfxExtBuffer*> buffers;
         encode::attachEncodeOptions(p, option1, option2, option3, signal, buffers, 60, true);
-        CHECK_EQ(p.NumExtParam, static_cast<mfxU16>(2));
+        // Option 3 rides along for the gap between sweeps.
+        CHECK_EQ(p.NumExtParam, static_cast<mfxU16>(3));
         p.mfx.TargetUsage = 4; // as if the runtime had corrected it
 
         const mfxU16 refreshCycle = option2.IntRefCycleSize;
         CHECK(refreshCycle > 0);
+        // A sweep every four periods, not back to back: on a still page the
+        // band cost 30 KB a frame and the gap is what keeps a slow link light.
+        CHECK_EQ(option3.IntRefCycleDist, static_cast<mfxU16>(refreshCycle * 4));
+        CHECK_EQ(static_cast<int>(option3.IntRefCycleDist), encode::intraRefreshDistanceFrames(60));
         const mfxU16 buffer = p.mfx.BufferSizeInKB;
 
         encode::applyBitrateOnly(p, 16000);
@@ -152,7 +158,7 @@ void run_vpl_params_tests()
         CHECK_EQ(p.mfx.BufferSizeInKB, buffer);
 
         // …and nothing else did. These three are the ones that were lost.
-        CHECK_EQ(p.NumExtParam, static_cast<mfxU16>(2));
+        CHECK_EQ(p.NumExtParam, static_cast<mfxU16>(3));
         CHECK(p.ExtParam != nullptr);
         CHECK_EQ(option2.IntRefCycleSize, refreshCycle);
         CHECK_EQ(p.mfx.TargetUsage, static_cast<mfxU16>(4));

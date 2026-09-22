@@ -106,7 +106,8 @@ const char* const kUsage =
     "  winbrc=<frames>  oneVPL sliding-window rate cap, in frames\n"
     "  rc=cbr|vbr|qvbr<q>   oneVPL bitrate controller, same cap and buffer (qvbr26 = quality 26)\n"
     "  irqp=<delta>     oneVPL QP offset of the intra-refresh band (with intra=1)\n"
-    "  irdist=<frames>  oneVPL frames between intra-refresh cycle starts (with intra=1)\n"
+    "  irdist=<frames>  oneVPL frames between intra-refresh cycle starts (with intra=1);\n"
+    "                   -1 = back to back, default = four periods\n"
     "  vbv=<frames>     VBV of exactly N frames at the stream rate, no floor\n"
     "  dpb=<frames>     NVENC decoded picture buffer (default 4, for reference invalidation)\n"
     "  fallback=1|mf|mfsw|mfcpu|cpu  pretend no GPU encodes: the fallback tier (1), Media\n"
@@ -175,7 +176,8 @@ bool applyTuningKey(const QString& key, const QString& value, mw::native::Encode
         ok = ok && tuning.vplIntraRefreshQpDelta >= -51 && tuning.vplIntraRefreshQpDelta <= 51;
     } else if (key == "irdist") {
         tuning.vplIntraRefreshDist = value.toInt(&ok);
-        ok = ok && tuning.vplIntraRefreshDist >= 1 && tuning.vplIntraRefreshDist <= 3600;
+        ok = ok && (tuning.vplIntraRefreshDist == -1 ||
+                    (tuning.vplIntraRefreshDist >= 1 && tuning.vplIntraRefreshDist <= 3600));
     } else if (key == "fallback") {
         using Fallback = mw::native::EncoderTuning::Fallback;
         if (value == "1" || value.compare("tier", Qt::CaseInsensitive) == 0)

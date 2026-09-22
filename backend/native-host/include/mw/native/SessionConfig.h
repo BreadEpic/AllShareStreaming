@@ -276,6 +276,9 @@ struct SessionInfo
     /// this to know when a wave has had its chance: in frames, because the
     /// wave advances per frame encoded, not per second — a game presenting at
     /// 30 under a 165 fps stream stretches a 330-frame period to 11 s.
+    /// Where the encoder leaves a gap between waves (oneVPL, four periods —
+    /// RateControl.h intraRefreshDistanceFrames), this is the gap instead: a
+    /// loss just after a wave waits for the next one.
     int intraRefreshFrames = 0;
 
     /// True when a frame the receiver lost can be healed by an ordinary delta

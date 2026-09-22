@@ -34,6 +34,9 @@
  * frame carries a moving band of intra blocks — and the browser keeps decoding
  * through the damage. The picture is briefly imperfect where data was lost, and
  * repairs itself within one refresh cycle (~2 s), with no freeze and no spike.
+ * On Intel (oneVPL) the waves are spaced, one every ~8 s, to keep a still
+ * screen light on a slow link: the repair can take that long there, and the
+ * host says so in intra_refresh_frames, which the ride-out watchdog waits for.
  *
  * ── Scope ───────────────────────────────────────────────────────────────────
  *

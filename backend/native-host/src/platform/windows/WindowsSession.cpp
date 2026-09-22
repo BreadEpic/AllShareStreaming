@@ -349,9 +349,13 @@ public:
         if (m_Config.intraRefresh && !m_Info.intraRefresh)
             log::info("[native] intra-refresh requested but this encoder declined it");
         // The wave's period, in frames of the rate the encoder was built for —
-        // the same number the three encoders configured themselves with.
-        m_Info.intraRefreshFrames =
-            m_Info.intraRefresh ? encode::intraRefreshPeriodFrames(m_EncodeFps) : 0;
+        // the same number the three encoders configured themselves with — or,
+        // where the encoder leaves a gap between waves (oneVPL), the gap: it is
+        // how long the receiver's ride-out watchdog must wait for a repair.
+        const int horizon = m_Encoder->intraRefreshHorizonFrames();
+        m_Info.intraRefreshFrames = !m_Info.intraRefresh ? 0
+                                    : horizon > 0        ? horizon
+                                                  : encode::intraRefreshPeriodFrames(m_EncodeFps);
         // Reported the same way: the receiver decodes through a gap only when
         // the encoder really heals it (NVENC today; AMF and oneVPL answer an
         // invalidation with a keyframe).

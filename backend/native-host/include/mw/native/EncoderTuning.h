@@ -145,7 +145,9 @@ struct EncoderTuning
     /// 0 is the engine's own: the band at the frame's own quality.
     int vplIntraRefreshQpDelta = 0;
     /// Frames between the starts of two intra-refresh cycles, oneVPL
-    /// (IntRefCycleDist). 0 is the engine's own: back to back.
+    /// (IntRefCycleDist). 0 is the engine's own (encode::intraRefreshDistanceFrames,
+    /// four periods); -1 is back to back, the engine's fallback for a runtime
+    /// that refuses the gap.
     int vplIntraRefreshDist = 0;
 
     /// How many reference pictures the encoder keeps for healing a lost frame
@@ -228,7 +230,7 @@ struct EncoderTuning
         if (vplRateControl == VplRateControl::Vbr) add("rc=vbr");
         if (vplRateControl == VplRateControl::Qvbr) add("rc=qvbr" + std::to_string(vplQvbrQuality));
         if (vplIntraRefreshQpDelta != 0) add("irqp=" + std::to_string(vplIntraRefreshQpDelta));
-        if (vplIntraRefreshDist > 0) add("irdist=" + std::to_string(vplIntraRefreshDist));
+        if (vplIntraRefreshDist != 0) add("irdist=" + std::to_string(vplIntraRefreshDist));
         if (vbvFrames > 0) add("vbv=" + std::to_string(vbvFrames) + "f");
         if (dpbFrames > 0) add("dpb=" + std::to_string(dpbFrames));
         if (fallback == Fallback::Tier) add("fallback=1");

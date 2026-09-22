@@ -29,7 +29,8 @@ namespace mw::native::encode {
 /// ── The same latency decisions as the other two ────────────────────────────
 ///
 /// AsyncDepth 1, no B-frames, an effectively infinite GOP with keyframes only
-/// on demand, CBR with a one-frame buffer. See fillEncodeParams in
+/// on demand, a VBR capped at the target with a one-frame buffer (the other
+/// two keep CBR: Intel's spent its budget on a still screen). See fillEncodeParams in
 /// VplSession.h, where they live so the capability query and the encoder cannot
 /// disagree about them.
 ///
@@ -62,6 +63,10 @@ public:
     bool setBitrate(int bitrateKbps, std::string& error) override;
 
     bool intraRefreshEnabled() const override { return m_IntraRefresh; }
+    int intraRefreshHorizonFrames() const override
+    {
+        return m_IntraRefresh ? m_IntraRefreshHorizon : 0;
+    }
 
     bool supportsReferenceInvalidation() const override { return m_Slots.enabled(); }
     bool invalidateReference(uint32_t frameNumber, std::string& error) override;
@@ -80,6 +85,7 @@ private:
     mfxExtVideoSignalInfo m_SignalInfo = {};
     std::vector<mfxExtBuffer*> m_ExtBuffers;
     bool m_IntraRefresh = false;
+    int m_IntraRefreshHorizon = 0;
 
     /// The output bitstream, reused every frame. Sized from what the encoder
     /// itself asks for, never guessed.

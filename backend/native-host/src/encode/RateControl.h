@@ -125,6 +125,30 @@ inline int intraRefreshCountFrames(int fps)
     return intraRefreshPeriodFrames(fps) / 2;
 }
 
+/// Frames between the starts of two sweeps, for the encoders that can leave a
+/// gap between them (oneVPL's IntRefCycleDist). Four periods: a sweep every
+/// eight seconds instead of back to back.
+///
+/// ── Why the gap ─────────────────────────────────────────────────────────────
+///
+/// A sweep is not cheap on a still screen: every band is fresh intra that the
+/// rate control keeps refining, and on an A380 a page of text cost ~30 KB a
+/// frame while the band moved against 3 KB between sweeps — 8 Mbps for a
+/// picture that did not change, where Sunshine (no intra-refresh) sent 1.9
+/// (22/09/2026, headless: back to back 21.6 KB a frame, gap of four periods
+/// 7.3 KB). Bruno's call, for links that are not always fast: the bits matter
+/// more than how soon a loss heals. The price is that a loss may now take up
+/// to the whole gap to repair — the picture keeps moving, damaged in places,
+/// for up to eight seconds — and the receiver is told that horizon
+/// (SessionInfo::intraRefreshFrames) so its ride-out watchdog waits for it
+/// instead of asking for the keyframe the gap exists to avoid.
+constexpr int kIntraRefreshSpacing = 4;
+
+inline int intraRefreshDistanceFrames(int fps)
+{
+    return intraRefreshPeriodFrames(fps) * kIntraRefreshSpacing;
+}
+
 /// The rate frames are REALLY produced at, and what the encoder should be told
 /// about it (plan v2, E4).
 ///
