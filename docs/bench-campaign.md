@@ -123,6 +123,16 @@ Chrome to it (`-ClientAdapterLuid`, or a GPU preference for its exe), and
 check the stream's decoder in `chrome://gpu` before trusting a number. When
 DualRTX is the client of another host, this holds by construction.
 
+**And the decoding GPU drives the client's own screen.** A GPU without a
+screen does not present: Chrome hands every frame to the GPU that has one. A
+client on the RTX of DualRTX (no screen) presented through the Arc, so a pass
+that saturated the Arc froze a client whose stream was healthy (22/09, the
+false "the stream dies under load"). The client therefore sits on a screen
+other than the captured one (`MW_BENCH_CLIENT_POS=secondary` for a local host)
+and decodes on the GPU behind that screen: the acceptance run deduces it from
+`mw-gpu-load --list`, and refuses a `MW_BENCH_CLIENT_LUID` whose GPU drives no
+screen.
+
 ## 5. Click to photon
 
 The host raises a blue/white/red flag at the top of **every** monitor for 100 ms

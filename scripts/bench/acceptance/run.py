@@ -77,6 +77,53 @@ def client_position():
     return int(x), int(y)
 
 
+def client_luid():
+    """The adapter the client decodes on: the GPU that drives its screen.
+
+    A GPU with no screen of its own presents through the one that has it, so a
+    client pinned to the RTX of DualRTX (no display) read back every frame
+    through the Arc — and when a pass saturated the Arc, the client froze on a
+    stream that was fine (22/09/2026, the false "C"). MW_BENCH_CLIENT_LUID is
+    still honoured, but a LUID whose GPU drives no screen is refused. Unset, the
+    LUID is the one of the GPU behind the screen at client_position().
+    """
+    try:
+        listing = subprocess.run([gpu_load._tool(), "--list"],
+                                 capture_output=True, text=True, encoding="utf-8").stdout
+    except gpu_load.Unavailable:
+        return os.environ.get("MW_BENCH_CLIENT_LUID", "")  # cannot check: as given
+    gpus = []  # (name, "high,low", first screen or None)
+    for line in listing.splitlines():
+        m = re.search(r"^\d+\t(.*?) — .*\(LUID (\d+):(\d+)\)(?: — (\S+))?", line)
+        if m:
+            gpus.append((m.group(1), "%s,%s" % (m.group(2), m.group(3)), m.group(4)))
+    luid = os.environ.get("MW_BENCH_CLIENT_LUID", "").strip()
+    if luid:
+        if "," not in luid:
+            luid = "0," + luid
+        gpu = next((g for g in gpus if g[1] == luid), None)
+        if gpu and not gpu[2]:
+            raise SystemExit("MW_BENCH_CLIENT_LUID=%s is the %s, which drives no screen: the "
+                             "client would present through another GPU (docs/bench-campaign.md §4)"
+                             % (luid, gpu[0]))
+        return luid
+    x, y = client_position()
+    screen = subprocess.run(["powershell", "-NoProfile", "-Command",
+                             "Add-Type -AssemblyName System.Windows.Forms; "
+                             "[System.Windows.Forms.Screen]::FromPoint("
+                             "(New-Object System.Drawing.Point %d,%d)).DeviceName" % (x, y)],
+                            capture_output=True, text=True).stdout.strip()
+    gpu = next((g for g in gpus if g[2] and g[2].lower() == screen.lower()), None)
+    if not gpu:
+        # mw-gpu-load names one screen per GPU: a second screen on the same GPU
+        # is not in its list.
+        raise SystemExit("no GPU is listed for the client's screen %s; set MW_BENCH_CLIENT_LUID"
+                         % (screen or "?"))
+    print("  client decodes on the %s (%s), which drives %s" % (gpu[0], gpu[1], screen),
+          flush=True)
+    return gpu[1]
+
+
 def kiosk_start(url):
     """A Chrome of its own, with a debugging port and no certificate fuss.
 
@@ -91,12 +138,10 @@ def kiosk_start(url):
                     % os.path.basename(PROFILE)],
                    capture_output=True, text=True)
     time.sleep(2)
-    # The client never decodes on the encoder's GPU (docs/bench-campaign.md §4):
-    # MW_BENCH_CLIENT_LUID pins this Chrome to another adapter, as kiosk.ps1 does.
-    # Chrome wants "high,low": a bare decimal is ignored without a word.
-    luid = os.environ.get("MW_BENCH_CLIENT_LUID", "")
-    if luid and "," not in luid:
-        luid = "0," + luid
+    # The client decodes on the GPU of its own screen, never the encoder's
+    # (docs/bench-campaign.md §4). Chrome wants "high,low": a bare decimal is
+    # ignored without a word.
+    luid = client_luid()
     subprocess.Popen([CHROME] + (["--use-adapter-luid=" + luid] if luid else []) + [
                       "--user-data-dir=" + PROFILE,
                       "--no-first-run", "--no-default-browser-check",
