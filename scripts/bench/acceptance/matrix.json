@@ -132,6 +132,36 @@
           "loadLevel": 90
         },
         {
+          "id": "arc-1080p60-native",
+          "factor": "native Display 1 (Arc), 1080p60 fixed",
+          "settings": { "stream_resolution": "fixed", "stream_height": 1080, "stream_fps": 60 },
+          "target": "display"
+        },
+        {
+          "id": "arc-1080p60-native-load",
+          "factor": "native Display 1 (Arc), 1080p60 fixed + fixed GPU load",
+          "settings": { "stream_resolution": "fixed", "stream_height": 1080, "stream_fps": 60 },
+          "target": "display",
+          "load": "gpu",
+          "loadGpu": "Arc",
+          "loadLevel": 90
+        },
+        {
+          "id": "arc-1080p60-sunshine",
+          "factor": "Sunshine on the Arc, 1080p60 fixed",
+          "settings": { "stream_resolution": "fixed", "stream_height": 1080, "stream_fps": 60 },
+          "target": "sunshine"
+        },
+        {
+          "id": "arc-1080p60-sunshine-load",
+          "factor": "Sunshine on the Arc, 1080p60 fixed + fixed GPU load",
+          "settings": { "stream_resolution": "fixed", "stream_height": 1080, "stream_fps": 60 },
+          "target": "sunshine",
+          "load": "gpu",
+          "loadGpu": "Arc",
+          "loadLevel": 90
+        },
+        {
           "id": "target-vdisplay",
           "factor": "target Virtual Display",
           "settings": {},
