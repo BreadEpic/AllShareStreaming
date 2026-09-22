@@ -113,6 +113,16 @@ The tool spins a neon scene tuned to ~45 fps on the GPU MoonlightWeb encodes on
 the load, at the same level (`--level`): the difference is the cost. The
 acceptance run has it as its `load-gpu` pass.
 
+**The encoding GPU and the decoding GPU are never the same one** — with or
+without the load, with or without the clip. A browser client that decodes on
+the host's encoding GPU competes with it, and the pass then mixes two costs it
+cannot tell apart (22/09: on the Arc, the load's +39 ms was 30 ms of *client*
+decode). DualRTX has three GPUs (AMD iGPU, Arc A380, RTX 5060 Ti), so a test
+client can always run there on a GPU other than the encoder's: pin the bench
+Chrome to it (`-ClientAdapterLuid`, or a GPU preference for its exe), and
+check the stream's decoder in `chrome://gpu` before trusting a number. When
+DualRTX is the client of another host, this holds by construction.
+
 ## 5. Click to photon
 
 The host raises a blue/white/red flag at the top of **every** monitor for 100 ms
