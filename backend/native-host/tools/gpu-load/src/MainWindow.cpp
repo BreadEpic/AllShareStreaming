@@ -35,6 +35,11 @@
 #include <algorithm>
 #include <cmath>
 
+#if defined(Q_OS_WIN)
+#include <qscreen_platform.h>
+#include <windows.h>
+#endif
+
 namespace {
 
 constexpr int kSliderSteps = 1000;
@@ -53,6 +58,22 @@ QString celsiusText(const ThermalReading& r)
         return QString::fromLatin1(names[std::clamp(r.state, 0, 3)]);
     }
     return QString("%1 °C").arg(r.celsius, 0, 'f', 1);
+}
+
+/// The name GpuList gives a display: its GDI device name on Windows
+/// (\\.\DISPLAY1). Qt 6 calls a screen by its monitor's model instead
+/// ("M27Q"), so the two never matched, and the window stayed on whatever screen
+/// it opened on — a GPU rendering to another GPU's display (22/09/2026).
+QString displayName(QScreen* screen)
+{
+#if defined(Q_OS_WIN)
+    if (auto* native = screen->nativeInterface<QNativeInterface::QWindowsScreen>()) {
+        MONITORINFOEXW info = {};
+        info.cbSize = sizeof(info);
+        if (GetMonitorInfoW(native->handle(), &info)) return QString::fromWCharArray(info.szDevice);
+    }
+#endif
+    return screen->name();
 }
 
 } // namespace
@@ -86,6 +107,8 @@ MainWindow::MainWindow(const Options& options, QVulkanInstance* vk)
     setSliderLevel(m_options.level > 0.0 ? m_options.level : 40.0);
     m_noSensorBox = new QCheckBox(QString("No sensor: allow %1 s").arg(kMaxRunSeconds), this);
     m_noSensorBox->setChecked(m_options.allowNoSensor);
+    m_musicBox = new QCheckBox(QStringLiteral("Music"), this);
+    m_musicBox->setChecked(m_options.music);
 
     auto* controls = new QHBoxLayout;
     controls->addWidget(new QLabel(QStringLiteral("GPU"), this));
@@ -94,6 +117,7 @@ MainWindow::MainWindow(const Options& options, QVulkanInstance* vk)
     controls->addWidget(m_autoBox);
     controls->addWidget(m_levelSlider);
     controls->addWidget(m_noSensorBox);
+    controls->addWidget(m_musicBox);
 
     m_fpsLabel = new QLabel(this);
     m_gpuLabel = new QLabel(this);
@@ -105,6 +129,14 @@ MainWindow::MainWindow(const Options& options, QVulkanInstance* vk)
     for (QLabel* l : {m_fpsLabel, m_gpuLabel, m_levelLabel, m_tempLabel, m_timeLabel})
         readout->addWidget(l);
     readout->addWidget(m_statusLabel, 1);
+    // What came from the client, and how the host's own audio fares: a click
+    // heard on the client with no underrun here was made on the way.
+    m_inputLabel = new QLabel(this);
+    m_audioLabel = new QLabel(this);
+    auto* checks = new QHBoxLayout;
+    checks->addWidget(m_inputLabel);
+    checks->addWidget(m_audioLabel, 1);
+    updateInputAudio();
 
     m_banner = new QLabel(this);
     m_banner->setObjectName(QStringLiteral("banner"));
@@ -115,6 +147,7 @@ MainWindow::MainWindow(const Options& options, QVulkanInstance* vk)
     auto* root = new QVBoxLayout(this);
     root->addLayout(controls);
     root->addLayout(readout);
+    root->addLayout(checks);
     root->addWidget(m_banner);
     root->addLayout(m_viewLayout, 1);
     resize(1600, 960);
@@ -127,6 +160,13 @@ MainWindow::MainWindow(const Options& options, QVulkanInstance* vk)
     });
     connect(m_autoBox, &QCheckBox::toggled, this,
             [this](bool on) { m_levelSlider->setEnabled(!on || m_controller.locked()); });
+    connect(m_musicBox, &QCheckBox::toggled, this, [this](bool on) {
+        if (!m_running) return;
+        if (on)
+            m_music.start();
+        else
+            m_music.stop();
+    });
     connect(m_levelSlider, &QSlider::valueChanged, this, [this]() {
         if (!m_running || m_autoBox->isChecked()) return;
         m_controller.setLevel(sliderLevel());
@@ -209,7 +249,7 @@ void MainWindow::placeOnScreenOf(const GpuEntry& gpu)
     if (gpu.outputName.isEmpty()) return;
     QScreen* target = nullptr;
     for (QScreen* s : QGuiApplication::screens())
-        if (s->name() == gpu.outputName) target = s;
+        if (displayName(s) == gpu.outputName) target = s;
     if (!target || target == screen()) return;
     const bool full = isFullScreen();
     if (full) showNormal();
@@ -282,6 +322,9 @@ void MainWindow::startRun()
     m_container = QWidget::createWindowContainer(render, this);
     m_viewLayout->addWidget(m_container);
     connect(render, &RenderWindow::frameDone, this, &MainWindow::onFrame);
+    render->setPulseSource([this]() { return m_music.kickPulse(); });
+    connect(render, &RenderWindow::arrowPressed, this,
+            [this](int direction) { m_music.blip(direction); });
     connect(render, &RenderWindow::failed, this, [this](const QString& reason, bool lost) {
         m_exitCode = kExitDevice;
         stopRun(lost ? QStringLiteral("device-lost") : QStringLiteral("device-error"), reason);
@@ -290,6 +333,9 @@ void MainWindow::startRun()
         m_runClock.start();
         m_lastTickNs = 0;
         m_statusLabel->setText(device);
+        // The keys go to the knot, not to a button of the bar above it.
+        if (m_container) m_container->setFocus();
+        if (m_render) m_render->requestActivate();
     });
 
     m_running = true;
@@ -302,6 +348,7 @@ void MainWindow::startRun()
     m_deadline.start(m_duration * 1000);
     m_tick.start();
     m_thermal.start();
+    if (m_musicBox->isChecked()) m_music.start();
     writeJson({{"event", "start"},
                {"ts", QDateTime::currentDateTime().toString(Qt::ISODate)},
                {"gpu", gpu.name},
@@ -312,7 +359,8 @@ void MainWindow::startRun()
                {"targetFps", m_options.targetFps},
                {"autoTune", autoTune},
                {"level", m_controller.level()},
-               {"duration", m_duration}});
+               {"duration", m_duration},
+               {"music", m_musicBox->isChecked()}});
     onTick();
 }
 
@@ -325,6 +373,10 @@ void MainWindow::stopRun(const QString& reason, const QString& detail)
     m_thermal.stop();
     // The GPU stops here: no frame is submitted after shutdown() returns. The
     // window itself goes later — this may run inside one of its own signals.
+    const RenderWindow::InputStats input =
+        m_render ? m_render->inputStats() : RenderWindow::InputStats();
+    const MusicPlayer::Stats audio = m_music.stats();
+    m_music.stop();
     if (m_render) m_render->shutdown();
     if (m_container) m_container->deleteLater();
     m_render = nullptr;
@@ -350,7 +402,11 @@ void MainWindow::stopRun(const QString& reason, const QString& detail)
                {"lockedSeconds", lockedSeconds},
                {"lockedFps", lockedSeconds > 0.0 ? m_lockedFrames / lockedSeconds : 0.0},
                {"peakC", m_peakCelsius},
-               {"lastC", m_lastReading.celsius}});
+               {"lastC", m_lastReading.celsius},
+               {"mouseMoves", input.mouseMoves},
+               {"keyPresses", input.keyPresses},
+               {"audioUnderruns", audio.underruns},
+               {"audioError", audio.error}});
 
     m_startButton->setText(QStringLiteral("Start"));
     m_gpuBox->setEnabled(true);
@@ -399,6 +455,10 @@ void MainWindow::onTick()
     m_tempLabel->setText(
         QString("%1 / limit %2 °C").arg(celsiusText(m_lastReading)).arg(m_limit, 0, 'f', 0));
     m_timeLabel->setText(QString("%1 s left").arg((m_deadline.remainingTime() + 999) / 1000));
+    updateInputAudio();
+    const RenderWindow::InputStats input =
+        m_render ? m_render->inputStats() : RenderWindow::InputStats();
+    const MusicPlayer::Stats audio = m_music.stats();
     if (m_lastTickNs > 0 || m_frames > 0)
         writeJson({{"t", now / 1e9},
                    {"phase", phase},
@@ -406,7 +466,12 @@ void MainWindow::onTick()
                    {"gpuMs", gpuMs},
                    {"level", m_controller.level()},
                    {"tempC", m_lastReading.celsius},
-                   {"state", m_lastReading.state}});
+                   {"state", m_lastReading.state},
+                   {"mouseMoves", input.mouseMoves},
+                   {"keyPresses", input.keyPresses},
+                   {"spin", input.spin},
+                   {"audioUnderruns", audio.underruns},
+                   {"audioBufferedMs", audio.bufferedMs}});
     m_frames = 0;
     m_gpuMsSum = 0.0;
     m_gpuMsCount = 0;
@@ -431,4 +496,29 @@ void MainWindow::onThermal()
     if (r.celsius >= m_limit)
         stopRun(QStringLiteral("thermal"),
                 QString("%1 reached the %2 °C limit").arg(celsiusText(r)).arg(m_limit, 0, 'f', 0));
+}
+
+void MainWindow::updateInputAudio()
+{
+    const RenderWindow::InputStats in =
+        m_render ? m_render->inputStats() : RenderWindow::InputStats();
+    m_inputLabel->setText(
+        QString("Input: %1 mouse moves, %2 keys%3 · spin %4 rad/s, tilt %5°  "
+                "(mouse turns, arrows spin, Space resets)")
+            .arg(in.mouseMoves)
+            .arg(in.keyPresses)
+            .arg(in.lastKey.isEmpty() ? QString() : QString(" (last %1)").arg(in.lastKey))
+            .arg(in.spin, 0, 'f', 1)
+            .arg(in.tiltDegrees, 0, 'f', 0));
+    const MusicPlayer::Stats a = m_music.stats();
+    QString audio;
+    if (!a.error.isEmpty())
+        audio = QString("Music: %1").arg(a.error);
+    else if (a.playing)
+        audio = QString("Music: playing, %1 ms buffered, %2 underruns")
+                    .arg(a.bufferedMs, 0, 'f', 0)
+                    .arg(a.underruns);
+    else
+        audio = QStringLiteral("Music: off");
+    m_audioLabel->setText(audio);
 }

@@ -16,7 +16,8 @@ layout(std140, binding = 0) uniform buf
     mat4 invViewProj;
     vec4 camTime;
     vec4 params;
-    vec4 viewport;
+    vec4 viewport; // width, height, kick flash (0..1), unused
+    mat4 model;    // the orientation the client gives the knot
 };
 
 const vec3 kCyan = vec3(0.0, 0.898, 1.0);
@@ -50,13 +51,16 @@ void main()
     vec3 v = normalize(camTime.xyz - vWorld);
     float fresnel = pow(1.0 - max(dot(n, v), 0.0), 3.0);
 
+    // The kick drum of the music flashes the edges: on the client, the flash
+    // and the kick heard should land together.
+    float kick = viewport.z;
     vec3 col;
     if (vShell == 0) {
         vec3 base = vec3(0.03, 0.035, 0.05) + fresnel * neon * 0.7;
         float pulse = 0.75 + 0.25 * sin(t * 3.0 + vUv.x * 60.0);
-        col = mix(base, neon * 2.2 * pulse, edge);
+        col = mix(base, neon * 2.2 * pulse * (1.0 + 1.6 * kick), edge);
     } else {
-        col = neon * edge * (0.9 / (1.0 + float(vShell) * 0.04));
+        col = neon * edge * (0.9 / (1.0 + float(vShell) * 0.04)) * (1.0 + 1.2 * kick);
     }
     fragColor = vec4(col, 1.0);
 }

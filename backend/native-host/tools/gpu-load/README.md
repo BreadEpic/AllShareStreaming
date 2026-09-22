@@ -26,10 +26,33 @@ It is a lab instrument: built on demand, never installed, never shipped.
 - **No sensor, no run**, unless "No sensor: allow 60 s" is ticked
   (`--allow-no-sensor`). A red banner then says the run has no heat check.
 
+## Music and input: the stream's sound and controls, checked by ear and eye
+
+- **"Neon Core"**, an original tune in the Atari ST manner — the YM2149's three
+  square-wave voices (buzzer bass, 50 Hz chord arpeggios, pulse-width lead) and
+  synthesized digidrums — plays for the whole run. It lasts 59.5 s, so a 60 s
+  run hears it from the intro to the final chord. Everything is computed in
+  `ChipSong.cpp`, nothing is sampled.
+  - **Clicks.** Square waves forgive nothing: a lost or repeated audio buffer is
+    an audible click. The window counts the host's own underruns (`Music:
+    playing, 60 ms buffered, 0 underruns`, and `audioUnderruns` in the JSON). A
+    click heard on the client while the host counts none was made on the way.
+  - **Sync.** The knot's edges and the grid flash on every kick drum, timed on
+    what the audio device is playing. On the client, flash and kick should land
+    together; a visible lag between them is the stream's audio/video offset.
+  - `--no-music` or the *Music* box turns it off.
+- **The client drives the knot.** The mouse turns it as it moves (a drag
+  released while moving throws it); the arrow keys accelerate its spin, which
+  keeps going and slowly fades once they are released, and make a short sweep
+  sound; Space stops it and sets it straight. The window shows the mouse moves
+  and key presses received, and the JSON carries `mouseMoves`, `keyPresses` and
+  `spin` every second: a bench can check that input arrived without looking.
+
 ## Build
 
-The tool needs Qt 6.6 or later with the **qtshadertools** module
-(`aqt install-qt <os> desktop <ver> <arch> -m qtshadertools`). It builds on its
+The tool needs Qt 6.6 or later with the **qtshadertools** module, and
+**qtmultimedia** for the music (`aqt install-qt <os> desktop <ver> <arch> -m
+qtshadertools qtmultimedia`); without the latter it builds silent. It builds on its
 own, without the backend's dependencies:
 
 ```
@@ -93,6 +116,11 @@ pixel.
   like a rendered black window, and it cost the GPU almost nothing (0.7 ms). Run
   with `MW_GPU_LOAD_DEBUG=1` to turn on the debug layer and clear the window to
   magenta: that tells "nothing drawn" from "drawn black".
+- **The window on the wrong screen.** Qt 6 names a screen after its monitor
+  ("M27Q"), GpuList after its GDI device (`\\.\DISPLAY1`): they never matched,
+  and the window stayed where Windows opened it — on DualRTX, the AMD's screen,
+  with the Arc rendering into it across adapters (100 fps at level 90 instead of
+  about 60). Screens are now matched through their HMONITOR.
 - **Screen captures by GDI** (`CopyFromScreen`) can miss what a flip-model swap
   chain shows. Desktop Duplication (`ffmpeg -f lavfi -i ddagrab`) sees what the
   encoder sees.

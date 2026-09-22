@@ -19,6 +19,7 @@
 
 #include "GpuList.h"
 #include "LoadController.h"
+#include "MusicPlayer.h"
 #include "ThermalGuard.h"
 
 #include <QElapsedTimer>
@@ -57,6 +58,7 @@ struct Options
     QString json;
     bool fullscreen = false;
     bool allowNoSensor = false;
+    bool music = true;
 };
 
 class MainWindow : public QWidget
@@ -83,6 +85,7 @@ private:
     double sliderLevel() const;
     void refuse(const QString& reason, const QString& text);
     void placeOnScreenOf(const GpuEntry& gpu);
+    void updateInputAudio();
 
     Options m_options;
     QVulkanInstance* m_vk = nullptr;
@@ -92,6 +95,7 @@ private:
     QPushButton* m_startButton = nullptr;
     QCheckBox* m_autoBox = nullptr;
     QCheckBox* m_noSensorBox = nullptr;
+    QCheckBox* m_musicBox = nullptr;
     QSlider* m_levelSlider = nullptr;
     QLabel* m_fpsLabel = nullptr;
     QLabel* m_gpuLabel = nullptr;
@@ -99,12 +103,15 @@ private:
     QLabel* m_tempLabel = nullptr;
     QLabel* m_timeLabel = nullptr;
     QLabel* m_statusLabel = nullptr;
+    QLabel* m_inputLabel = nullptr;
+    QLabel* m_audioLabel = nullptr;
     QLabel* m_banner = nullptr;
     QVBoxLayout* m_viewLayout = nullptr;
     QPointer<QWidget> m_container;
     QPointer<RenderWindow> m_render;
 
     std::unique_ptr<ThermalGuard> m_guard;
+    MusicPlayer m_music;
     LoadController m_controller;
     QTimer m_tick;
     QTimer m_thermal;

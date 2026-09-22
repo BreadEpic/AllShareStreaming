@@ -19,7 +19,8 @@ layout(std140, binding = 0) uniform buf
     mat4 invViewProj;
     vec4 camTime;
     vec4 params;
-    vec4 viewport;
+    vec4 viewport; // width, height, kick flash (0..1), unused
+    mat4 model;    // the orientation the client gives the knot
 };
 
 mat3 rotY(float a)
@@ -46,8 +47,9 @@ void main()
     mat3 rot = rotY(dir * t * (0.35 + 0.013 * fs)) * rotX(0.4 * sin(t * 0.21 + fs * 0.17));
     // A ripple running along the tube: a little vertex work per shell.
     vec3 p = position + normal * 0.03 * sin(uv.x * 188.5 + t * 4.0 + fs);
-    vWorld = rot * (p * scale);
-    vNormal = rot * normal;
+    mat3 held = mat3(model);
+    vWorld = held * (rot * (p * scale));
+    vNormal = held * (rot * normal);
     vUv = uv;
     vShell = shell;
     gl_Position = viewProj * vec4(vWorld, 1.0);

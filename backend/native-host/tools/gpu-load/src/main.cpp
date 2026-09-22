@@ -65,8 +65,9 @@ int main(int argc, char** argv)
     // desk somebody is using does not get the foreground: it rendered behind a
     // browser, and the stream carried the browser (22/09/2026).
     const QCommandLineOption topOpt("topmost", "Keep the window above every other one.");
+    const QCommandLineOption noMusicOpt("no-music", "Silent: no music, no arrow-key sound.");
     parser.addOptions({gpuOpt, listOpt, autoOpt, fpsOpt, levelOpt, tempOpt, durOpt, calOpt, jsonOpt,
-                       fullOpt, noSensorOpt, topOpt});
+                       fullOpt, noSensorOpt, topOpt, noMusicOpt});
     parser.process(app);
 
 #if !defined(Q_OS_WIN) && !defined(Q_OS_MACOS)
@@ -101,6 +102,7 @@ int main(int argc, char** argv)
     options.json = parser.value(jsonOpt);
     options.fullscreen = parser.isSet(fullOpt);
     options.allowNoSensor = parser.isSet(noSensorOpt);
+    options.music = !parser.isSet(noMusicOpt);
 
     MainWindow window(options, vk);
     if (parser.isSet(topOpt)) window.setWindowFlag(Qt::WindowStaysOnTopHint);

@@ -18,7 +18,10 @@
 #include "RenderWindow.h"
 
 #include <QFile>
+#include <QKeyEvent>
+#include <QKeySequence>
 #include <QMatrix4x4>
+#include <QMouseEvent>
 #include <QPlatformSurfaceEvent>
 #include <QVector3D>
 
@@ -46,11 +49,26 @@ struct Uniforms
 {
     float viewProj[16];
     float invViewProj[16];
-    float camTime[4]; // eye xyz, time in seconds
-    float params[4];  // raymarch steps, noise octaves, shells, level
-    float viewport[4];
+    float camTime[4];  // eye xyz, time in seconds
+    float params[4];   // raymarch steps, noise octaves, shells, level
+    float viewport[4]; // width, height, kick flash, unused
+    float model[16];   // the orientation the client gives the knot
 };
-static_assert(sizeof(Uniforms) == 176, "std140 layout of the uniform block");
+static_assert(sizeof(Uniforms) == 240, "std140 layout of the uniform block");
+
+// How the knot answers the client. The mouse turns it at once, so a stream's
+// input delay shows as the knot lagging the pointer; the arrow keys push its
+// spin, so a key that was taken leaves the knot turning.
+constexpr double kRadiansPerPixel = 0.006;
+constexpr double kArrowAcceleration = 3.0; // rad/s², while a key is held
+constexpr double kSpinDamping = 0.3;       // 1/s: a spin halves in about 2.3 s
+constexpr double kMaxSpin = 12.0;          // rad/s
+constexpr double kThrowWindowNs = 80e6;    // a drag released later is a drop
+
+double degrees(double radians)
+{
+    return radians * 57.29577951308232;
+}
 
 // What the level buys: the glow's steps per pixel grow first (a game's
 // post-processing), the shells grow with them (its geometry). Both are close to
@@ -160,6 +178,8 @@ bool RenderWindow::event(QEvent* e)
         static_cast<QPlatformSurfaceEvent*>(e)->surfaceEventType() ==
             QPlatformSurfaceEvent::SurfaceAboutToBeDestroyed)
         shutdown();
+    // The pointer comes back elsewhere: that jump is not a move of the hand.
+    if (e->type() == QEvent::Leave) m_haveMouse = false;
     return QWindow::event(e);
 }
 
@@ -319,6 +339,8 @@ void RenderWindow::renderFrame()
 
     const QSize px = m_sc->currentPixelSize();
     const float time = float(m_clock.nsecsElapsed() / 1e9);
+    integrate(std::clamp(double(time) - m_lastFrameSeconds, 0.0, 0.1));
+    m_lastFrameSeconds = time;
     const QVector3D eye(0.0f, 0.9f, 6.5f);
     QMatrix4x4 proj = m_rhi->clipSpaceCorrMatrix();
     proj.perspective(50.0f, float(px.width()) / float(std::max(1, px.height())), 0.1f, 100.0f);
@@ -333,10 +355,14 @@ void RenderWindow::renderFrame()
     std::copy(inv.constData(), inv.constData() + 16, u.invViewProj);
     const float camTime[4] = {eye.x(), eye.y(), eye.z(), time};
     const float params[4] = {float(stepsFor(m_level)), 4.0f, float(shells), float(m_level)};
-    const float viewport[4] = {float(px.width()), float(px.height()), 0.0f, 0.0f};
+    const float viewport[4] = {float(px.width()), float(px.height()), m_pulse ? m_pulse() : 0.0f,
+                               0.0f};
     std::copy(camTime, camTime + 4, u.camTime);
     std::copy(params, params + 4, u.params);
     std::copy(viewport, viewport + 4, u.viewport);
+    QMatrix4x4 model;
+    model.rotate(m_orientation);
+    std::copy(model.constData(), model.constData() + 16, u.model);
     updates->updateDynamicBuffer(m_ubuf.get(), 0, sizeof(Uniforms), &u);
 
     cb->beginPass(m_sc->currentFrameRenderTarget(),
@@ -363,4 +389,110 @@ void RenderWindow::renderFrame()
         return;
     }
     emit frameDone(gpuSeconds * 1000.0);
+}
+
+void RenderWindow::turn(double yaw, double pitch)
+{
+    m_orientation =
+        (QQuaternion::fromAxisAndAngle(0.0f, 1.0f, 0.0f, float(degrees(yaw))) *
+         QQuaternion::fromAxisAndAngle(1.0f, 0.0f, 0.0f, float(degrees(pitch))) * m_orientation)
+            .normalized();
+}
+
+void RenderWindow::integrate(double dt)
+{
+    // Right turns the front of the knot to the right (+yaw), up lifts it
+    // (-pitch), the same way the mouse does.
+    const double push = kArrowAcceleration * dt;
+    if (m_arrows[0]) m_spin.setY(float(m_spin.y() - push));
+    if (m_arrows[1]) m_spin.setY(float(m_spin.y() + push));
+    if (m_arrows[2]) m_spin.setX(float(m_spin.x() - push));
+    if (m_arrows[3]) m_spin.setX(float(m_spin.x() + push));
+    m_spin *= float(std::exp(-kSpinDamping * dt));
+    if (m_spin.length() > kMaxSpin) m_spin = m_spin.normalized() * float(kMaxSpin);
+    const double angle = m_spin.length() * dt;
+    if (angle > 0.0)
+        m_orientation = (QQuaternion::fromAxisAndAngle(m_spin.normalized(), float(degrees(angle))) *
+                         m_orientation)
+                            .normalized();
+}
+
+RenderWindow::InputStats RenderWindow::inputStats() const
+{
+    InputStats s = m_input;
+    s.spin = m_spin.length();
+    const QVector3D up = m_orientation.rotatedVector(QVector3D(0.0f, 1.0f, 0.0f));
+    s.tiltDegrees = degrees(std::acos(std::clamp(double(up.y()), -1.0, 1.0)));
+    return s;
+}
+
+void RenderWindow::keyPressEvent(QKeyEvent* e)
+{
+    int arrow = -1;
+    switch (e->key()) {
+    case Qt::Key_Left: arrow = 0; break;
+    case Qt::Key_Right: arrow = 1; break;
+    case Qt::Key_Up: arrow = 2; break;
+    case Qt::Key_Down: arrow = 3; break;
+    case Qt::Key_Space:
+        m_orientation = QQuaternion();
+        m_spin = QVector3D();
+        break;
+    default: break;
+    }
+    if (e->isAutoRepeat()) return; // a held key is one press, not thirty
+    ++m_input.keyPresses;
+    m_input.lastKey = QKeySequence(e->key()).toString();
+    if (arrow >= 0) {
+        m_arrows[arrow] = true;
+        emit arrowPressed(arrow == 1 || arrow == 2 ? 1 : -1);
+    }
+}
+
+void RenderWindow::keyReleaseEvent(QKeyEvent* e)
+{
+    if (e->isAutoRepeat()) return;
+    switch (e->key()) {
+    case Qt::Key_Left: m_arrows[0] = false; break;
+    case Qt::Key_Right: m_arrows[1] = false; break;
+    case Qt::Key_Up: m_arrows[2] = false; break;
+    case Qt::Key_Down: m_arrows[3] = false; break;
+    default: break;
+    }
+}
+
+void RenderWindow::mouseMoveEvent(QMouseEvent* e)
+{
+    ++m_input.mouseMoves;
+    const QPointF pos = e->position();
+    const qint64 now = m_clock.nsecsElapsed();
+    if (m_haveMouse) {
+        const QPointF d = pos - m_lastMouse;
+        turn(d.x() * kRadiansPerPixel, d.y() * kRadiansPerPixel);
+        const double dt = (now - m_lastMoveNs) / 1e9;
+        if (m_dragging && dt > 0.0) {
+            const QVector3D v(float(d.y() * kRadiansPerPixel / dt),
+                              float(d.x() * kRadiansPerPixel / dt), 0.0f);
+            m_dragVelocity = m_dragVelocity * 0.5f + v * 0.5f;
+        }
+    }
+    m_lastMouse = pos;
+    m_lastMoveNs = now;
+    m_haveMouse = true;
+}
+
+void RenderWindow::mousePressEvent(QMouseEvent* e)
+{
+    if (e->button() != Qt::LeftButton) return;
+    requestActivate(); // the arrow keys come to this window from now on
+    m_dragging = true;
+    m_dragVelocity = QVector3D();
+}
+
+void RenderWindow::mouseReleaseEvent(QMouseEvent* e)
+{
+    if (e->button() != Qt::LeftButton || !m_dragging) return;
+    m_dragging = false;
+    // A drag released while still moving throws the knot.
+    if (m_clock.nsecsElapsed() - m_lastMoveNs < kThrowWindowNs) m_spin += m_dragVelocity;
 }
