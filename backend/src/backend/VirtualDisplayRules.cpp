@@ -268,7 +268,12 @@ QString settingsXml(int width, int height, int refresh)
     xml += settingsMarker() + QLatin1Char('\n');
     xml += QStringLiteral("<vdd_settings>\n");
     xml += QStringLiteral("  <monitors>\n    <count>1</count>\n  </monitors>\n");
-    xml += QStringLiteral("  <gpu>\n    <friendlyname>default</friendlyname>\n  </gpu>\n");
+    // The GPU that renders the display: the driver's own choice, unless the
+    // bench names one. MW_VDD_GPU is how a GPU with no screen of its own (the
+    // RTX of DualRTX) gets a display to capture, so its encoder can be measured
+    // in a real stream rather than headless. Never set by the product.
+    xml += QStringLiteral("  <gpu>\n    <friendlyname>%1</friendlyname>\n  </gpu>\n")
+               .arg(qEnvironmentVariable("MW_VDD_GPU", QStringLiteral("default")));
     xml += QStringLiteral("  <global>\n");
     xml += QStringLiteral("    <g_refresh_rate>%1</g_refresh_rate>\n").arg(refresh);
     for (const int hz : rates)
