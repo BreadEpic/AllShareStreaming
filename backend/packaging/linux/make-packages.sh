@@ -29,11 +29,14 @@ VERSION=$2
 OUT=$(realpath "$3")
 EDITION=${4:-prod}
 
-# PORTS: what postinst opens in an active firewall (and prerm closes). The DEV
-# edition listens on its own TCP ports and leaves the UDP stream port alone:
+# PORTS: what postinst opens in an active firewall (and prerm closes), in ufw's
+# notation (postinst turns a range's ':' into firewalld's '-'). 48010:48033/udp
+# is the stream media block: one pinned port per slot, 48010 + slot, for the 24
+# slots planSlotPorts() gives the default signaling port (backend/src/main.cpp).
+# The DEV edition listens on its own TCP ports and leaves the media block alone:
 # production opens it, and a DEV uninstall closing it would cut production off.
 case "$EDITION" in
-    prod) NAME=moonlightweb;     APP=MoonlightWeb;    PORTS="443/tcp 80/tcp 47999/udp" ;;
+    prod) NAME=moonlightweb;     APP=MoonlightWeb;    PORTS="443/tcp 80/tcp 48010:48033/udp" ;;
     dev)  NAME=moonlightweb-dev; APP=MoonlightWebDev; PORTS="48443/tcp 48080/tcp" ;;
     *) echo "error: edition must be prod or dev (got '$EDITION')" >&2; exit 1 ;;
 esac
@@ -166,16 +169,18 @@ modprobe uinput >/dev/null 2>&1 || true
 # Open the server ports in the system firewall (best-effort). Unlike Windows /
 # macOS, Linux netfilter firewalls are port-based (no per-program rule), and this
 # runs before the app picks a port, so we open the defaults: 443/tcp + 80/tcp
-# (HTTPS + HTTP→HTTPS redirect) and 47999/udp (stream). A non-default or
-# per-instance parity port under an *active* firewall would need a manual rule.
-# firewalld (Fedora/RHEL — active by default) and ufw (Debian/Ubuntu) only.
+# (HTTPS + HTTP→HTTPS redirect) and 48010-48033/udp (the stream's media ports).
+# Without the media block the page loads and every stream dies at ICE. A
+# non-default or per-instance parity port under an *active* firewall would need
+# a manual rule. firewalld (Fedora/RHEL — active by default) and ufw
+# (Debian/Ubuntu) only; the AUR hook (moonlightweb-bin.install) does the same.
 if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
-    for p in 443/tcp 80/tcp 47999/udp; do
-        firewall-cmd --permanent --add-port="$p" >/dev/null 2>&1 || true
+    for p in 443/tcp 80/tcp 48010:48033/udp; do
+        firewall-cmd --permanent --add-port="$(echo "$p" | tr : -)" >/dev/null 2>&1 || true
     done
     firewall-cmd --reload >/dev/null 2>&1 || true
 elif command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -qi '^Status: active'; then
-    for p in 443/tcp 80/tcp 47999/udp; do
+    for p in 443/tcp 80/tcp 48010:48033/udp; do
         ufw allow "$p" >/dev/null 2>&1 || true
     done
 fi
@@ -315,12 +320,12 @@ if [ "${1:-}" != "upgrade" ] && [ "${1:-0}" != "1" ]; then
     fi
 
     if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
-        for p in 443/tcp 80/tcp 47999/udp; do
-            firewall-cmd --permanent --remove-port="$p" >/dev/null 2>&1 || true
+        for p in 443/tcp 80/tcp 48010:48033/udp; do
+            firewall-cmd --permanent --remove-port="$(echo "$p" | tr : -)" >/dev/null 2>&1 || true
         done
         firewall-cmd --reload >/dev/null 2>&1 || true
     elif command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -qi '^Status: active'; then
-        for p in 443/tcp 80/tcp 47999/udp; do
+        for p in 443/tcp 80/tcp 48010:48033/udp; do
             ufw delete allow "$p" >/dev/null 2>&1 || true
         done
     fi
@@ -332,7 +337,7 @@ if [ "$EDITION" = dev ]; then
     sed -i -e "s|/opt/moonlightweb/bin/MoonlightWeb|$PREFIX/bin/$APP|g" \
            -e "s|/opt/moonlightweb/|$PREFIX/|g" \
            -e "s|moonlightweb\.service|$NAME.service|g" \
-           -e "s|443/tcp 80/tcp 47999/udp|$PORTS|g" \
+           -e "s|443/tcp 80/tcp 48010:48033/udp|$PORTS|g" \
            -e "s|moonlightweb --|$NAME --|g" \
            -e "s|enable --now moonlightweb\$|enable --now $NAME|" \
            -e "s|the moonlightweb service|the $NAME service|" \

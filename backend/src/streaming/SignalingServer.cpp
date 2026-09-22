@@ -40,8 +40,47 @@ extern "C" {
 #include <QThread>
 #include <QMetaObject>
 #include <QTimer>
+#include <QFile>
+#include <QProcess>
+#include <QRegularExpression>
+#include <QUdpSocket>
 #include <QMap>
 #include <memory>
+
+// Whether a UDP port can be bound right now. A pinned port libdatachannel
+// cannot bind leaves the session with no candidate at all, so the pin is only
+// taken when this succeeds.
+static bool udpPortFree(uint16_t port)
+{
+    QUdpSocket probe;
+    const bool ok = probe.bind(QHostAddress::AnyIPv4, port, QAbstractSocket::DontShareAddress);
+    probe.close();
+    return ok;
+}
+
+// The Linux firewall front-end that is filtering, if any: "ufw" or "firewalld".
+// Both are port-based, so they are what a pinned media port is for. Read
+// without root — ufw's own switch, and systemd's view of firewalld.
+static QString hostFirewallName()
+{
+#ifdef Q_OS_LINUX
+    QFile ufw(QStringLiteral("/etc/ufw/ufw.conf"));
+    if (ufw.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        static const QRegularExpression enabled(QStringLiteral("^\\s*ENABLED\\s*=\\s*yes\\b"),
+                                                QRegularExpression::MultilineOption);
+        if (enabled.match(QString::fromUtf8(ufw.readAll())).hasMatch())
+            return QStringLiteral("ufw");
+    }
+    QProcess systemctl;
+    systemctl.start(
+        QStringLiteral("systemctl"),
+        {QStringLiteral("is-active"), QStringLiteral("--quiet"), QStringLiteral("firewalld")});
+    if (systemctl.waitForFinished(1000) && systemctl.exitStatus() == QProcess::NormalExit &&
+        systemctl.exitCode() == 0)
+        return QStringLiteral("firewalld");
+#endif
+    return {};
+}
 
 SignalingServer::SignalingServer(RelayBase* relay, quint16 wsPort, const QString& serverHost,
                                  QObject* parent)
@@ -533,6 +572,16 @@ void SignalingServer::onRelayIceTimedOut()
         return;
     }
 
+    // The one cause of a LAN ICE timeout this machine can name. Signaling
+    // worked, so the browser reached our TCP port; what did not arrive is its
+    // UDP connectivity checks, and a port-based firewall is the usual reason.
+    const QString firewall = hostFirewallName();
+    if (!firewall.isEmpty())
+        qWarning().noquote() << "[SignalingServer]" << firewall
+                             << "is active on this host: it must let UDP" << m_MediaPort
+                             << "through (the packages open 48010-48033/udp), or no stream "
+                                "reaches this machine over UDP";
+
     if (!m_AllowWsFallback) {
         // Auto mode: WS fallback is disabled so the auto fallback chain
         // can try the next transport. sessionEnded() triggers relay tracking
@@ -977,6 +1026,11 @@ void SignalingServer::onLocalIceCandidate(const std::string& candidate, const st
 {
     if (!m_WsClient || !m_WsClient->isValid()) return;
 
+    // Logged like the browser's: when ICE fails, the port on each side is what
+    // tells a host firewall from an unreachable address.
+    qInfo() << "[SignalingServer] Local ICE candidate, mid=" << QString::fromStdString(mid) << ":"
+            << QString::fromStdString(candidate);
+
     // The offer is still waiting for the browser's hello (see onLocalSdp). A
     // candidate sent now reaches a PeerConnection with no remote description,
     // where addIceCandidate() throws and the browser drops it — permanently.
@@ -1050,18 +1104,22 @@ rtc::Configuration SignalingServer::buildIceConfig(bool isInternet, bool mapped,
     if (mapped) {
         config.portRangeBegin = mediaPort;
         config.portRangeEnd = mediaPort;
-    } else if (mw::edition::devFlag()) {
-        // In --dev (LAN, no UPnP), libdatachannel would otherwise bind an
-        // ephemeral UDP port, and each fresh test build listening on a new port
-        // triggers a Windows Defender Firewall popup. Pin to this slot's fixed
-        // media port — distinct per slot (base + slot), so concurrent streams
-        // never collide — which the local firewall rule already allows (see
-        // scripts/dev-firewall-allow.ps1) so tests never prompt. Installed
-        // builds, DEV or production, are unaffected: their firewall rule is
-        // program-scoped, written by the installer.
+    } else if (udpPortFree(mediaPort)) {
+        // Without a router hole too, pin this slot's fixed media port (base +
+        // slot, so concurrent streams never collide). An ephemeral port cannot
+        // be allowed through a port-based firewall: ufw and firewalld on Linux
+        // — which the packages open the media block in — and the port rules of
+        // --dev test builds on Windows (scripts/dev-firewall-allow.ps1). The
+        // installed Windows and macOS rules are program-scoped and take either.
         config.portRangeBegin = mediaPort;
         config.portRangeEnd = mediaPort;
-        qInfo() << "[SignalingServer] --dev: pinned UDP media port" << mediaPort;
+        qInfo() << "[SignalingServer] Pinned UDP media port" << mediaPort;
+    } else {
+        // Someone else holds it: a second instance on this machine (production
+        // next to --dev) streaming on the same slot. An ephemeral port still
+        // works wherever the firewall is program-scoped or off.
+        qWarning() << "[SignalingServer] UDP media port" << mediaPort
+                   << "is taken — using an ephemeral port, which a port-based firewall will block";
     }
 
     if (forceIceTcp) {

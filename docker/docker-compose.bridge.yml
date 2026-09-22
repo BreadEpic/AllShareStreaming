@@ -11,12 +11,10 @@
 #    • Host discovery. Sunshine is found by mDNS (multicast UDP 5353), which
 #      does not cross the bridge — add your hosts by IP address instead. That is
 #      a one-time inconvenience, not a limitation on streaming.
-#    • WebRTC media. libdatachannel binds an *ephemeral* UDP port unless UPnP
-#      handed it one, and an ephemeral port cannot be published up front. The
-#      published 48010-48014/udp below are the ports UPnP would have claimed
-#      (SignalingServer::kUpnpPort and its four fallbacks) — they are the right
-#      ports to open on a *router*, and they only match the container's choice
-#      when UPnP actually succeeded, which on a bridge network it will not.
+#    • WebRTC media. Each stream slot binds 48010 + slot, and the block is
+#      published below — but the address the container announces to the
+#      browser is its bridge address, which nothing on your LAN can reach.
+#      Publishing the right port does not fix the wrong address.
 #
 #  So: expect the stream to fall back to its TCP/WebSocket transport here, which
 #  costs latency. Use host networking whenever the platform allows it.
@@ -34,8 +32,8 @@ services:
       # HTTP — the redirect to HTTPS, and the ACME http-01 challenge if you ever
       # turn Internet Access on. Drop it if you always type https:// yourself.
       - "80:8080/tcp"
-      # WebRTC media, on the assumption UPnP mapped it. See the warning above.
-      - "48010-48014:48010-48014/udp"
+      # WebRTC media, one port per stream slot. See the warning above.
+      - "48010-48033:48010-48033/udp"
 
     volumes:
       - mw-data:/data

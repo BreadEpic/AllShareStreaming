@@ -3,14 +3,46 @@
 # backend/packaging/linux/moonlightweb-launch.c for why it cannot sit on the
 # MoonlightWeb binary itself. pacman does not restore file capabilities from
 # the .deb payload, so it is set here, on every install and upgrade.
+#
+# pacman does not run the .deb's postinst either, so the firewall ports it
+# opens are opened here too: the same list, the same best-effort rules — see
+# backend/packaging/linux/make-packages.sh. Arch ships no firewall enabled, but
+# a user who turned on ufw or firewalld got a page that loads and streams that
+# all die at ICE, because nothing had opened the media block.
+_mw_ports="443/tcp 80/tcp 48010:48033/udp"
+
+_mw_firewall() { # add | remove
+    if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+        for p in $_mw_ports; do
+            firewall-cmd --permanent --"$1"-port="$(echo "$p" | tr : -)" >/dev/null 2>&1 || true
+        done
+        firewall-cmd --reload >/dev/null 2>&1 || true
+    elif command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -qi '^Status: active'; then
+        for p in $_mw_ports; do
+            if [ "$1" = add ]; then
+                ufw allow "$p" >/dev/null 2>&1 || true
+            else
+                ufw delete allow "$p" >/dev/null 2>&1 || true
+            fi
+        done
+    fi
+}
+
 post_install() {
     if ! setcap cap_sys_admin+p /opt/moonlightweb/bin/moonlightweb-launch 2>/dev/null; then
         echo "warning: could not set cap_sys_admin on moonlightweb-launch — the host"
         echo "         cannot capture its screen until you run:"
         echo "         sudo setcap cap_sys_admin+p /opt/moonlightweb/bin/moonlightweb-launch"
     fi
+    _mw_firewall add
 }
 
+# Every upgrade, not just the first install: the rules are idempotent, and it is
+# how an install that predates them gets its media block.
 post_upgrade() {
     post_install
+}
+
+pre_remove() {
+    _mw_firewall remove
 }
