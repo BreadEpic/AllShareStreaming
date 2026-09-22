@@ -34,18 +34,26 @@ struct Sim
     int64_t skipped = 0;
 };
 
-Sim simulate(int fps, int displayHz, double seconds, int64_t startUs = 0)
+/// Presents at @p presentHz — which need not be the display's nominal rate —
+/// with an optional alternating jitter of ±@p jitterUs.
+Sim simulateOn(FrameCadence cadence, double presentHz, double seconds, int64_t jitterUs = 0,
+               int64_t startUs = 0)
 {
-    FrameCadence cadence(fps, displayHz);
     Sim sim;
-    const double presentStep = 1e6 / displayHz;
+    const double presentStep = 1e6 / presentHz;
     for (double t = 0; t < seconds * 1e6; t += presentStep) {
-        const int64_t presentUs = startUs + static_cast<int64_t>(t);
+        const int64_t presentUs =
+            startUs + static_cast<int64_t>(t) + ((sim.presents % 2) ? jitterUs : -jitterUs);
         sim.presents++;
         if (cadence.admit(presentUs)) sim.encodedAt.push_back(presentUs);
     }
     sim.skipped = cadence.skipped();
     return sim;
+}
+
+Sim simulate(int fps, int displayHz, double seconds, int64_t startUs = 0)
+{
+    return simulateOn(FrameCadence(fps, displayHz), displayHz, seconds, 0, startUs);
 }
 
 void gaps(const Sim& sim, int64_t& minGap, int64_t& maxGap)
@@ -202,5 +210,64 @@ void run_frame_cadence_tests()
         CHECK_EQ(encoded, 299);
         CHECK_EQ(skipped, 1);
         CHECK_EQ(c.nextDueUs(), int64_t(10000 + 300 * 16666));
+    }
+
+    SECTION("FrameCadence — a ceiling never skips a display that keeps to its rate");
+    {
+        const FrameCadence c = FrameCadence::ceiling(1000000000LL / 60, 60);
+        CHECK(c.enabled());
+        CHECK(c.isCeiling());
+        CHECK(!FrameCadence(60, 165).isCeiling());
+        // A fiftieth faster than the stream: 16339 µs for 16666.
+        CHECK_EQ(c.intervalUs(), int64_t(16339));
+
+        // A 60 Hz stream on a 60 Hz display, whether the panel runs a little
+        // slow (59.94, 59.95 here on DualRTX), exactly, or a little fast:
+        // every present goes through, for minutes.
+        for (double hz : {59.94, 60.0, 60.06}) {
+            const Sim sim = simulateOn(c, hz, 120.0);
+            CHECK_EQ(sim.skipped, int64_t(0));
+            CHECK_EQ(sim.encodedAt.size(), size_t(sim.presents));
+        }
+        // Presents a millisecond and a half either side of their refresh —
+        // far more than Desktop Duplication's timestamps stray — still all go.
+        const Sim jittered = simulateOn(c, 60.0, 60.0, 1500);
+        CHECK_EQ(jittered.skipped, int64_t(0));
+
+        // A present the loop picks up late, then the next one on time: 3 ms
+        // apart. Both go — the one skipped would have been a picture the
+        // viewer waited a whole frame for.
+        FrameCadence pair = FrameCadence::ceiling(1000000000LL / 120, 120);
+        CHECK_EQ(pair.slackUs(), pair.intervalUs());
+        for (int i = 0; i < 10; ++i)
+            CHECK(pair.admit(i * 16666));
+        CHECK(pair.admit(10 * 16666 + 5000));
+        CHECK(pair.admit(10 * 16666 + 8000));
+        CHECK_EQ(pair.skipped(), int64_t(0));
+    }
+
+    SECTION("FrameCadence — a ceiling holds presents beyond the refresh to the stream's rate");
+    {
+        // What Desktop Duplication reported on a 59.95 Hz screen while a
+        // browser on it ticked with a 120 Hz primary: 73 to 104 presents a
+        // second. The stream is set to 60: no more than 61.2 go out.
+        for (double hz : {73.0, 104.0, 120.0, 300.0}) {
+            const Sim sim =
+                simulateOn(FrameCadence::ceiling(1000000000LL / 60, 60), hz, 10.0, 0, 5000);
+            CHECK(sim.encodedAt.size() >= 590 && sim.encodedAt.size() <= 615);
+        }
+        // A stream set ABOVE the display's rate: the display's own refreshes
+        // all go through, a runaway source stops at the setting.
+        const FrameCadence at120 = FrameCadence::ceiling(1000000000LL / 120, 60);
+        CHECK_EQ(simulateOn(at120, 60.0, 10.0).skipped, int64_t(0));
+        const Sim runaway = simulateOn(at120, 300.0, 10.0);
+        CHECK(runaway.encodedAt.size() >= 1190 && runaway.encodedAt.size() <= 1230);
+    }
+
+    SECTION("FrameCadence — no interval, no ceiling");
+    {
+        const FrameCadence c = FrameCadence::ceiling(0, 60);
+        CHECK(!c.enabled());
+        CHECK(!c.isCeiling());
     }
 }

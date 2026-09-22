@@ -2043,12 +2043,13 @@ private:
         const int64_t convertedUs = out.convertedUs;
         const int64_t encodedUs = out.encodedUs;
         if (encodedUs <= convertedUs) return;
-        // The STREAM's interval, not the gate's: the gate is off when the
-        // stream runs at the display's own rate, and its zero would switch the
-        // cap off with it — see LinuxSession::noteEncodeLoad.
-        const int64_t intervalUs = m_Cadence.enabled() ? m_Cadence.intervalUs()
-                                   : m_CadenceFps > 0  ? 1000000 / m_CadenceFps
-                                                       : 0;
+        // The STREAM's interval, not the gate's: at the display's own rate the
+        // gate is only a ceiling a fiftieth shorter than the interval — see
+        // LinuxSession::noteEncodeLoad for why the stream's rate is the budget.
+        const int64_t intervalUs = m_Cadence.enabled() && !m_Cadence.isCeiling()
+                                       ? m_Cadence.intervalUs()
+                                   : m_CadenceFps > 0 ? 1000000 / m_CadenceFps
+                                                      : 0;
         if (m_LoadCap.note(encodedUs - convertedUs, intervalUs, encodedUs))
             m_PendingResize.store(true);
     }
@@ -2081,9 +2082,10 @@ private:
         if (m_Converter->scaleFilter() == convert::ColorConvert::ScaleFilter::Bilinear) return;
         if (out.keyframe || stamps.resend) return;
         if (out.encodedUs <= out.submittedUs) return;
-        const int64_t intervalUs = m_Cadence.enabled() ? m_Cadence.intervalUs()
-                                   : m_CadenceFps > 0  ? 1000000 / m_CadenceFps
-                                                       : 0;
+        const int64_t intervalUs = m_Cadence.enabled() && !m_Cadence.isCeiling()
+                                       ? m_Cadence.intervalUs()
+                                   : m_CadenceFps > 0 ? 1000000 / m_CadenceFps
+                                                      : 0;
         if (intervalUs <= 0) return;
 
         m_ScalerWindowUs += out.encodedUs - out.submittedUs;
@@ -2507,10 +2509,12 @@ private:
     /// Choose the loop's gate for the viewer's setting against the client's
     /// screen — at start, and again whenever the client's screen changes.
     ///
-    /// The gate exists only when the display is FASTER than the stream: at
-    /// the display's own rate every present is encoded as it comes, and a gate
-    /// at that same rate would skip a present that arrived a little early and
-    /// wait a whole period for the next one. A client presenting on vsync
+    /// When the display is FASTER than the stream, the gate is the stream's
+    /// grid. At or below the display's own rate it is only a ceiling
+    /// (FrameCadence::ceiling): every refresh is encoded as it comes, and what
+    /// Desktop Duplication reports beyond the refresh — a browser or a game
+    /// presenting faster than the screen shows — is held to the stream's rate.
+    /// A client presenting on vsync
     /// gets a cadence that is a divisor of its refresh (CadenceAlign.h); a
     /// client that tears gets the setting as it is. Returns the cadence's
     /// rate, fills @p cadence, and writes the log line that says why.
@@ -2540,7 +2544,7 @@ private:
         if (aligned.aligned) {
             fps = aligned.fps;
             cadence = fps < displayHz ? FrameCadence::fromIntervalNs(aligned.intervalNs, displayHz)
-                                      : FrameCadence(0, displayHz);
+                                      : FrameCadence::ceiling(aligned.intervalNs, displayHz);
             const std::string every =
                 aligned.divisor == 1   ? std::string("every refresh")
                 : aligned.divisor == 2 ? std::string("every 2nd refresh")
@@ -2549,9 +2553,7 @@ private:
             line = "[native] cadence: " + std::to_string(fps) + " fps stream for a " +
                    hzString(clientMilliHz) + " Hz client presenting on vsync (" +
                    std::to_string(m_Config.fps) + " set, " + every + ") on a " +
-                   hzString(m_DisplayMilliHz) + " Hz display" +
-                   (cadence.enabled() ? " — the first present of each interval is encoded, at once"
-                                      : " — every present is encoded");
+                   hzString(m_DisplayMilliHz) + " Hz display" + gateText(cadence);
             if (capped)
                 line += " (no more than " + std::to_string(cap) + " fps: " +
                         (cap == m_Config.maxFps ? "the rate chosen for this client"
@@ -2560,11 +2562,10 @@ private:
             return fps;
         }
 
-        cadence = FrameCadence(fps < displayHz ? fps : 0, displayHz);
+        cadence = fps < displayHz ? FrameCadence(fps, displayHz)
+                                  : FrameCadence::ceiling(1000000000LL / fps, displayHz);
         line = "[native] cadence: " + std::to_string(fps) + " fps stream on a " +
-               hzString(m_DisplayMilliHz) + " Hz display" +
-               (cadence.enabled() ? " — the first present of each interval is encoded, at once"
-                                  : " — every present is encoded");
+               hzString(m_DisplayMilliHz) + " Hz display" + gateText(cadence);
         if (clientMilliHz > 0) {
             line += "; client at " + hzString(clientMilliHz) + " Hz";
             if (!clientVsync)
@@ -2580,6 +2581,15 @@ private:
                                             : "what its decoder keeps up with") +
                     ")";
         return fps;
+    }
+
+    /// What the gate does, for the cadence line.
+    static const char* gateText(const FrameCadence& cadence)
+    {
+        if (cadence.isCeiling())
+            return " — every refresh is encoded, presents beyond it no faster than the stream";
+        return cadence.enabled() ? " — the first present of each interval is encoded, at once"
+                                 : " — every present is encoded";
     }
 
     /// Report an unrecoverable end once, from the loop thread.

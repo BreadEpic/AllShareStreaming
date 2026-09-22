@@ -69,13 +69,34 @@ namespace mw::native {
 /// change after a pause is on the wire at once, and a game at 60 fps under a
 /// 60 fps stream locks onto the grid instead of beating against it.
 ///
-/// ── When there is nothing to gate ───────────────────────────────────────────
+/// ── A stream at the display's own rate: a ceiling, not a grid ───────────────
 ///
-/// A stream at the display's own rate — the setting "0" resolves to it — needs
-/// no gate: every present is encoded as it comes and the rate control is
-/// dimensioned for the refresh rate. The session then constructs this with 0
-/// and everything goes through. It is the right choice when the link can carry
-/// it.
+/// A stream at the display's own rate — the setting "0" resolves to it — was
+/// long left without a gate, on the belief that a display presents no faster
+/// than it refreshes. Desktop Duplication disagrees. Measured on DualRTX
+/// (22/09/2026): a 60 Hz screen driven by the iGPU, 59.95 Hz by its own
+/// vblanks, reported 73 to 104 presents a second while a browser on it ticked
+/// with the 120 Hz primary — every one encoded, 72 to 91 frames a second for
+/// 60 set and 21 to 25 Mbit/s for 20. An uncapped game on a 60 Hz screen is
+/// the same case.
+///
+/// A gate at exactly the display's rate would be wrong the other way: a panel a
+/// hair faster than its nominal rate would run early against the grid and lose
+/// a present every few seconds. So the gate is a CEILING (ceiling()): the
+/// stream's interval shortened by kCeilingHeadroom, which no real refresh ever
+/// comes under — every present of a display that keeps to its rate is past due
+/// when it arrives and goes straight through — while presents that come faster
+/// than the display can show them are held to the stream's rate, give or take
+/// that headroom.
+///
+/// And its slack is a whole interval rather than a quarter. What the loop is
+/// handed is not a clean refresh train: on the Arc's 120 Hz screen streamed at
+/// 120, one present in twenty-five came less than 6 ms after the one before —
+/// the loop had been busy and caught up, or the browser presented twice — and a
+/// quarter-interval slack skipped two of them a second, each a picture the
+/// viewer then waited a whole content frame for. A ceiling is there to stop a
+/// runaway source, not to space frames; over anything longer than a pair it
+/// holds the rate all the same.
 ///
 /// ── The grid is kept in nanoseconds ─────────────────────────────────────────
 ///
@@ -95,6 +116,12 @@ public:
     /// slack, so the slack costs no rate — it only decides how far the emission
     /// may run ahead of the grid before the next present is preferred.
     static constexpr int kSlackDivisor = 4;
+
+    /// How much faster than the stream a ceiling lets frames through: one
+    /// fiftieth, 61.2 fps for 60. Far above how far a display's clock strays
+    /// from its nominal rate (a few hundredths of a hertz), far below what a
+    /// runaway source produces.
+    static constexpr int kCeilingHeadroom = 50;
 
     /// @p fps 0 (or negative) disables the gate. @p displayHz is the display's
     /// refresh, which sets how late an admitted present may be before the grid
@@ -116,9 +143,25 @@ public:
         return c;
     }
 
+    /// The gate for a stream at or above the display's own rate, whose interval
+    /// is @p intervalNs: a real refresh always goes through, anything faster is
+    /// held to the stream's rate (see above).
+    static FrameCadence ceiling(int64_t intervalNs, int displayHz)
+    {
+        FrameCadence c =
+            fromIntervalNs(intervalNs * kCeilingHeadroom / (kCeilingHeadroom + 1), displayHz);
+        c.m_Ceiling = c.enabled();
+        return c;
+    }
+
     bool enabled() const { return m_IntervalNs > 0; }
+    /// True for a ceiling(): every refresh of the display is encoded.
+    bool isCeiling() const { return m_Ceiling; }
     int64_t intervalUs() const { return m_IntervalNs / 1000; }
-    int64_t slackUs() const { return intervalUs() / kSlackDivisor; }
+    /// A ceiling's slack is a whole interval: it lets a pair of presents
+    /// through back to back as long as the grid is not ahead of the clock,
+    /// and still holds the rate over any stretch longer than two frames.
+    int64_t slackUs() const { return m_Ceiling ? intervalUs() : intervalUs() / kSlackDivisor; }
     int64_t reanchorUs() const { return m_ReanchorNs / 1000; }
 
     /// A new picture is ready at @p nowUs. True: encode it now. False: skip it
@@ -150,6 +193,7 @@ private:
     int64_t m_ReanchorNs = 0;
     int64_t m_NextDueNs = 0;
     int64_t m_Skipped = 0;
+    bool m_Ceiling = false;
 };
 
 } // namespace mw::native
