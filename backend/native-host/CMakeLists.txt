@@ -457,3 +457,7 @@ endif()
 if(MW_BUILD_TOOLS AND APPLE)
     add_subdirectory(tools/mouse-accel-probe)
 endif()
+# Every OS: a game-like load on the encoder's GPU (needs Qt's qtshadertools).
+if(MW_BUILD_TOOLS)
+    add_subdirectory(tools/gpu-load)
+endif()

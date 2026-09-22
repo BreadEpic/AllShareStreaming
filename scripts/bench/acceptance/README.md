@@ -42,6 +42,7 @@ installs beside a production MoonlightWeb without touching it.
 | `install.py` | uninstall / install / update, one recipe per OS |
 | `drive.py` | one streaming pass, over DevTools, on one CDP connection |
 | `run.py` | the orchestrator, and the verdict rules |
+| `gpu_load.py` | the `"load": "gpu"` passes: `mw-gpu-load` on the encoder's own GPU, calibrated before the stream (see `backend/native-host/tools/gpu-load/README.md`) |
 | `report.py` | the HTML page and the PDF |
 | `refresh.py` | re-read the access rows just before the report |
 | `restore.py` | give the machines back: drop the bench task, put production back |

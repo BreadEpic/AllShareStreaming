@@ -28,6 +28,7 @@ SCREENS = os.path.join(OUT, "screens")
 sys.path.insert(0, HERE)
 import drive  # noqa: E402
 import fleet  # noqa: E402
+import gpu_load  # noqa: E402
 import install as installer  # noqa: E402
 
 CHROME = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
@@ -161,6 +162,7 @@ def run_pass(d, chapter, machine, spec, base, seconds, settle, access):
     shot_dir = os.path.join(SCREENS, machine, chapter)
     shot = os.path.join(shot_dir, spec["id"] + ".png")
 
+    load = None
     try:
         want_url = access["rendezvous"] if rec["via"] == "rendezvous" else access["lan"]
         if not want_url:
@@ -189,6 +191,20 @@ def run_pass(d, chapter, machine, spec, base, seconds, settle, access):
         card, app = d.pick_tile(rec["target"])
         rec["tile"] = {"host": card.get("name", ""), "app": app.get("name", ""),
                        "appId": app.get("appId", "")}
+        if spec.get("load") == "gpu":
+            # The load comes first and is calibrated before the stream exists:
+            # were it tuned while the encoder runs, it would hand back the GPU
+            # time the pass means to take away.
+            if machine != "local":
+                raise drive.NotApplicable("the GPU load runs on this machine only for now")
+            try:
+                gpu = gpu_load.encoder_gpu(rec["target"])
+                load = gpu_load.Load(gpu, os.path.join(
+                    RESULTS, "gpu-load-%s-%s-%s.jsonl" % (chapter, machine, spec["id"])),
+                    level=spec.get("loadLevel"))
+                load.wait_calibrated()
+            except gpu_load.Unavailable as e:
+                raise drive.NotApplicable(str(e))
         d.launch(card, app)
         d.wait_picture(timeout=60)
         time.sleep(settle)
@@ -201,6 +217,13 @@ def run_pass(d, chapter, machine, spec, base, seconds, settle, access):
         d.expand_latency_detail()
         stats = d.stats()
         rec["stats"] = stats
+        if load:
+            rec["load"] = load.snapshot(seconds)
+            if not rec["load"]["running"]:
+                # A pass measured after the load stopped (its 60 s ran out, or
+                # the heat guard fired) measured an idle GPU.
+                raise drive.NotApplicable("the GPU load stopped before the measure: %s" % (
+                    (rec["load"].get("end") or {}).get("reason", "exited")))
         rec["negotiated"] = negotiated(stats)
         rec["latencyMs"] = parse_latency(stats.get("latencyText"))
         rec["legs"] = stats.get("legs") or {}
@@ -232,6 +255,8 @@ def run_pass(d, chapter, machine, spec, base, seconds, settle, access):
             d.stop()
         except Exception:
             pass
+        if load:
+            load.stop()
 
     rec["verdict"], why = verdict(machine, rec["status"], rec.get("stats"), rec.get("reason", ""))
     if why and not rec.get("reason"):

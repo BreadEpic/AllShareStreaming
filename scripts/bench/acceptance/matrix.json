@@ -107,6 +107,13 @@
           "target": "display"
         },
         {
+          "id": "load-gpu",
+          "factor": "native Display + GPU load (vs target-display)",
+          "settings": {},
+          "target": "display",
+          "load": "gpu"
+        },
+        {
           "id": "target-vdisplay",
           "factor": "target Virtual Display",
           "settings": {},

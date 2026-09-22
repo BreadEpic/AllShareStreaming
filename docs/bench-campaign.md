@@ -103,6 +103,16 @@ anything came back, it measures whether the right thing happened at all. A
 stream can be perfect on both other instruments and still put the wrong weapon
 in the player's hands.
 
+**A game-like GPU load** (`mw-gpu-load`, `backend/native-host/tools/gpu-load`)
+is not an instrument but a condition any of the three can run under. The clip
+and the scrolling desktop leave the GPU idle; a game that takes all of it
+(Resident Evil 9, 21/09) fills the GPU queue and the encoder waits behind it.
+The tool spins a neon scene tuned to ~45 fps on the GPU MoonlightWeb encodes on
+(`/api/native/status` names it per display), freezes that level, and stops at
+60 s or at once when the GPU gets hot. A pass is played twice, without and with
+the load, at the same level (`--level`): the difference is the cost. The
+acceptance run has it as its `load-gpu` pass.
+
 ## 5. Click to photon
 
 The host raises a blue/white/red flag at the top of **every** monitor for 100 ms

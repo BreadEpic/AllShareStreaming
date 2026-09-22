@@ -465,6 +465,15 @@ def render(chapter1, passes, out_dir, meta):
                     notes.insert(0, row["reason"])
                 if row.get("hostNote"):
                     notes.insert(0, row["hostNote"])
+                load = row.get("load")
+                if load:
+                    # What the GPU load did while the stream was measured: a
+                    # load that sagged well under its calibrated 45 fps is the
+                    # encoder taking its share back, and worth reading with the
+                    # latency beside it.
+                    notes.append("GPU load on %s: level %s, %s fps, GPU %s ms, %s °C" % (
+                        load.get("gpu"), load.get("level"), load.get("fps"),
+                        load.get("gpuMs"), load.get("tempC")))
                 audio = row.get("audio")
                 if audio is not None:
                     notes.append("audio: %s" % ("live track" if audio.get("live")
