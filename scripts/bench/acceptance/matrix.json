@@ -133,6 +133,7 @@
         },
         {
           "id": "arc-1080p60-native",
+          "content": "still.html?anim=1",
           "factor": "native Display 1 (Arc), 1080p60 fixed",
           "settings": { "stream_resolution": "fixed", "stream_height": 1080, "stream_fps": 60 },
           "target": "display"
@@ -148,6 +149,7 @@
         },
         {
           "id": "arc-1080p60-sunshine",
+          "content": "still.html?anim=1",
           "factor": "Sunshine on the Arc, 1080p60 fixed",
           "settings": { "stream_resolution": "fixed", "stream_height": 1080, "stream_fps": 60 },
           "target": "sunshine"
@@ -160,6 +162,20 @@
           "load": "gpu",
           "loadGpu": "Arc",
           "loadLevel": 90
+        },
+        {
+          "id": "arc-1080p60-native-scroll",
+          "content": "scroll.html",
+          "factor": "native Display 1 (Arc), 1080p60 fixed, scrolling text",
+          "settings": { "stream_resolution": "fixed", "stream_height": 1080, "stream_fps": 60 },
+          "target": "display"
+        },
+        {
+          "id": "arc-1080p60-sunshine-scroll",
+          "content": "scroll.html",
+          "factor": "Sunshine on the Arc, 1080p60 fixed, scrolling text",
+          "settings": { "stream_resolution": "fixed", "stream_height": 1080, "stream_fps": 60 },
+          "target": "sunshine"
         },
         {
           "id": "target-vdisplay",

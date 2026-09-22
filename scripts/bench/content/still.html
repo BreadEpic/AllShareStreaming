@@ -24,6 +24,22 @@ const words = ("the quick brown fox jumps over the lazy dog while distant thunde
 let text = "";
 for (let i = 0; i < 4000; i++) text += words[i % words.length] + " ";
 col.textContent = text;
+
+// ?anim=1: a calm desktop is rarely motionless — a clock ticks, a cursor
+// blinks, a download bar creeps. One small square turning on every refresh
+// is that: a damage rectangle on every vsync but almost nothing to encode.
+// It is the content where a constant-bitrate encoder gives itself away,
+// filling its budget with refinement of a picture that has not changed.
+if (new URLSearchParams(location.search).get("anim")) {
+  const box = document.createElement("div");
+  box.style.cssText = "position:fixed;right:96px;bottom:96px;width:48px;height:48px;" +
+                      "background:#c22;will-change:transform";
+  document.body.appendChild(box);
+  (function spin(t) {
+    box.style.transform = "rotate(" + ((t / 1000 * 180) % 360) + "deg)";
+    requestAnimationFrame(spin);
+  })(0);
+}
 </script>
 <script src="escape.js"></script>
 </body>

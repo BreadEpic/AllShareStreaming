@@ -49,6 +49,34 @@ def append(name, obj):
 
 # ── the measuring browser ───────────────────────────────────────────────────
 
+def client_position():
+    """Where the client window opens: never on the screen being captured.
+
+    At 0,0 on a host that streams its primary screen, the client shows up in
+    its own stream — a hall of mirrors whose content changes with the stream's
+    own frame rate, so a slower encoder is handed a calmer picture and every
+    size and cadence figure is skewed (22/09/2026). MW_BENCH_CLIENT_POS takes
+    "x,y", or "secondary" for the top-left corner of the first screen that is
+    not the primary one. Unset keeps 0,0 for a remote host, where it is right.
+    """
+    pos = os.environ.get("MW_BENCH_CLIENT_POS", "").strip()
+    if not pos:
+        return 0, 0
+    if pos.lower() != "secondary":
+        x, y = pos.split(",")
+        return int(x), int(y)
+    out = subprocess.run(["powershell", "-NoProfile", "-Command",
+                          "Add-Type -AssemblyName System.Windows.Forms; "
+                          "[System.Windows.Forms.Screen]::AllScreens | "
+                          "Where-Object { -not $_.Primary } | Select-Object -First 1 | "
+                          "ForEach-Object { '{0},{1}' -f $_.Bounds.X, $_.Bounds.Y }"],
+                         capture_output=True, text=True).stdout.strip()
+    if not out:
+        raise SystemExit("MW_BENCH_CLIENT_POS=secondary but there is only one screen")
+    x, y = out.split(",")
+    return int(x), int(y)
+
+
 def kiosk_start(url):
     """A Chrome of its own, with a debugging port and no certificate fuss.
 
@@ -76,7 +104,7 @@ def kiosk_start(url):
                       "--autoplay-policy=no-user-gesture-required",
                       "--remote-debugging-port=%d" % DEBUG_PORT,
                       "--ignore-certificate-errors",
-                      "--window-position=0,0", "--window-size=1920,1200",
+                      "--window-position=%d,%d" % client_position(), "--window-size=1920,1200",
                       url])
     # Wait for the debugging port to answer rather than for a fixed delay: on a
     # busy machine Chrome takes longer than eight seconds to open it, and the
@@ -91,6 +119,57 @@ def kiosk_start(url):
         except Exception:
             time.sleep(1)
     time.sleep(5)
+
+
+def content_start(page):
+    """Put a bench page (content/<page>) TOPMOST over the captured screen.
+
+    What the host streams is otherwise whatever the operator has open there —
+    a terminal that scrolls whenever a session prints — and no two passes see
+    the same picture. The rectangle is MW_BENCH_CONTENT_RECT ("x,y,w,h",
+    physical pixels), the primary screen at 2560x1440 by default.
+    """
+    rect = os.environ.get("MW_BENCH_CONTENT_RECT", "0,0,2560,1440").split(",")
+    path, _, query = page.partition("?")
+    url = "file:///" + os.path.join(os.path.dirname(HERE), "content", path).replace("\\", "/")
+    if query:
+        url += "?" + query
+    # A kiosk Chrome sometimes stays a blank white window for good — seen on
+    # 22/09/2026, a whole pass streamed a white screen at 2 fps. What is on the
+    # screen is read back (Desktop Duplication, not GDI, which can lie) and the
+    # launch retried until the page has painted something.
+    for _attempt in range(3):
+        subprocess.run(["powershell", "-NoProfile", "-File",
+                        os.path.join(os.path.dirname(HERE), "kiosk.ps1"), "-Url", url,
+                        "-X", rect[0], "-Y", rect[1], "-W", rect[2], "-H", rect[3]],
+                       capture_output=True, text=True)
+        for _ in range(8):
+            time.sleep(2)
+            if screen_painted():
+                return
+        print("      content page never painted — launching it again", flush=True)
+    raise drive.PassFailed("the content page never painted on the captured screen")
+
+
+def screen_painted():
+    """True when output 0 is not one flat colour (a pointer on it aside)."""
+    p = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
+                        "ddagrab=output_idx=0:framerate=5,hwdownload,format=bgra,"
+                        "scale=640:360,format=gray", "-frames:v", "1", "-f", "rawvideo", "-"],
+                       capture_output=True)
+    px = p.stdout
+    if len(px) < 640 * 360:
+        return True  # cannot tell: do not block the pass on the probe itself
+    # Text at this scale is grey, not black: count what departs from the
+    # dominant shade. A pointer alone is a few dozen pixels, text is thousands.
+    ref = max(set(px[::97]), key=px[::97].count)
+    return sum(1 for v in px[::7] if abs(v - ref) > 30) > 300
+
+
+def content_stop():
+    subprocess.run(["powershell", "-NoProfile", "-File",
+                    os.path.join(os.path.dirname(HERE), "kiosk-close.ps1"), "-Content"],
+                   capture_output=True, text=True)
 
 
 def kiosk_stop():
@@ -159,6 +238,7 @@ def run_pass(d, chapter, machine, spec, base, seconds, settle, access):
         "factor": spec.get("factor", ""),
         "target": spec.get("target", access["target"]),
         "via": spec.get("via", "lan"),
+        "content": spec.get("content", ""),
         "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }
     settings = dict(base)
@@ -169,6 +249,7 @@ def run_pass(d, chapter, machine, spec, base, seconds, settle, access):
     shot = os.path.join(shot_dir, spec["id"] + ".png")
 
     load = None
+    shown = False
     try:
         want_url = access["rendezvous"] if rec["via"] == "rendezvous" else access["lan"]
         if not want_url:
@@ -197,6 +278,9 @@ def run_pass(d, chapter, machine, spec, base, seconds, settle, access):
         card, app = d.pick_tile(rec["target"])
         rec["tile"] = {"host": card.get("name", ""), "app": app.get("name", ""),
                        "appId": app.get("appId", "")}
+        if spec.get("content") and machine == "local":
+            content_start(spec["content"])
+            shown = True
         if spec.get("load") == "gpu":
             # The load comes first and is calibrated before the stream exists:
             # were it tuned while the encoder runs, it would hand back the GPU
@@ -273,6 +357,8 @@ def run_pass(d, chapter, machine, spec, base, seconds, settle, access):
             pass
         if load:
             load.stop()
+        if shown:
+            content_stop()
 
     rec["verdict"], why = verdict(machine, rec["status"], rec.get("stats"), rec.get("reason", ""))
     if why and not rec.get("reason"):

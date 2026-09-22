@@ -496,6 +496,11 @@ if ($ids.Count -gt 0) {
                ForEach-Object { $_.LocalPort } | Sort-Object -Unique)
 }
 foreach ($g in @(48080, 48443, 18080, 18443, 80, 443)) { if ($ports -notcontains $g) { $ports += $g } }
+# A build under test (MoonlightWeb.exe --dev) beside the installed edition:
+# MW_BENCH_LOCAL_PORTS="18080,18443" puts its ports ahead of the edition's.
+if ($env:MW_BENCH_LOCAL_PORTS) {
+    $ports = @($env:MW_BENCH_LOCAL_PORTS -split ',' | ForEach-Object { [int]$_ }) + $ports
+}
 $out.listening = $ports | Select-Object -First 12
 
 # Invoke-WebRequest's -TimeoutSec does not bound the TCP connect phase: against

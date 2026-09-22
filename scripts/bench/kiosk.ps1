@@ -100,7 +100,13 @@ if (-not (Test-Path $chrome)) { throw "Chrome not found at $chrome" }
 $chromeArgs = @(
     "--user-data-dir=$ChromeProfile", "--no-first-run", "--no-default-browser-check",
     "--disable-infobars", "--autoplay-policy=no-user-gesture-required", "--mute-audio",
-    "--window-position=$X,$Y"
+    "--window-position=$X,$Y",
+    # A kiosk that Chrome judges occluded is never painted: the title says the
+    # page loaded while the screen stays white, and a pass streams that white
+    # at 2 fps (22/09/2026). Nothing here is ever really hidden, so the
+    # occlusion guess is switched off rather than trusted.
+    "--disable-features=CalculateNativeWinOcclusion",
+    "--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding"
 )
 if ($Windowed) { $chromeArgs += "--window-size=$W,$H" } else { $chromeArgs += "--kiosk" }
 if ($DebugPort -gt 0) {

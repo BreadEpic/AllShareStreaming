@@ -61,8 +61,12 @@ int main(int argc, char** argv)
     const QCommandLineOption fullOpt("fullscreen", "Full screen, like a game.");
     const QCommandLineOption noSensorOpt(
         "allow-no-sensor", "Run even when no temperature sensor answers (60 s cap only).");
+    // A bench starts the tool from a script, and a window started that way on a
+    // desk somebody is using does not get the foreground: it rendered behind a
+    // browser, and the stream carried the browser (22/09/2026).
+    const QCommandLineOption topOpt("topmost", "Keep the window above every other one.");
     parser.addOptions({gpuOpt, listOpt, autoOpt, fpsOpt, levelOpt, tempOpt, durOpt, calOpt, jsonOpt,
-                       fullOpt, noSensorOpt});
+                       fullOpt, noSensorOpt, topOpt});
     parser.process(app);
 
 #if !defined(Q_OS_WIN) && !defined(Q_OS_MACOS)
@@ -99,6 +103,7 @@ int main(int argc, char** argv)
     options.allowNoSensor = parser.isSet(noSensorOpt);
 
     MainWindow window(options, vk);
+    if (parser.isSet(topOpt)) window.setWindowFlag(Qt::WindowStaysOnTopHint);
     if (options.fullscreen)
         window.showFullScreen();
     else

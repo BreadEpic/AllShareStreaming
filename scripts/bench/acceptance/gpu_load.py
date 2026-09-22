@@ -65,7 +65,11 @@ class Load:
         self.gpu = gpu
         self.path = json_path
         os.makedirs(os.path.dirname(json_path), exist_ok=True)
-        argv = [_tool(), "--gpu", gpu, "--autostart", "--json", json_path]
+        # --topmost: a window started from a script on a desk somebody is
+        # using does not get the foreground. It rendered at 60 fps behind a
+        # browser, and the pass streamed that browser at 2 fps as "under load"
+        # (22/09/2026).
+        argv = [_tool(), "--gpu", gpu, "--autostart", "--topmost", "--json", json_path]
         if level:
             argv += ["--level", str(level)]
         self.proc = subprocess.Popen(argv)
