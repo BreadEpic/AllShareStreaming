@@ -742,6 +742,9 @@ export class StreamView {
         // link report below (-1 until one is made): the queue in the transport,
         // measured on the frames themselves. Shown as a leg of the latency.
         this._linkOwdRiseMs = -1;
+        // The same with the host's own share taken out, as the native host
+        // sends it back in its stats (-1 until it does, and on other hosts).
+        this._hostLinkQueueMs = -1;
         this._lastPliCount = 0; // cumulative PLIs sent (media mode getStats)
         /** True once the transport has connected at least once (DCs open / media
          *  playing). Distinguishes a connection failure (→ chain fallback) from a
@@ -4686,6 +4689,7 @@ export class StreamView {
         }
         this._link = null;
         this._linkOwdRiseMs = -1;
+        this._hostLinkQueueMs = -1;
     }
 
     /**
@@ -5393,7 +5397,8 @@ export class StreamView {
                 // path. One value, refreshed twice a second, so the leg's
                 // window is that value.
                 if (this._linkOwdRiseMs >= 0) {
-                    const rise = this._linkOwdRiseMs;
+                    const rise =
+                        this._hostLinkQueueMs >= 0 ? this._hostLinkQueueMs : this._linkOwdRiseMs;
                     legs.push({
                         key: 'statLegLinkQueue',
                         stats: { count: 1, avg: rise, percentile: () => rise },
@@ -6066,6 +6071,14 @@ export class StreamView {
             // outright: a 2 s ping and frameId gaps both miss it.
             if (msg.freezes && typeof msg.freezes.n === 'number') {
                 this._linkFreezes = msg.freezes;
+            }
+            // Our own link report with the host's share taken out: the rise we
+            // measure is timed from capture, so a slower encode reads as a
+            // queue (22/09/2026: 14 ms of "link queue" on a loopback link,
+            // counted again in the host's leg). Native host only; absent
+            // elsewhere, and the raw rise is shown as before.
+            if (typeof msg.linkQueueMs === 'number') {
+                this._hostLinkQueueMs = msg.linkQueueMs;
             }
         }
     }

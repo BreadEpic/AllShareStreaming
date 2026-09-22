@@ -1365,7 +1365,19 @@ void DataChannelRelay::onInputMessage(const std::string& message)
         // Native host only: a GameStream host's rate is Sunshine's business.
         if (auto* native = qobject_cast<NativeMediaEngine*>(m_Shim)) {
             mw::native::LinkFeedback fb;
-            fb.owdRiseMs = msg["owdRiseMs"].toInt(0);
+            // The receiver times frames from their capture, so a slower encode
+            // reads there as a filling link: the host's own rise comes out
+            // first (HostLagTracker.h).
+            int64_t hostRiseMs = 0;
+            {
+                std::lock_guard<std::mutex> lk(m_VideoMutex);
+                hostRiseMs =
+                    m_HostLag.takeRise(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                           std::chrono::steady_clock::now().time_since_epoch())
+                                           .count());
+            }
+            fb.owdRiseMs = std::max(0, msg["owdRiseMs"].toInt(0) - static_cast<int>(hostRiseMs));
+            m_LinkQueueMs.store(fb.owdRiseMs, std::memory_order_relaxed);
             fb.gaps = msg["gaps"].toInt(0);
             fb.receivedFps = msg["fps"].toInt(0);
             // Present, and true, only on the first report after the page came
@@ -1691,6 +1703,12 @@ void DataChannelRelay::sendFragmented(const QByteArray& data, bool isKeyframe,
         if (firstArrivalSteadyMs > 0 && presTimeUs >= 0) {
             int64_t captureSteadyMs = firstArrivalSteadyMs + (presTimeUs / 1000);
             backendTs = static_cast<uint32_t>(captureSteadyMs & 0xFFFFFFFF);
+            // What the host itself added to the delay the receiver will see
+            // on this frame — taken back out of its link report.
+            const int64_t nowSteadyMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                            std::chrono::steady_clock::now().time_since_epoch())
+                                            .count();
+            m_HostLag.note(nowSteadyMs - captureSteadyMs, nowSteadyMs);
         }
     }
     // Fallback: use current wall time if steady_clock not yet initialized
@@ -1818,6 +1836,11 @@ void DataChannelRelay::onStatsTimerTick()
     // so this is its only signal that the link is saturated backend-side. It
     // drives the frontend's congestion monitor (automatic bitrate degradation).
     stats["bpDrops"] = bpDrops;
+    // The receiver's own link report with the host's share taken out (see the
+    // linkstats handler): what its LINK QUEUE leg shows instead of the raw rise,
+    // which counts a slower encode twice. Absent until the first report.
+    if (const int linkQueueMs = m_LinkQueueMs.load(std::memory_order_relaxed); linkQueueMs >= 0)
+        stats["linkQueueMs"] = linkQueueMs;
     // Link freezes, cumulative: how many, the longest, the latest (ms). Absent
     // until the first one, so a healthy session's message is unchanged.
     if (const LinkFreezeLog::Snapshot fz = m_Freezes.snapshot(); fz.count > 0) {

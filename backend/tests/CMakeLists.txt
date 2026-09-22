@@ -71,6 +71,7 @@ add_executable(run_tests
     test_host_os_probe.cpp
     test_send_backlog.cpp
     test_link_freeze_log.cpp
+    test_host_lag_tracker.cpp
     test_tunnel_frame.cpp
     test_app_manifest.cpp
     test_wolf_coop.cpp

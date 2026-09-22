@@ -18,6 +18,7 @@
 #pragma once
 
 #include "RelayBase.h"
+#include "HostLagTracker.h"
 #include "LinkFreezeLog.h"
 #include "SendBacklog.h"
 #include "FrameSender.h"
@@ -226,6 +227,12 @@ private:
     LinkFreezeLog m_Freezes;
     /// When the last `linkstats` arrived, 0 before the first. Input thread only.
     qint64 m_LastLinkstatsMs = 0;
+    /// The host's capture-to-send lag, taken out of the receiver's link report
+    /// (see HostLagTracker.h). Under m_VideoMutex.
+    HostLagTracker m_HostLag;
+    /// The receiver's last report with the host's share taken out, for the
+    /// stats card's LINK QUEUE; -1 before the first report.
+    std::atomic<int> m_LinkQueueMs{-1};
     // Deltas a GameStream engine may leave waiting on the sender thread before
     // the oldest is evicted (the native engine keeps one). See the constructor.
     static constexpr size_t kGameStreamQueuedDeltas = 2;
