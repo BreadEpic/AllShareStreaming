@@ -522,6 +522,22 @@ void attachEncodeOptions(mfxVideoParam& params, mfxExtCodingOption& option1,
             // Vertical: the wave sweeps by columns of macroblocks. Either axis
             // works; vertical is the conventional choice and matches what the
             // other two vendors do by default.
+            //
+            // ⚠️ What a sweep costs on a still screen is not the band. On an
+            // A380 (1080p60, 20 Mbps, a text page with a small spinner,
+            // 22/09/2026) the stream costs 1.44 Mbps without intra-refresh and
+            // 2.80 with it, and the difference is ~60 frames at 32 KB right
+            // after each sweep starts — the whole picture as a keyframe is 17 KB.
+            // The bitrate controller re-refines the picture as the sweep begins.
+            // Nothing here moves that: a 240-frame sweep keeps the same 60-frame
+            // burst (2.78), a 60-frame one costs more (3.28), horizontal saves
+            // 9 % but produced a 105 KB frame, slice is refused on HEVC, and
+            // LowDelayBRC, MBBRC, WinBRC and LowPower off change nothing, and
+            // MinQPI/P and IntRefQPDelta are ignored in LowPower. QVBR does
+            // (1.32-1.48 Mbps), but in motion it makes frames uneven — gameplay
+            // p95 65 KB against 51-57, scrolling text +5-10 % bytes — which is
+            // latency, the thing this pipeline is tuned for. Only the gap between
+            // sweeps (intraRefreshDistanceFrames) is left to trade.
             option2.IntRefType = MFX_REFRESH_VERTICAL;
             option2.IntRefCycleSize = static_cast<mfxU16>(intraRefreshPeriodFrames(fps));
             // Leave the refreshed blocks at the frame's own quality: a positive
