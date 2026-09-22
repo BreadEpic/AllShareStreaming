@@ -114,6 +114,24 @@
           "load": "gpu"
         },
         {
+          "id": "load-gpu-arc-native",
+          "factor": "native Display 1 (Arc) + GPU load at a fixed level",
+          "settings": {},
+          "target": "display",
+          "load": "gpu",
+          "loadGpu": "Arc",
+          "loadLevel": 90
+        },
+        {
+          "id": "load-gpu-arc-sunshine",
+          "factor": "Sunshine on the Arc + the same fixed GPU load (vs load-gpu-arc-native)",
+          "settings": {},
+          "target": "sunshine",
+          "load": "gpu",
+          "loadGpu": "Arc",
+          "loadLevel": 90
+        },
+        {
           "id": "target-vdisplay",
           "factor": "target Virtual Display",
           "settings": {},

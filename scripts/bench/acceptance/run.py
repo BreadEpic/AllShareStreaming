@@ -63,7 +63,13 @@ def kiosk_start(url):
                     % os.path.basename(PROFILE)],
                    capture_output=True, text=True)
     time.sleep(2)
-    subprocess.Popen([CHROME,
+    # The client never decodes on the encoder's GPU (docs/bench-campaign.md §4):
+    # MW_BENCH_CLIENT_LUID pins this Chrome to another adapter, as kiosk.ps1 does.
+    # Chrome wants "high,low": a bare decimal is ignored without a word.
+    luid = os.environ.get("MW_BENCH_CLIENT_LUID", "")
+    if luid and "," not in luid:
+        luid = "0," + luid
+    subprocess.Popen([CHROME] + (["--use-adapter-luid=" + luid] if luid else []) + [
                       "--user-data-dir=" + PROFILE,
                       "--no-first-run", "--no-default-browser-check",
                       "--disable-infobars",
@@ -197,7 +203,9 @@ def run_pass(d, chapter, machine, spec, base, seconds, settle, access):
             # time the pass means to take away.
             try:
                 if machine == "local":
-                    gpu = gpu_load.encoder_gpu(rec["target"])
+                    # loadGpu names it outright where /api/native/status cannot:
+                    # a Sunshine target, whose encoder GPU is Sunshine's config.
+                    gpu = spec.get("loadGpu") or gpu_load.encoder_gpu(rec["target"])
                     load = gpu_load.Load(gpu, os.path.join(
                         RESULTS, "gpu-load-%s-%s-%s.jsonl" % (chapter, machine, spec["id"])),
                         level=spec.get("loadLevel"))

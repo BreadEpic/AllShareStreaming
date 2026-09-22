@@ -78,6 +78,10 @@ class Load:
             for line in lines:
                 if line.get("event") == "calibrated":
                     return line
+                if line.get("event") == "start" and line.get("autoTune") is False:
+                    # A fixed --level never calibrates: warm up a few seconds instead.
+                    if len([l for l in lines if l.get("phase") == "locked"]) >= 3:
+                        return line
                 if line.get("event") in ("refused", "end"):
                     raise Unavailable("mw-gpu-load: %s %s" % (
                         line.get("reason", ""), line.get("detail", "")))
@@ -93,7 +97,8 @@ class Load:
         ticks = [l for l in lines if "fps" in l and l.get("phase") == "locked"]
         recent = ticks[-max(1, int(seconds)):]
         end = next((l for l in lines if l.get("event") == "end"), None)
-        calibrated = next((l for l in lines if l.get("event") == "calibrated"), {})
+        calibrated = (next((l for l in lines if l.get("event") == "calibrated"), None)
+                      or next((l for l in lines if l.get("event") == "start"), {}))
 
         def mean(key):
             vals = [l[key] for l in recent if l.get(key) is not None]
@@ -204,9 +209,14 @@ Write-Output ('STARTED as ' + $who)
     def wait_calibrated(self, timeout=40):
         deadline = time.time() + timeout
         while time.time() < deadline:
-            for line in self._lines():
+            lines = self._lines()
+            for line in lines:
                 if line.get("event") == "calibrated":
                     return line
+                if line.get("event") == "start" and line.get("autoTune") is False:
+                    # A fixed --level never calibrates: warm up a few seconds instead.
+                    if len([l for l in lines if l.get("phase") == "locked"]) >= 3:
+                        return line
                 if line.get("event") in ("refused", "end"):
                     raise Unavailable("mw-gpu-load on %s: %s %s" % (
                         self.mid, line.get("reason", ""), line.get("detail", "")))
@@ -218,7 +228,8 @@ Write-Output ('STARTED as ' + $who)
         ticks = [l for l in lines if "fps" in l and l.get("phase") == "locked"]
         recent = ticks[-max(1, int(seconds)):]
         end = next((l for l in lines if l.get("event") == "end"), None)
-        calibrated = next((l for l in lines if l.get("event") == "calibrated"), {})
+        calibrated = (next((l for l in lines if l.get("event") == "calibrated"), None)
+                      or next((l for l in lines if l.get("event") == "start"), {}))
 
         def mean(key):
             vals = [l[key] for l in recent if l.get(key) is not None]
