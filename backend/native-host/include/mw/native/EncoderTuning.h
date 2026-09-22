@@ -128,6 +128,25 @@ struct EncoderTuning
     /// Sliding-window rate cap, in frames: no window of this many frames may
     /// average more than the target. A burst limiter, priced in quality.
     int vplWinBrcFrames = 0;
+    /// The bitrate controller itself. CBR spends its whole budget on every
+    /// frame, a still one included; VBR under the same MaxKbps and the same
+    /// buffer may spend less; QVBR aims at a quality (vplQvbrQuality, 1..51)
+    /// under that same cap.
+    enum class VplRateControl
+    {
+        Default,
+        Cbr,
+        Vbr,
+        Qvbr
+    };
+    VplRateControl vplRateControl = VplRateControl::Default;
+    int vplQvbrQuality = 0;
+    /// QP offset of the intra-refresh band, oneVPL (IntRefQPDelta, -51..51).
+    /// 0 is the engine's own: the band at the frame's own quality.
+    int vplIntraRefreshQpDelta = 0;
+    /// Frames between the starts of two intra-refresh cycles, oneVPL
+    /// (IntRefCycleDist). 0 is the engine's own: back to back.
+    int vplIntraRefreshDist = 0;
 
     /// How many reference pictures the encoder keeps for healing a lost frame
     /// by a delta. NVENC: the decoded picture buffer's depth (engine's own: 4
@@ -167,8 +186,9 @@ struct EncoderTuning
                vplTargetUsage == 0 && vplLowPower == Choice::Default &&
                vplMbBrc == Choice::Default && vplExtBrc == Choice::Default &&
                vplLowDelayBrc == Choice::Default && vplGamingScenario == Choice::Default &&
-               vplWinBrcFrames == 0 && vbvFrames == 0 && dpbFrames == 0 &&
-               fallback == Fallback::None;
+               vplWinBrcFrames == 0 && vplRateControl == VplRateControl::Default &&
+               vplIntraRefreshQpDelta == 0 && vplIntraRefreshDist == 0 && vbvFrames == 0 &&
+               dpbFrames == 0 && fallback == Fallback::None;
     }
 
     /// One line naming every field that is NOT at its default, for the log and
@@ -204,6 +224,11 @@ struct EncoderTuning
         if (vplGamingScenario != Choice::Default)
             add(std::string("gaming=") + choice(vplGamingScenario));
         if (vplWinBrcFrames > 0) add("winbrc=" + std::to_string(vplWinBrcFrames) + "f");
+        if (vplRateControl == VplRateControl::Cbr) add("rc=cbr");
+        if (vplRateControl == VplRateControl::Vbr) add("rc=vbr");
+        if (vplRateControl == VplRateControl::Qvbr) add("rc=qvbr" + std::to_string(vplQvbrQuality));
+        if (vplIntraRefreshQpDelta != 0) add("irqp=" + std::to_string(vplIntraRefreshQpDelta));
+        if (vplIntraRefreshDist > 0) add("irdist=" + std::to_string(vplIntraRefreshDist));
         if (vbvFrames > 0) add("vbv=" + std::to_string(vbvFrames) + "f");
         if (dpbFrames > 0) add("dpb=" + std::to_string(dpbFrames));
         if (fallback == Fallback::Tier) add("fallback=1");

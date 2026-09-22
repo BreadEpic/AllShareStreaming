@@ -246,7 +246,10 @@ bool VplEncoder::init(ID3D11Device* device, Codec codec, int width, int height, 
     log::info(
         "[native] oneVPL ready: " + std::to_string(width) + "x" + std::to_string(height) + "@" +
         std::to_string(m_Fps) + " " + toString(codec) +
-        (hdr ? " HDR (Main10, BT.2020 PQ) 4:2:0 CBR " : " 4:2:0 CBR ") +
+        (hdr ? " HDR (Main10, BT.2020 PQ) 4:2:0 " : " 4:2:0 ") +
+        (m_Params.mfx.RateControlMethod == MFX_RATECONTROL_CBR    ? "CBR "
+         : m_Params.mfx.RateControlMethod == MFX_RATECONTROL_QVBR ? "QVBR "
+                                                                  : "capped VBR ") +
         std::to_string(bitrateKbps) + " kbps, VBV " +
         std::to_string(m_Params.mfx.BufferSizeInKB * m_Params.mfx.BRCParamMultiplier) + " KB" +
         (m_IntraRefresh

@@ -314,9 +314,9 @@ void applyBitrateOnly(mfxVideoParam& params, int bitrateKbps)
     // bitrate had moved. A VBV a little roomier than the new rate deserves is
     // the cheap half of that trade.
     //
-    // MaxKbps follows the target, as it does at init: in CBR the runtime
-    // flattens the two together anyway, and leaving them apart would only make
-    // a read-back of the running configuration lie.
+    // MaxKbps follows the target, as it does at init: it is the ceiling the
+    // capped VBR must stay under, and a raise that left it behind would cap
+    // the new rate at the old one.
     const mfxU16 multiplier = params.mfx.BRCParamMultiplier > 0 ? params.mfx.BRCParamMultiplier : 1;
     int scaled = bitrateKbps / multiplier;
     if (scaled < 1) scaled = 1;
@@ -400,7 +400,27 @@ bool fillEncodeParams(mfxVideoParam& params, Codec codec, int width, int height,
     params.mfx.TargetUsage = (tuning.vplTargetUsage >= 1 && tuning.vplTargetUsage <= 7)
                                  ? static_cast<mfxU16>(tuning.vplTargetUsage)
                                  : static_cast<mfxU16>(MFX_TARGETUSAGE_7);
-    params.mfx.RateControlMethod = MFX_RATECONTROL_CBR;
+    // VBR under a ceiling equal to the target, with the same buffer CBR had.
+    //
+    // ⚠️ Was CBR, and on Intel CBR means SPENDING the budget, not staying under
+    // it: a desktop where one 48-pixel square turns came out at 36 KB a frame,
+    // 17 Mbps for a picture that does not change (Sunshine's QuickSync, same
+    // Arc, same content: 4 KB and 1.9 Mbps). Measured 22/09/2026 on an A380,
+    // 1080p60 at 20 Mbps, headless: CBR 36.4 KB a frame, VBR 5.2 KB, QVBR 2.6.
+    // Nothing the latency relies on moves:
+    //   · the ceiling — MaxKbps stays the target (applyRateControl);
+    //   · the buffer — same VBV, and no frame exceeded it (85 KB): a frame
+    //     of scrolling text reached 84 KB once a run where CBR stopped at 66,
+    //     inside the same bound, with the p99 unchanged (62-65 KB both);
+    //   · a rate change without reinitialising — Reset takes it, as in CBR.
+    // AMF and NVENC were measured on the same page and spend far less in CBR
+    // (8.5 and 15 KB), which is why they are left alone.
+    using Rc = EncoderTuning::VplRateControl;
+    switch (tuning.vplRateControl) {
+    case Rc::Cbr: params.mfx.RateControlMethod = MFX_RATECONTROL_CBR; break;
+    case Rc::Qvbr: params.mfx.RateControlMethod = MFX_RATECONTROL_QVBR; break;
+    default: params.mfx.RateControlMethod = MFX_RATECONTROL_VBR; break;
+    }
 
     // The fixed-function encode engine (VDENC) rather than the shader-based one.
     // It is what "low power" means on Intel: fewer passes, less latency, at a
@@ -506,8 +526,10 @@ void attachEncodeOptions(mfxVideoParam& params, mfxExtCodingOption& option1,
             option2.IntRefCycleSize = static_cast<mfxU16>(intraRefreshPeriodFrames(fps));
             // Leave the refreshed blocks at the frame's own quality: a positive
             // delta would make the healing band visibly coarser than what
-            // surrounds it, which is precisely the artefact this avoids.
-            option2.IntRefQPDelta = 0;
+            // surrounds it, which is precisely the artefact this avoids. The
+            // bench's irqp=4 and 8 changed nothing on an A380 in LowPower
+            // (21.6 -> 21.0 KB a frame on a still page, 22/09/2026).
+            option2.IntRefQPDelta = static_cast<mfxI16>(tuning.vplIntraRefreshQpDelta);
         }
         // Bench only: the engine leaves both to the runtime until the matrix
         // says otherwise.
@@ -521,7 +543,9 @@ void attachEncodeOptions(mfxVideoParam& params, mfxExtCodingOption& option1,
 
     const bool wantsOption3 = tuning.vplLowDelayBrc != EncoderTuning::Choice::Default ||
                               tuning.vplGamingScenario != EncoderTuning::Choice::Default ||
-                              tuning.vplWinBrcFrames > 0;
+                              tuning.vplWinBrcFrames > 0 ||
+                              tuning.vplRateControl == EncoderTuning::VplRateControl::Qvbr ||
+                              (intraRefresh && tuning.vplIntraRefreshDist > 0);
     if (wantsOption3) {
         std::memset(&option3, 0, sizeof(option3));
         option3.Header.BufferId = MFX_EXTBUFF_CODING_OPTION3;
@@ -538,6 +562,10 @@ void attachEncodeOptions(mfxVideoParam& params, mfxExtCodingOption& option1,
             // not that the average moves.
             option3.WinBRCMaxAvgKbps = params.mfx.TargetKbps;
         }
+        if (tuning.vplRateControl == EncoderTuning::VplRateControl::Qvbr)
+            option3.QVBRQuality = static_cast<mfxU16>(tuning.vplQvbrQuality);
+        if (intraRefresh && tuning.vplIntraRefreshDist > 0)
+            option3.IntRefCycleDist = static_cast<mfxU16>(tuning.vplIntraRefreshDist);
 
         buffers.push_back(reinterpret_cast<mfxExtBuffer*>(&option3));
     }

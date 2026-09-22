@@ -435,6 +435,10 @@ AcquireStatus DxgiDuplication::acquire(int timeoutMs, CapturedFrame& frame)
         return AcquireStatus::Failed;
     }
 
+    // AccumulatedFrames counts every present folded into this one: one is
+    // the frame itself, anything above it was presented and never acquired.
+    if (info.AccumulatedFrames > 1) m_FoldedPresents += info.AccumulatedFrames - 1;
+
     frame.texture = m_AcquiredTexture.Get();
     frame.presentUs = qpcToMicroseconds(info.LastPresentTime.QuadPart);
     frame.capturedUs = steadyNowUs();

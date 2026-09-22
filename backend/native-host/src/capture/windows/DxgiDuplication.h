@@ -76,6 +76,7 @@ public:
     int cursorHotspotX() const override { return m_CursorHotspotX; }
     int cursorHotspotY() const override { return m_CursorHotspotY; }
     bool pointerPaintedIn() const override { return m_PaintedPointer.paintedIn(); }
+    int64_t foldedPresents() const override { return m_FoldedPresents; }
 
 private:
     /// Ask Win32 where the pointer is, for as long as PaintedPointer has no
@@ -121,6 +122,7 @@ private:
     /// tells a duplication a display change invalidated (it worked, then
     /// DXGI_ERROR_INVALID_CALL) from one that never could (see acquire()).
     bool m_Delivered = false;
+    int64_t m_FoldedPresents = 0;
 
     int m_Width = 0;
     int m_Height = 0;

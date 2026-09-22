@@ -104,6 +104,9 @@ const char* const kUsage =
     "  lowdelaybrc=0|1  oneVPL low-delay mode of the bitrate controller\n"
     "  gaming=0|1       oneVPL ScenarioInfo = remote gaming\n"
     "  winbrc=<frames>  oneVPL sliding-window rate cap, in frames\n"
+    "  rc=cbr|vbr|qvbr<q>   oneVPL bitrate controller, same cap and buffer (qvbr26 = quality 26)\n"
+    "  irqp=<delta>     oneVPL QP offset of the intra-refresh band (with intra=1)\n"
+    "  irdist=<frames>  oneVPL frames between intra-refresh cycle starts (with intra=1)\n"
     "  vbv=<frames>     VBV of exactly N frames at the stream rate, no floor\n"
     "  dpb=<frames>     NVENC decoded picture buffer (default 4, for reference invalidation)\n"
     "  fallback=1|mf|mfsw|mfcpu|cpu  pretend no GPU encodes: the fallback tier (1), Media\n"
@@ -153,6 +156,26 @@ bool applyTuningKey(const QString& key, const QString& value, mw::native::Encode
         const int frames = value.toInt(&ok);
         ok = ok && frames >= 1 && frames <= 600;
         tuning.vplWinBrcFrames = frames;
+    } else if (key == "rc") {
+        using Rc = mw::native::EncoderTuning::VplRateControl;
+        const QString rc = value.toLower();
+        if (rc == "cbr")
+            tuning.vplRateControl = Rc::Cbr;
+        else if (rc == "vbr")
+            tuning.vplRateControl = Rc::Vbr;
+        else if (rc.startsWith("qvbr")) {
+            // qvbr<q>: the quality rides along, "rc=qvbr26".
+            tuning.vplRateControl = Rc::Qvbr;
+            tuning.vplQvbrQuality = rc.mid(4).toInt(&ok);
+            ok = ok && tuning.vplQvbrQuality >= 1 && tuning.vplQvbrQuality <= 51;
+        } else
+            ok = false;
+    } else if (key == "irqp") {
+        tuning.vplIntraRefreshQpDelta = value.toInt(&ok);
+        ok = ok && tuning.vplIntraRefreshQpDelta >= -51 && tuning.vplIntraRefreshQpDelta <= 51;
+    } else if (key == "irdist") {
+        tuning.vplIntraRefreshDist = value.toInt(&ok);
+        ok = ok && tuning.vplIntraRefreshDist >= 1 && tuning.vplIntraRefreshDist <= 3600;
     } else if (key == "fallback") {
         using Fallback = mw::native::EncoderTuning::Fallback;
         if (value == "1" || value.compare("tier", Qt::CaseInsensitive) == 0)

@@ -129,6 +129,11 @@ public:
     /// answers by moving to a capture that can. See PaintedPointer.h.
     virtual bool pointerPaintedIn() const { return false; }
 
+    /// Presents the display made that no acquire ever returned: several
+    /// presents between two acquires come back as ONE frame, the latest. The
+    /// sum since start(), or -1 where the capture cannot tell.
+    virtual int64_t foldedPresents() const { return -1; }
+
 protected:
     IWindowsCapture() = default;
 };

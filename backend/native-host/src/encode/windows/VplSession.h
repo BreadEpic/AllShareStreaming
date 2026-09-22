@@ -92,8 +92,9 @@ private:
 ///  - `GopPicSize` effectively infinite — a periodic keyframe is a bitrate
 ///    spike, and on a congested link the spike causes the loss that provokes
 ///    the request for another. Keyframes are emitted on demand instead.
-///  - CBR with a one-frame buffer — the buffer is what actually enforces low
-///    latency, capping how far ahead the encoder may spend.
+///  - VBR capped at the target, with a one-frame buffer — the buffer is what
+///    actually enforces low latency, capping how far ahead the encoder may
+///    spend; VBR rather than CBR so a still picture does not spend it anyway.
 ///
 /// @p tuning is the bench's overrides (TargetUsage, VBV); the default is the
 /// engine's own choice and what every real session passes.

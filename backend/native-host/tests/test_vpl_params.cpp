@@ -62,10 +62,20 @@ void run_vpl_params_tests()
         CHECK_EQ(p.AsyncDepth, static_cast<mfxU16>(1));
         // No B-frames: one would reference a picture not yet sent.
         CHECK_EQ(p.mfx.GopRefDist, static_cast<mfxU16>(1));
-        CHECK_EQ(p.mfx.RateControlMethod, static_cast<mfxU16>(MFX_RATECONTROL_CBR));
+        // VBR capped at the target: CBR spent 36 KB a frame on a still desktop.
+        CHECK_EQ(p.mfx.RateControlMethod, static_cast<mfxU16>(MFX_RATECONTROL_VBR));
+        CHECK_EQ(p.mfx.MaxKbps, p.mfx.TargetKbps);
         // No periodic keyframe: a bitrate spike is what provokes the loss that
         // asks for the next one.
         CHECK(p.mfx.GopPicSize >= 0xFFFF);
+
+        // The bench can still ask for the old controller, to measure against.
+        EncoderTuning cbr;
+        cbr.vplRateControl = EncoderTuning::VplRateControl::Cbr;
+        mfxVideoParam c = {};
+        CHECK(encode::fillEncodeParams(c, Codec::H264, 1920, 1080, 60, 20000, cbr));
+        CHECK_EQ(c.mfx.RateControlMethod, static_cast<mfxU16>(MFX_RATECONTROL_CBR));
+        CHECK_EQ(c.mfx.BufferSizeInKB, p.mfx.BufferSizeInKB);
     }
 
     // ── Bitrate: the 16-bit field, and the multiplier that rescues it ───────
@@ -91,7 +101,7 @@ void run_vpl_params_tests()
         CHECK(high.mfx.TargetKbps > 0);
         CHECK(effective > 140000);
         CHECK(effective <= 150000 + high.mfx.BRCParamMultiplier);
-        // CBR means the peak is the target.
+        // The ceiling is the target.
         CHECK_EQ(high.mfx.MaxKbps, high.mfx.TargetKbps);
         // And the buffer must survive the division too — a zero-sized buffer
         // is refused by the runtime.

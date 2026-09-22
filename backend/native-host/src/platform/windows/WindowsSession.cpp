@@ -1714,10 +1714,12 @@ private:
                 log::info("[native] moving this display to Windows.Graphics.Capture, which leaves "
                           "the pointer out of the picture");
             }
+            const int64_t acquireStartUs = steadyNowUs();
             const capture::AcquireStatus status =
                 m_DuplicationPaintsPointer && m_CaptureApi == CaptureApi::DxgiDuplication
                     ? capture::AcquireStatus::Lost
                     : m_Capture->acquire(timeoutMs, frame);
+            m_AcquireWaitUs += steadyNowUs() - acquireStartUs;
             if (status == capture::AcquireStatus::PointerOnly)
                 m_PointerWakes++;
             else if (status == capture::AcquireStatus::Timeout)
@@ -2614,6 +2616,20 @@ private:
                       std::to_string(m_PointerWakes) + " pointer-only (" +
                       perSecond(m_PointerWakes) + "/s), " + std::to_string(m_TimeoutWakes) +
                       " timeouts (" + perSecond(m_TimeoutWakes) + "/s)");
+            // Presents that happened while the loop was elsewhere — converting,
+            // encoding, sending — and that the next acquire folded into one.
+            // Against the time the loop spent waiting in the acquire, it says
+            // whether frames are lost to a busy loop or never presented at all.
+            const int64_t folded = m_Capture ? m_Capture->foldedPresents() : -1;
+            char waited[32];
+            std::snprintf(waited, sizeof(waited), "%.0f",
+                          100.0 * static_cast<double>(m_AcquireWaitUs) / (seconds * 1e6));
+            log::info("[native] capture loop: " +
+                      (folded >= 0
+                           ? std::to_string(folded) + " presents folded between acquires (" +
+                                 perSecond(folded) + "/s), "
+                           : std::string()) +
+                      waited + " % of the time waiting in the acquire");
         }
 
         // What the bridge cost, when there was one: the figure that says how
@@ -2667,6 +2683,7 @@ private:
     std::atomic<int> m_ClientFpsCap{0};
     /// Presents the display delivered (AcquireStatus::Ok), for the log.
     int64_t m_PresentsSeen = 0;
+    int64_t m_AcquireWaitUs = 0;
     /// Turns of the loop that carried no present: the pointer alone moved, or
     /// nothing did. A mouse swept at its report rate wakes the capture a
     /// thousand times a second between the presents — the log says how often.
