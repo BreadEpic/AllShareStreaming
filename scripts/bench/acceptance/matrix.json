@@ -178,6 +178,50 @@
           "target": "sunshine"
         },
         {
+          "id": "amd-1080p60-native",
+          "content": "still.html?anim=1",
+          "factor": "native Display 2 (AMD iGPU, AMF), 1080p60 fixed — MW_BENCH_DISPLAY=1, MW_BENCH_CONTENT_RECT on that screen, client on the Arc's",
+          "settings": { "stream_resolution": "fixed", "stream_height": 1080, "stream_fps": 60 },
+          "target": "display"
+        },
+        {
+          "id": "amd-1080p60-native-scroll",
+          "content": "scroll.html",
+          "factor": "native Display 2 (AMD iGPU, AMF), 1080p60 fixed, scrolling text",
+          "settings": { "stream_resolution": "fixed", "stream_height": 1080, "stream_fps": 60 },
+          "target": "display"
+        },
+        {
+          "id": "rtx-vdd-1080p60-native",
+          "content": "still.html?anim=1",
+          "contentAfter": true,
+          "factor": "native Virtual Display rendered by the RTX (NVENC), 1080p60 fixed — the dev instance started with MW_VDD_GPU set to the RTX's name, MW_BENCH_CONTENT_RECT on the Virtual Display",
+          "settings": { "stream_resolution": "fixed", "stream_height": 1080, "stream_fps": 60 },
+          "target": "vdisplay"
+        },
+        {
+          "id": "rtx-vdd-1080p60-native-scroll",
+          "content": "scroll.html",
+          "contentAfter": true,
+          "factor": "native Virtual Display rendered by the RTX (NVENC), 1080p60 fixed, scrolling text",
+          "settings": { "stream_resolution": "fixed", "stream_height": 1080, "stream_fps": 60 },
+          "target": "vdisplay"
+        },
+        {
+          "id": "amd-1080p60-sunshine",
+          "content": "still.html?anim=1",
+          "factor": "Sunshine on Display 2 (AMD iGPU, AMF), 1080p60 fixed",
+          "settings": { "stream_resolution": "fixed", "stream_height": 1080, "stream_fps": 60 },
+          "target": "sunshine"
+        },
+        {
+          "id": "amd-1080p60-sunshine-scroll",
+          "content": "scroll.html",
+          "factor": "Sunshine on Display 2 (AMD iGPU, AMF), 1080p60 fixed, scrolling text",
+          "settings": { "stream_resolution": "fixed", "stream_height": 1080, "stream_fps": 60 },
+          "target": "sunshine"
+        },
+        {
           "id": "target-vdisplay",
           "factor": "target Virtual Display",
           "settings": {},

@@ -266,11 +266,15 @@ class Driver:
                         return c, a
             raise NotApplicable("no MoonlightWeb Virtual Display on this host")
         if target == "display":
+            # MW_BENCH_DISPLAY picks another physical display than the first,
+            # counted in app-id order: the way to stream a screen driven by a
+            # different GPU (DualRTX: 1 is the AMD iGPU's).
+            index = int(os.environ.get("MW_BENCH_DISPLAY", "0") or 0)
             for c in native:
                 phys = [a for a in c["apps"] if a["appId"].isdigit() and a["appId"] != "1000"]
-                if phys:
+                if len(phys) > index:
                     phys.sort(key=lambda a: int(a["appId"]))
-                    return c, phys[0]
+                    return c, phys[index]
             raise NotApplicable("the native host offers no physical display")
         if target == "sunshine":
             for c in others:

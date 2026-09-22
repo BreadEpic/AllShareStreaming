@@ -149,6 +149,13 @@ def kiosk_start(url):
                       "--autoplay-policy=no-user-gesture-required",
                       "--remote-debugging-port=%d" % DEBUG_PORT,
                       "--ignore-certificate-errors",
+                      # Covered by another window, Chrome calls the page hidden
+                      # and the app ignores a click on a tile: the client on a
+                      # screen someone else is using never launched (22/09/2026).
+                      # Same switches as kiosk.ps1 gives the content page.
+                      "--disable-features=CalculateNativeWinOcclusion",
+                      "--disable-backgrounding-occluded-windows",
+                      "--disable-renderer-backgrounding",
                       "--window-position=%d,%d" % client_position(), "--window-size=1920,1200",
                       url])
     # Wait for the debugging port to answer rather than for a fixed delay: on a
@@ -166,7 +173,7 @@ def kiosk_start(url):
     time.sleep(5)
 
 
-def content_start(page):
+def content_start(page, probe=True):
     """Put a bench page (content/<page>) TOPMOST over the captured screen.
 
     What the host streams is otherwise whatever the operator has open there —
@@ -188,6 +195,8 @@ def content_start(page):
                         os.path.join(os.path.dirname(HERE), "kiosk.ps1"), "-Url", url,
                         "-X", rect[0], "-Y", rect[1], "-W", rect[2], "-H", rect[3]],
                        capture_output=True, text=True)
+        if not probe:
+            return  # a screen ddagrab may not reach: nothing to check it with
         for _ in range(8):
             time.sleep(2)
             if screen_painted():
@@ -198,6 +207,8 @@ def content_start(page):
 
 def screen_painted():
     """True when output 0 is not one flat colour (a pointer on it aside)."""
+    if int(os.environ.get("MW_BENCH_DISPLAY", "0") or 0):
+        return True  # ddagrab reads the first adapter's outputs only: cannot tell
     p = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
                         "ddagrab=output_idx=0:framerate=5,hwdownload,format=bgra,"
                         "scale=640:360,format=gray", "-frames:v", "1", "-f", "rawvideo", "-"],
@@ -323,7 +334,10 @@ def run_pass(d, chapter, machine, spec, base, seconds, settle, access):
         card, app = d.pick_tile(rec["target"])
         rec["tile"] = {"host": card.get("name", ""), "app": app.get("name", ""),
                        "appId": app.get("appId", "")}
-        if spec.get("content") and machine == "local":
+        # contentAfter: the captured screen only exists once the stream is up
+        # (the Virtual Display), so the page goes up after the first picture.
+        after = spec.get("contentAfter", False)
+        if spec.get("content") and machine == "local" and not after:
             content_start(spec["content"])
             shown = True
         if spec.get("load") == "gpu":
@@ -352,6 +366,9 @@ def run_pass(d, chapter, machine, spec, base, seconds, settle, access):
                 raise drive.NotApplicable(str(e))
         d.launch(card, app)
         d.wait_picture(timeout=60)
+        if spec.get("content") and machine == "local" and after:
+            content_start(spec["content"], probe=False)
+            shown = True
         time.sleep(settle)
 
         checks = spec.get("checks") or []
