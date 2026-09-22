@@ -470,6 +470,15 @@ bool VaapiEncoder::renderRateControl(std::string& error)
     rc.target_percentage = 100;
     rc.window_size = 1000;
     rc.initial_qp = 0;
+    // No QP floor, unlike NVENC and AMF, because nothing here needs one.
+    // Measured 22/09/2026 on the 780M (Mesa 23.2, 1080p60, 20 Mbps, a text
+    // page with a small spinner): after a keyframe the rate control spends
+    // ~3.5 s at the full budget, then under 1 KB a frame — none of the steady
+    // refinement that cost NVENC 7.7 Mbps and AMF 8.7. The driver does honour
+    // min_qp (40 cut scrolling text from 16.7 to 6.3 Mbps), but 18, 22 and 26
+    // left the still page byte for byte where it was (3.0-3.15 Mbps over 20 s):
+    // that burst runs above QP 26. This driver has no rolling intra-refresh
+    // either, so there is no sweep to space out.
     rc.min_qp = 0;
     rc.max_qp = 51;
     // No filler: on a still desktop CBR padding would be bytes on the wire that
