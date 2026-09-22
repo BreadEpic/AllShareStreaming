@@ -98,7 +98,10 @@ signals:
 
 private:
     bool startInProcess(const QStringList& args, const QByteArray& configLine, bool native);
-    bool startInConsoleSession(const QStringList& args, const QByteArray& configLine);
+    /// Through ConsoleProcess: into the console session from a service, or —
+    /// `throughTask` — through the elevated worker task from the desktop.
+    bool startInConsoleSession(const QStringList& args, const QByteArray& configLine,
+                               bool throughTask);
     void onStdoutData(const QByteArray& data);
     void onStderrData(const QByteArray& data);
     void onStdout();

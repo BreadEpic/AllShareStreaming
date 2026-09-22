@@ -4758,3 +4758,60 @@ l'aveugle. En mode bureau, attraper une fenêtre par sa barre de titre ne montre
 plus deux souris : pendant le glissement c'est celle de l'hôte qui commande, la
 sienne s'efface, et elle revient dès qu'on relâche ; et la forme du curseur ne
 change plus toute seule quand quelqu'un touche la souris de la machine.
+
+## 30. Le worker natif élevé : les fenêtres administrateur répondent (22/09/2026)
+
+Le serveur démarre par la tâche de logon `\MoonlightWeb`, au niveau **non élevé**,
+et son worker de stream hérite de ce jeton. Windows (UIPI) refuse alors à ce worker
+toute fenêtre qui tourne en administrateur — Gestionnaire des tâches, console
+admin, jeu lancé en admin — et, tant qu'elle a le focus, **toutes** les entrées :
+c'est le bandeau « Une fenêtre administrateur a le focus sur l'hôte »
+(`inputGateHostUnelevated`, raison `"uipi"` de `Win32Input`).
+
+**Niveau 1 (fait) : seul le worker est élevé.** L'installeur, déjà élevé,
+enregistre une tâche sans déclencheur `MoonlightWeb Stream Worker`
+(`HighestAvailable`, `Parallel`, `Priority 4`, cachée) dont l'action est notre exe
+sous `{app}` : `--stream-worker --worker-pipe $(Arg0)`. Pour chaque session
+native, `StreamWorkerHost` la lance par `IRegisteredTask::RunEx` au lieu d'un
+`QProcess` (`ConsoleProcess::startThroughTask`). Le serveur, le tray et le
+navigateur qu'il ouvre restent au niveau de l'utilisateur ; la bascule « Start at
+login » continue d'écrire une tâche `LeastPrivilege` sans élévation.
+
+- **Transport.** Une tâche ne transmet pas de handles : trois **tubes nommés**
+  (`<produit>-worker-<pid>-<128 bits aléatoires>-in/out/err`), une instance chacun,
+  `FILE_FLAG_FIRST_PIPE_INSTANCE`, `PIPE_REJECT_REMOTE_CLIENTS`, DACL
+  `D:P(A;;GA;;;<SID de l'utilisateur>)` (la DACL par défaut laisserait lire
+  Everyone). Le worker s'y connecte (`ConsoleSession::attachWorkerPipes`) et les
+  met sous ses fd 0-2 : un exe sans console démarre avec ces fd **libres**, il
+  faut donc d'abord rouvrir les trois flux sur `NUL`, sinon `_open_osfhandle`
+  rend le fd 0 lui-même et le `_close` qui suit le referme (premier essai :
+  « No config on stdin »). Le reste — lignes JSON, lecteurs, attente de sortie —
+  est le code de `ConsoleProcess`, les lectures passant en `OVERLAPPED`.
+- **Contrôle croisé.** Le worker refuse un serveur de tube dont l'image n'est pas
+  le même exe (`GetNamedPipeServerProcessId`) : n'importe quel processus de
+  l'utilisateur peut lancer la tâche, seul notre serveur obtient un worker élevé.
+  Le serveur vérifie de même l'image du client avant d'écrire la config.
+- **Quand.** `elevatedWorkerAvailable()` : Windows, pas un service, processus
+  non élevé, tâche présente **avec cet exe pour action** (un build `build\` ne
+  lance jamais le worker de l'installation). Un échec (tâche absente, 10 s sans
+  connexion) repasse par `QProcess` et désactive le détour pour le reste du run.
+- **Mesuré sur DualRTX** (tâche dev `MoonlightWeb-dev Stream Worker`, UAC
+  « never notify ») : une fenêtre WinForms élevée au premier plan sur l'écran
+  streamé reçoit les clics envoyés par le stream ; même scénario avec la tâche
+  en `LeastPrivilege` → aucun clic, `input gate closed … (UIPI)`. Arrêt :
+  `exitCode 0`. Sans tâche : `Worker spawned` par `QProcess`, comme avant.
+- **Droits observés sur le worker élevé depuis un processus moyen** :
+  `PROCESS_TERMINATE` et `QUERY_LIMITED` accordés (le Planificateur crée le
+  processus ainsi), `VM_WRITE`, `CREATE_THREAD`, `DUP_HANDLE`, `QUERY_INFORMATION`
+  refusés — pas d'injection. `kill()` tente `TerminateProcess`, sinon ferme stdin
+  (le worker sort sur EOF). Ré-enregistrer une tâche en `HighestAvailable` sans
+  élévation : « Access is denied ».
+- **Limites.** Un compte standard obtient son jeton ordinaire (le bandeau reste
+  juste). L'invite UAC et l'écran de verrouillage sont sur le **bureau sécurisé**,
+  hors de portée d'un processus utilisateur même élevé : c'est le niveau 2.
+
+**Niveau 2 (à faire) : comme Parsec.** Un service SYSTEM lanceur, qui démarre le
+worker en session console sous un jeton SYSTEM ; capture DXGI et `Win32Input`
+suivant le bureau d'entrée (`OpenInputDesktop`/`SetThreadDesktop`) ; `SendSAS`
+pour Ctrl+Alt+Suppr. Le transport par tubes nommés ci-dessus sert tel quel : le
+service remplace la tâche.

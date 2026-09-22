@@ -277,6 +277,13 @@ const
   // on is a parameters-only file under %LocalAppData% (VirtualDisplay.h).
   VDisplayTaskName = '{#MyAppName} Virtual Display';
   VDisplayArgs = '--vdisplay-apply';
+  // Trigger-less, elevated task the running (unprivileged) app starts for each
+  // native stream, so that its worker can type into windows that run as
+  // administrator (UIPI shuts an unelevated one out of them, and out of every
+  // window while one has the focus). $(Arg0) is the name of the pipes the
+  // worker connects back to; the app passes it and checks who connected.
+  WorkerTaskName = '{#MyAppName} Stream Worker';
+  WorkerArgs = '--stream-worker --worker-pipe $(Arg0)';
   // Where this installer remembers the answer to its own Virtual Display
   // page, so an update does not ask again (the device node itself is the
   // truth about what is installed; the helper never creates a second one).
@@ -963,6 +970,49 @@ begin
          '', SW_HIDE, ewWaitUntilTerminated, rc);
 end;
 
+// --- Native stream worker: the elevated launcher --------------------------
+//
+// Same mechanism again, for the process that injects a remote viewer's keyboard
+// and mouse. Only the worker is raised — the server listening on the network,
+// the tray and the browser it opens stay at the user's own level. The command
+// is our exe under {app} (admin-writable only); the argument is a pipe name,
+// and the worker refuses any pipe not served by this same exe. Parallel: one
+// worker per native session. Hidden, like the display helper.
+procedure RegisterStreamWorkerTask();
+var
+  user, xml, xmlPath, exePath: String;
+  rc: Integer;
+begin
+  user := TaskPrincipal();
+  exePath := TaskXmlEscape(ExpandConstant('{app}\{#MyAppExe}'));
+  // No <?xml?> declaration and pure ASCII, for the same reason as the logon task.
+  xml :=
+    '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">' + #13#10 +
+    '  <RegistrationInfo><Author>MoonlightWeb</Author></RegistrationInfo>' + #13#10 +
+    '  <Principals><Principal id="Author">' +
+    '<UserId>' + user + '</UserId><LogonType>InteractiveToken</LogonType>' +
+    '<RunLevel>HighestAvailable</RunLevel>' +
+    '</Principal></Principals>' + #13#10 +
+    // Element order follows the Task Scheduler schema (schtasks /XML is strict).
+    '  <Settings>' +
+    '<MultipleInstancesPolicy>Parallel</MultipleInstancesPolicy>' +
+    '<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>' +
+    '<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>' +
+    '<AllowStartOnDemand>true</AllowStartOnDemand>' +
+    '<Hidden>true</Hidden>' +
+    '<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>' +
+    '<Priority>4</Priority>' +
+    '</Settings>' + #13#10 +
+    // No <Triggers>: the task exists purely to be started on demand.
+    '  <Actions Context="Author"><Exec><Command>"' + exePath + '"</Command>' +
+    '<Arguments>' + WorkerArgs + '</Arguments></Exec></Actions>' + #13#10 +
+    '</Task>' + #13#10;
+  xmlPath := ExpandConstant('{tmp}\mw-worker-task.xml');
+  if SaveStringToFile(xmlPath, xml, False) then
+    Exec('schtasks.exe', '/Create /TN "' + WorkerTaskName + '" /XML "' + xmlPath + '" /F',
+         '', SW_HIDE, ewWaitUntilTerminated, rc);
+end;
+
 // Run the app's own elevated helper for one verb on "MoonlightWeb Virtual
 // Display": `install` creates the driver's device node from the files under
 // {app}\drivers\vdd, named, disabled, and creates none when one is there;
@@ -1397,6 +1447,9 @@ begin
   // stream a headless machine just as well. Refreshed on every install so
   // the action follows {app}.
   RegisterVirtualDisplayTask();
+  // The elevated stream worker task: every edition, refreshed so the action
+  // follows {app}.
+  RegisterStreamWorkerTask();
   // "MoonlightWeb Virtual Display" itself: on Accept, and again on every
   // update once accepted (the helper finds the node and creates no second
   // one — this is what makes an update a no-op and a reinstall a repair).
@@ -1581,6 +1634,9 @@ begin
     Exec('schtasks.exe', '/Delete /TN "' + VDisplayTaskName + '" /F', '', SW_HIDE,
          ewWaitUntilTerminated, rc);
     DelTree(ExpandConstant('{localappdata}\{#MyAppName}\vdisplay'), True, True, True);
+    // The elevated stream worker task.
+    Exec('schtasks.exe', '/Delete /TN "' + WorkerTaskName + '" /F', '', SW_HIDE,
+         ewWaitUntilTerminated, rc);
     Exec('taskkill.exe', '/IM "{#MyAppExe}" /F', '', SW_HIDE,
          ewWaitUntilTerminated, rc);
     // Remove the firewall rule added at install time.

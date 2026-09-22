@@ -99,6 +99,7 @@
 #include "streaming/MediaTrackRelay.h"
 #include "streaming/StreamRelay.h"
 #include "streaming/TransportPriorities.h"
+#include "streaming/ConsoleSession.h"
 #include "streaming/StreamWorkerHost.h"
 #include "streaming/worker/StreamWorkerMain.h"
 #include "network/InternetAccessManager.h"
@@ -1513,6 +1514,13 @@ int main(int argc, char* argv[])
                                           "Internal: host one streaming session as a child "
                                           "process of the main server");
     parser.addOption(streamWorkerOption);
+    // Internal: the worker's stdin/stdout/stderr are the named pipes of that
+    // base name, not inherited handles — how the elevated worker task hands a
+    // worker back to the server that asked for it (ConsoleSession.h).
+    QCommandLineOption workerPipeOption(
+        "worker-pipe", "Internal: attach the stream worker to these named pipes", "name");
+    workerPipeOption.setFlags(QCommandLineOption::HiddenFromHelp);
+    parser.addOption(workerPipeOption);
 
     // Headless operator commands: query / configure the RUNNING instance from a
     // terminal, then exit. No server is started and no lock is taken.
@@ -1603,6 +1611,13 @@ int main(int argc, char* argv[])
     // interleave. stdout carries the worker's JSON event protocol — Logger
     // writes to file/stderr only.
     if (parser.isSet(streamWorkerOption)) {
+        if (parser.isSet(workerPipeOption)) {
+            QString pipeError;
+            if (!ConsoleSession::attachWorkerPipes(parser.value(workerPipeOption), &pipeError)) {
+                Logger::error("[StreamWorker] " + pipeError);
+                return 1;
+            }
+        }
         Logger::instance()->setConsoleToStderr(true);
         return runStreamWorker(app);
     }

@@ -58,7 +58,15 @@ bool StreamWorkerHost::start(const QJsonObject& config)
     // other backend talks to a host over the network and runs fine from here.
     const bool native = config["backendType"].toString() == QLatin1String("native");
     if (native && ConsoleSession::launchesElsewhere())
-        return startInConsoleSession(args, configLine);
+        return startInConsoleSession(args, configLine, false);
+    // On the desktop, the native worker goes through the elevated task when the
+    // installer registered one: elevated windows then take its input like any
+    // other (ConsoleSession::elevatedWorkerAvailable()). A failed launch costs
+    // this one attempt, never the stream: the plain child below still works,
+    // it just cannot touch those windows.
+    if (native && ConsoleSession::elevatedWorkerAvailable() &&
+        startInConsoleSession(args, configLine, true))
+        return true;
     return startInProcess(args, configLine, native);
 }
 
@@ -100,7 +108,8 @@ bool StreamWorkerHost::startInProcess(const QStringList& args, const QByteArray&
     return true;
 }
 
-bool StreamWorkerHost::startInConsoleSession(const QStringList& args, const QByteArray& configLine)
+bool StreamWorkerHost::startInConsoleSession(const QStringList& args, const QByteArray& configLine,
+                                             bool throughTask)
 {
     m_Console = new ConsoleProcess(this);
     connect(m_Console, &ConsoleProcess::stdoutData, this, &StreamWorkerHost::onStdoutData);
@@ -108,7 +117,18 @@ bool StreamWorkerHost::startInConsoleSession(const QStringList& args, const QByt
     connect(m_Console, &ConsoleProcess::finished, this, &StreamWorkerHost::onChildFinished);
 
     QString error;
-    if (!m_Console->start(QCoreApplication::applicationFilePath(), args, &error)) {
+    if (throughTask) {
+        // The task's action carries the fixed arguments itself (--stream-worker,
+        // and --dev for a dev registration); only the pipe name travels.
+        if (!m_Console->startThroughTask(ConsoleSession::elevatedWorkerTaskName(), &error)) {
+            qWarning() << "[StreamWorkerHost] Elevated worker task unavailable, falling back to a "
+                          "plain worker:"
+                       << error;
+            m_Console->deleteLater();
+            m_Console = nullptr;
+            return false;
+        }
+    } else if (!m_Console->start(QCoreApplication::applicationFilePath(), args, &error)) {
         // Said plainly, because the fallback the caller has (run the session
         // in this process) cannot work either: there is no desktop here.
         qWarning() << "[StreamWorkerHost] Native worker cannot enter the console session:" << error;
@@ -118,7 +138,8 @@ bool StreamWorkerHost::startInConsoleSession(const QStringList& args, const QByt
     }
 
     m_Console->write(configLine);
-    qInfo() << "[StreamWorkerHost] Worker spawned in the console session as"
+    qInfo() << "[StreamWorkerHost] Worker spawned"
+            << (throughTask ? "through its task as" : "in the console session as")
             << m_Console->userName() << ", pid=" << m_Console->processId();
     return true;
 }

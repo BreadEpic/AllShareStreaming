@@ -90,6 +90,35 @@ bool launchesElsewhere();
 /// poll every few seconds.
 Info query();
 
+/// The trigger-less, RunLevel=HighestAvailable scheduled task that starts this
+/// executable as a stream worker with the user's FULL token — the installer
+/// registers it, because only an elevated process may. Per edition and per
+/// --dev, like every other registration ("MoonlightWeb Stream Worker").
+QString elevatedWorkerTaskName();
+
+/// Whether a native worker started from this desktop process should go through
+/// that task rather than QProcess: Windows, on the desktop (a service has its
+/// own way in, see launchesElsewhere()), not already elevated, and the task is
+/// there with THIS executable as its action — so a build tree never launches
+/// the installed binary's worker, nor the other way round. False for the rest
+/// of the run once a launch through it has failed.
+///
+/// Why at all: an unelevated worker is shut out by Windows (UIPI) from every
+/// window that runs as administrator — Task Manager, an admin console, a game
+/// started elevated — and not just that window: while one has the focus, ALL
+/// injected input is dropped. The logged-on user can type there; their remote
+/// self should too. Only the worker is raised, never the server: the process
+/// that listens on the network, draws the tray and opens the browser stays at
+/// the user's ordinary level.
+bool elevatedWorkerAvailable();
+
+/// Worker side of ConsoleProcess::startThroughTask(): open the three pipes
+/// named after `base`, check that the process at the other end is this same
+/// executable, and make them this process's stdin, stdout and stderr — CRT and
+/// Win32 both — so the worker reads and writes them exactly as it would the
+/// pipes of a QProcess parent. Must run before anything touches std::cin.
+bool attachWorkerPipes(const QString& base, QString* error);
+
 } // namespace ConsoleSession
 
 /**
@@ -123,6 +152,20 @@ public:
     /// token, CreateProcessAsUser refused.
     bool start(const QString& program, const QStringList& args, QString* error);
 
+    /// Launch a stream worker through the scheduled task `taskName` (see
+    /// ConsoleSession::elevatedWorkerAvailable()), in this very session, as the
+    /// user at their highest level. A task cannot hand a child our pipes, so
+    /// they are NAMED pipes this time — random names, a DACL that admits the
+    /// user alone, one instance each — passed as the task's $(Arg0); the
+    /// worker connects back (attachWorkerPipes). Blocks until it has, a few
+    /// hundred milliseconds, 10 s at most. The worker's image is checked
+    /// before a byte is written to it.
+    ///
+    /// kill() terminates the worker when Windows grants that right on it, and
+    /// otherwise closes its stdin, which the worker reads as "the parent is
+    /// gone" and exits within seconds.
+    bool startThroughTask(const QString& taskName, QString* error);
+
     /// Write to the child's stdin. Dropped when the child is gone.
     void write(const QByteArray& data);
 
@@ -142,6 +185,9 @@ signals:
     void finished(int exitCode, bool crashed);
 
 private:
+    /// Readers for stdout/stderr and the exit waiter, once the child is up.
+    void beginDraining();
+
     struct Impl;
     std::unique_ptr<Impl> d;
 };
