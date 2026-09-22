@@ -73,6 +73,9 @@ struct EncoderTuning
     /// NVENC: the QP the rate control never goes below. 0 is the engine's own
     /// (18, qindex 32 for AV1 — see NvencEncoder.cpp), -1 none at all.
     int nvencMinQp = 0;
+    /// AMF (H.264, HEVC): the same floor. 0 is the engine's own (18 — see
+    /// AmfEncoder.cpp), -1 none at all.
+    int amfMinQp = 0;
 
     /// NVENC intra-refresh: frames from one sweep's start to the next
     /// (intraRefreshPeriod) and frames the band takes to cross the picture
@@ -192,7 +195,7 @@ struct EncoderTuning
     bool isDefault() const
     {
         return nvencPreset == 0 && nvencTuning == Latency::Default &&
-               nvencMultiPass == MultiPass::Default && nvencMinQp == 0 &&
+               nvencMultiPass == MultiPass::Default && nvencMinQp == 0 && amfMinQp == 0 &&
                nvencIntraRefreshPeriod == 0 && nvencIntraRefreshCount == 0 &&
                spatialAq == Choice::Default && temporalAq == Choice::Default &&
                preAnalysis == Choice::Default && amfQuality == AmfQuality::Default &&
@@ -222,6 +225,7 @@ struct EncoderTuning
         if (nvencMultiPass == MultiPass::QuarterRes) add("multipass=quarter");
         if (nvencMultiPass == MultiPass::FullRes) add("multipass=full");
         if (nvencMinQp != 0) add("nvminqp=" + std::to_string(nvencMinQp));
+        if (amfMinQp != 0) add("amfminqp=" + std::to_string(amfMinQp));
         if (nvencIntraRefreshPeriod > 0)
             add("nvirperiod=" + std::to_string(nvencIntraRefreshPeriod));
         if (nvencIntraRefreshCount > 0) add("nvircnt=" + std::to_string(nvencIntraRefreshCount));

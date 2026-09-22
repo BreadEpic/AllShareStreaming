@@ -402,6 +402,21 @@ bool AmfEncoder::init(ID3D11Device* device, Codec codec, int width, int height, 
     m_Encoder->SetProperty(props.targetBitrate, bitsPerSecond);
     m_Encoder->SetProperty(props.peakBitrate, bitsPerSecond);
     m_Encoder->SetProperty(props.vbvBufferSize, vbvBitsNow);
+    // A QP floor, as on NVENC: without one the rate control spends the whole
+    // budget refining a picture that barely moves — a page of text with a
+    // spinner cost 8.7 Mbps at 1080p60 HEVC on the DualRTX iGPU (22/09/2026),
+    // 0.93 with the floor at 18, H.264 alike. A scroll does not reach it (the
+    // same size and encode time with and without). AMF has no gap between two
+    // intra-refresh sweeps, so this floor is the whole saving here.
+    if (tuning.amfMinQp >= 0 && codec != Codec::Av1) {
+        const amf_int64 qp = tuning.amfMinQp > 0 ? tuning.amfMinQp : 18;
+        if (codec == Codec::H264) {
+            m_Encoder->SetProperty(AMF_VIDEO_ENCODER_MIN_QP, qp);
+        } else if (codec == Codec::Hevc) {
+            m_Encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_MIN_QP_I, qp);
+            m_Encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_MIN_QP_P, qp);
+        }
+    }
 
     m_Encoder->SetProperty(props.frameSize, ::AMFConstructSize(width, height));
     m_Encoder->SetProperty(props.frameRate, ::AMFConstructRate(m_Fps, 1));
@@ -530,6 +545,9 @@ bool AmfEncoder::init(ID3D11Device* device, Codec codec, int width, int height, 
               std::to_string(m_Fps) + " " + toString(codec) + " 4:2:0 CBR " +
               std::to_string(bitrateKbps) + " kbps, VBV " + std::to_string(vbvBitsNow / 8 / 1024) +
               " KB" +
+              (tuning.amfMinQp >= 0 && codec != Codec::Av1
+                   ? ", QP >= " + std::to_string(tuning.amfMinQp > 0 ? tuning.amfMinQp : 18)
+                   : "") +
               (m_IntraRefresh ? ", intra-refresh over " + std::to_string(refreshPeriod) + " frames"
                               : ", keyframes on demand") +
               ", quality=" + qualityName(props, quality) +
