@@ -133,6 +133,14 @@ and decodes on the GPU behind that screen: the acceptance run deduces it from
 `mw-gpu-load --list`, and refuses a `MW_BENCH_CLIENT_LUID` whose GPU drives no
 screen.
 
+**Each encoder in a real stream, on DualRTX.** The Arc drives the primary
+screen and the AMD iGPU the second; the RTX drives none. `MW_BENCH_DISPLAY=1`
+streams the second screen (AMF), with `MW_BENCH_CONTENT_RECT` on it and the
+client at `MW_BENCH_CLIENT_POS=0,0`, on the Arc's. For NVENC, the `--dev`
+instance is started with `MW_VDD_GPU` set to the RTX's name: the Virtual
+Display is then rendered, captured and encoded on the RTX, and the
+`rtx-vdd-*` passes put their page on it once it exists (`contentAfter`).
+
 ## 5. Click to photon
 
 The host raises a blue/white/red flag at the top of **every** monitor for 100 ms
