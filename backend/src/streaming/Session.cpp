@@ -369,10 +369,9 @@ void StreamSession::quit()
 
 void StreamSession::onLaunchResult(bool ok, const BackendError& err, const MediaDescriptor& media)
 {
-    // Drop the launch/resume TLS socket now: leaving it pooled ~120s would hold
-    // Sunshine's single-threaded HTTPS server and block new iOS/Qt connections
-    // for the whole stream. Polling is suspended during a stream, so this is safe.
-    m_Http->dropPooledConnections();
+    // The launch/resume TLS socket is already closed (NvHTTP::closeWhenDone):
+    // pooled ~120s it would hold Sunshine's single-threaded HTTPS server and
+    // block new iOS/Qt connections for the whole stream.
 
     if (!ok) {
         qWarning() << "[Session] Launch failed:" << err.message << "kind=" << int(err.kind)

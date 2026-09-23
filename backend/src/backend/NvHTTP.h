@@ -20,6 +20,7 @@
 #include <QObject>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QUrl>
 #include <QXmlStreamReader>
 
@@ -93,10 +94,14 @@ public:
                                 const QByteArray& clientCertPem, const QByteArray& clientKeyPem,
                                 const QString& uniqueId = QString());
 
-    // Evict idle pooled sockets. Qt keeps finished TLS sockets alive ~120s for
-    // reuse; against Sunshine's single-threaded HTTPS server that lingering
-    // socket blocks other clients. Call after a one-shot request completes.
-    void dropPooledConnections();
+    // Closes the request's connection as soon as its reply is done. Qt keeps a
+    // finished socket pooled ~120s for reuse, whatever "Connection: close" the
+    // request carries; against Sunshine's single-threaded HTTPS server that
+    // lingering socket blocks every other client. Set on each request instead
+    // of calling QNetworkAccessManager::clearConnectionCache(): that one tears
+    // down the manager's whole HTTP thread, waits up to 5 s for it on the
+    // calling thread, and strands every request still in flight to any host.
+    static void closeWhenDone(QNetworkRequest& req);
 
     // Static XML helpers
     static void verifyResponseStatus(const QString& xml);

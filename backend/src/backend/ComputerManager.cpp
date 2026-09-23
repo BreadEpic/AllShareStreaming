@@ -1872,13 +1872,9 @@ void ComputerManager::onPairCheckFinished()
     QNetworkReply* reply = qobject_cast<QNetworkReply*>(sender());
     if (!reply) return;
 
-    // Force-evict the pooled TLS socket. Qt ignores a request-side
-    // "Connection: close" (hop-by-hop header it manages itself) and Sunshine
-    // answers keep-alive, so the socket would otherwise sit Established ~120s
-    // holding Sunshine's single-threaded HTTPS server and cycling co-located
-    // native clients offline. The response body is already buffered in `reply`.
-    m_Nam->clearConnectionCache();
-
+    // The TLS socket is already closed: getAppListAsync asks for it
+    // (NvHTTP::closeWhenDone), so nothing lingers on Sunshine's single-threaded
+    // HTTPS server.
     QString uuid = reply->property("mwHostUuid").toString();
     m_PendingPairChecks.remove(uuid);
     if (uuid.isEmpty()) {
@@ -2039,8 +2035,9 @@ void ComputerManager::startBoxArtFetch(const QString& uuid, int appId)
     artReq.setTransferTimeout(5000);
     artReq.setRawHeader("User-Agent", "MoonlightWeb/0.1");
     // Close immediately — don't leave the TLS socket pooled ~120s holding
-    // Sunshine's single-threaded HTTPS server (see NvHTTP::getAppListAsync).
+    // Sunshine's single-threaded HTTPS server (see NvHTTP::closeWhenDone).
     artReq.setRawHeader("Connection", "close");
+    NvHTTP::closeWhenDone(artReq);
 
     QSslConfiguration sslConfig = artReq.sslConfiguration();
     sslConfig.setLocalCertificate(QSslCertificate(cert, QSsl::Pem));
@@ -2064,8 +2061,6 @@ void ComputerManager::startBoxArtFetch(const QString& uuid, int appId)
             }
         }
         artReply->deleteLater();
-        // Evict the pooled TLS socket — see onPairCheckFinished().
-        m_Nam->clearConnectionCache();
         onBoxArtFetchComplete(uuid, appId, ok);
     });
 }

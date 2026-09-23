@@ -188,11 +188,8 @@ void GameStreamBackend::getAppList(const QString& seatId, BackendAppListCallback
     });
 
     connect(reply, &QNetworkReply::finished, this, [this, reply, answer]() {
-        // Force-evict the pooled TLS socket. Qt keeps a finished TLS socket alive
-        // ~120s; that socket holds Sunshine's single-threaded HTTPS server, and
-        // any other client polling the same host times out for the whole window.
-        m_Nam->clearConnectionCache();
-
+        // No pooled TLS socket to evict: getAppListAsync closes it when the
+        // reply is done (NvHTTP::closeWhenDone).
         const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
 
         if (reply->error() != QNetworkReply::NoError) {
