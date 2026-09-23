@@ -986,6 +986,52 @@ body.streaming-active::after {
     border-color: var(--kbd-on-edge);
 }
 
+/* Share guest's controller button (check / remap the pad): the keyboard
+   button's square, next to Leave. */
+.btn-stream-pad {
+    position: relative;
+    margin-right: 12px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    height: 30px;
+    padding: 0;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 8px;
+    color: rgba(255, 255, 255, 0.65);
+    font-size: 20px;
+    cursor: pointer;
+    user-select: none;
+}
+.btn-stream-pad:hover {
+    background: var(--kbd-on);
+    color: var(--kbd-on-edge);
+    border-color: var(--kbd-on-edge);
+}
+.btn-stream-pad:active {
+    transform: scale(0.95);
+}
+/* A pad is connected that nothing maps: the button is where to fix it. */
+.btn-stream-pad.is-attention {
+    color: var(--kbd-on-edge);
+    border-color: var(--kbd-on-edge);
+    animation: stream-pad-attention 1.6s ease-in-out infinite;
+}
+@keyframes stream-pad-attention {
+    50% {
+        box-shadow: 0 0 10px rgba(0, 229, 255, 0.55);
+        background: var(--kbd-on);
+    }
+}
+@media (prefers-reduced-motion: reduce) {
+    .btn-stream-pad.is-attention {
+        animation: none;
+        background: var(--kbd-on);
+    }
+}
+
 /* Hidden capture element: focusable (opens the soft keyboard) but invisible.
    Must NOT use display:none / visibility:hidden — those block focus.
    Anchored at the TOP (not bottom): a bottom-anchored field sits behind the

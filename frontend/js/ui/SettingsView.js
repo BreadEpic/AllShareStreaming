@@ -34,6 +34,14 @@ import { escapeHtml } from '../util/escapeHtml.js';
 import { shortcutsGridHtml, shortcutsTitle } from '../util/shortcutsHelp.js';
 import { noticeDetailsHtml } from './PrivacyNotice.js';
 import {
+    GamepadRemapDialog,
+    connectedPads,
+    resolvePad,
+    sourceBadge,
+} from './GamepadRemapDialog.js';
+import { padKey, padName } from '../stream/gamepadMapping.js';
+import { listMappings, removeMapping, CHANGED_EVENT } from '../util/gamepadMappingsStore.js';
+import {
     SUPPORTS_CANVAS_TEARING,
     IS_MOBILE_OR_TABLET,
     resolveTearing,
@@ -652,6 +660,92 @@ export class SettingsView {
             clearTimeout(this._saveTimer);
             this._saveTimer = null;
         }
+        this._stopPadWatch();
+    }
+
+    // --- Controllers ---
+    //
+    // Every pad plugged into this browser, how MoonlightWeb reads it, and the
+    // dialog to check or remap it. Mappings live in this browser only
+    // (gamepadMappingsStore), so the list also offers to forget the saved
+    // layouts of pads that are not plugged in right now.
+
+    _startPadWatch() {
+        if (this._padWatch || !navigator.getGamepads) return;
+        const tick = () => this._renderPads();
+        this._padWatch = { timer: setInterval(tick, 500), tick };
+        window.addEventListener('gamepadconnected', tick);
+        window.addEventListener('gamepaddisconnected', tick);
+        window.addEventListener(CHANGED_EVENT, tick);
+        tick();
+    }
+
+    _stopPadWatch() {
+        if (!this._padWatch) return;
+        clearInterval(this._padWatch.timer);
+        window.removeEventListener('gamepadconnected', this._padWatch.tick);
+        window.removeEventListener('gamepaddisconnected', this._padWatch.tick);
+        window.removeEventListener(CHANGED_EVENT, this._padWatch.tick);
+        this._padWatch = null;
+    }
+
+    _renderPads() {
+        const list = this.container.querySelector('.settings-pads');
+        if (!list) return;
+        const pads = connectedPads();
+        const saved = listMappings();
+        const rows = pads.map((gp) => ({ gp, key: padKey(gp), res: resolvePad(gp) }));
+        const present = new Set(rows.map((r) => r.key));
+        const absent = saved.filter((m) => !present.has(m.key));
+        const sig =
+            rows.map((r) => r.key + ':' + r.res.source).join('|') +
+            '#' +
+            absent.map((m) => m.key).join('|');
+        if (sig === this._padSig) return;
+        this._padSig = sig;
+
+        const btn = (cls, key, label) =>
+            `<button type="button" class="btn btn-secondary ${cls}" data-key="${escapeHtml(key)}">${escapeHtml(label)}</button>`;
+        let html = rows.length
+            ? rows
+                  .map(
+                      ({ gp, key, res }) => `
+                <div class="settings-pad">
+                    <span class="settings-pad-name">${escapeHtml(padName(gp))}</span>
+                    ${sourceBadge(res.source)}
+                    ${btn('settings-pad-test', key, t('settings.controllersTest'))}
+                    ${res.source === 'user' ? btn('settings-pad-reset', key, t('settings.controllersReset')) : ''}
+                </div>`,
+                  )
+                  .join('')
+            : `<p class="setting-desc">${escapeHtml(t('settings.controllersNone'))}</p>`;
+        if (absent.length) {
+            html += `<span class="setting-desc">${escapeHtml(t('settings.controllersSaved'))}</span>`;
+            html += absent
+                .map(
+                    (m) => `
+                <div class="settings-pad is-absent">
+                    <span class="settings-pad-name">${escapeHtml(m.name || m.key)}</span>
+                    ${sourceBadge('user')}
+                    ${btn('settings-pad-reset', m.key, t('settings.controllersDelete'))}
+                </div>`,
+                )
+                .join('');
+        }
+        list.innerHTML = html;
+        list.querySelectorAll('.settings-pad-test').forEach((b) =>
+            b.addEventListener('click', () =>
+                new GamepadRemapDialog({
+                    padKey: /** @type {HTMLElement} */ (b).dataset.key,
+                    mode: 'auto',
+                }).open(),
+            ),
+        );
+        list.querySelectorAll('.settings-pad-reset').forEach((b) =>
+            b.addEventListener('click', () =>
+                removeMapping(/** @type {HTMLElement} */ (b).dataset.key),
+            ),
+        );
     }
 
     // --- Auto-save ---
@@ -1403,6 +1497,15 @@ export class SettingsView {
                         : ''
                 }
 
+                <!-- ── Controllers ─────────────────────────────────────────── -->
+                <!-- Per browser: a layout belongs to the pad in this hand, not
+                     to the machine, so nothing here is saved to the server. -->
+                <div class="settings-section settings-section-controllers">
+                    <h3 class="settings-section-title">${t('settings.controllers')}</h3>
+                    <span class="setting-desc">${t('settings.controllersDesc')}</span>
+                    <div class="settings-pads"></div>
+                </div>
+
                 <!-- ── Privacy ─────────────────────────────────────────────── -->
                 <!-- Here rather than in Admin: it concerns everyone who streams
                      through this machine, and Admin is a door most users never
@@ -1492,6 +1595,11 @@ export class SettingsView {
     }
 
     bindEvents() {
+        // Controllers: the list follows what is plugged in.
+        this._padSig = '';
+        this._startPadWatch();
+        this._renderPads();
+
         // Anonymous statistics: consent given, or withdrawn, on the spot.
         const statsChk = this.container.querySelector('#settings-stats-consent');
         if (statsChk) {

@@ -34,6 +34,8 @@ import { measureRefreshRate, onRefreshRateChange } from '../util/RefreshRate.js'
 import { devicePixelSize } from '../util/StreamResolution.js';
 import { PeriodicStallDetector } from '../stream/PeriodicStallDetector.js';
 import { GamepadManager } from '../stream/GamepadManager.js';
+import { GamepadRemapDialog } from './GamepadRemapDialog.js';
+import { padKey, padName } from '../stream/gamepadMapping.js';
 import { armAudioPlayRetry } from '../util/audioAutoplay.js';
 import {
     NalParser,
@@ -799,6 +801,11 @@ export class StreamView {
         // letting it follow the controller we detect. 'auto' everywhere else —
         // see the gamepad profile note in SettingsView.
         this._gamepadProfile = opts.gamepadProfile || 'auto';
+        // Share-link guests: one controller only (the one picked on the join
+        // page), and a header button to check or remap it — only when the
+        // invitation lets them play with a gamepad at all.
+        this._gamepadAllowed = opts.gamepadAllowed === true;
+        this._padKey = opts.padKey || null;
         // Click-to-photon probe (debug builds, Windows host): the launch reply
         // says whether the host raises its flag on every click. Only then is
         // the measuring side installed — see stream/LatencyProbe.js.
@@ -1183,6 +1190,8 @@ export class StreamView {
 
         // Gamepad bridge (Xbox/PlayStation) — created lazily on first connect.
         this._gamepadManager = null;
+        this._gamepadDialog = null;
+        this._padBtn = null;
 
         // Forward stats/pong messages from backend to the stats overlay system.
         // Set before setupWebRtc() so it's active when connect() is called.
@@ -3560,7 +3569,59 @@ export class StreamView {
         const consoleBtn = this._rootEl.querySelector('#btn-stream-console');
         if (consoleBtn) consoleBtn.classList.remove('stream-ctl-prestart');
         if (this._kbdBtn) this._kbdBtn.classList.remove('stream-ctl-prestart');
+        this._mountGamepadButton();
         this._mountShareMenu();
+    }
+
+    /**
+     * A share guest's controller button: check the pad, remap it, or switch
+     * to another one. Guests only — the owner maps every pad from Settings —
+     * and only when the invitation allows a gamepad. Idempotent.
+     */
+    _mountGamepadButton() {
+        if (!this._playerMode || !this._gamepadAllowed || this._padBtn || !this._rootEl) return;
+        const header = this._rootEl.querySelector('.stream-header');
+        const quitBtn = this._rootEl.querySelector('#btn-stream-quit');
+        if (!header) return;
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.id = 'btn-stream-pad';
+        btn.className = 'btn-stream-pad';
+        btn.innerHTML = Icons.gamepad;
+        btn.title = t('stream.gamepadButton');
+        btn.setAttribute('aria-label', t('stream.gamepadButton'));
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this._openGamepadDialog(this._gamepadManager?.forwardedKey() || this._padKey);
+        });
+        header.insertBefore(btn, quitBtn || null);
+        this._padBtn = btn;
+    }
+
+    /**
+     * The controller dialog over the stream. The pad stops reaching the host
+     * while it is open (mapping "A" must not press A in the game), and a guest
+     * who picks another pad in it switches the one forwarded.
+     */
+    _openGamepadDialog(key) {
+        if (this._gamepadDialog && this._gamepadDialog.isOpen) return;
+        const gm = this._gamepadManager;
+        this._gamepadDialog = new GamepadRemapDialog({
+            container: this._rootEl || document.body,
+            padKey: key || null,
+            mode: 'auto',
+            onOpen: () => gm && gm.setPaused(true),
+            onClose: () => {
+                if (gm) gm.setPaused(false);
+                if (this._padBtn) this._padBtn.classList.remove('is-attention');
+            },
+            onPadChange: (k) => {
+                if (!this._playerMode) return;
+                this._padKey = k;
+                if (gm) gm.setPreferredPad(k);
+            },
+        });
+        this._gamepadDialog.open();
     }
 
     /**
@@ -4245,21 +4306,34 @@ export class StreamView {
                     },
                     {
                         profile: this._gamepadProfile,
-                        // A pad with no standard mapping is not forwarded; say
-                        // so, or the player pushes buttons at a game that never
-                        // hears them. Longer than the default fade: this is
-                        // advice to act on, not an acknowledgement. The id
-                        // carries vendor/product ids the player cannot use
-                        // (Chrome appends them in parentheses, Firefox prefixes
-                        // them as hex); only the name is shown.
+                        // A guest forwards the one pad they picked, as
+                        // controller 0 (see GamepadManager's single mode).
+                        single: this._playerMode,
+                        preferredKey: this._padKey,
+                        // A pad nothing maps is not forwarded; say so, or the
+                        // player pushes buttons at a game that never hears
+                        // them — and offer the wizard that fixes it. Longer
+                        // than the default fade: this is advice to act on.
                         onIgnored: (gp) => {
-                            const name =
-                                (gp.id || '')
-                                    .replace(/\s*\(.*\)\s*$/, '')
-                                    .replace(/^[0-9a-f]{4}-[0-9a-f]{4}-/i, '')
-                                    .trim() || '?';
-                            Toast.warning(t('stream.gamepadIgnored', { name }), {
+                            if (this._padBtn) this._padBtn.classList.add('is-attention');
+                            Toast.warning(t('stream.gamepadIgnored', { name: padName(gp) }), {
                                 durationMs: 10000,
+                                action: {
+                                    label: t('stream.gamepadConfigure'),
+                                    onClick: () => this._openGamepadDialog(padKey(gp)),
+                                },
+                            });
+                        },
+                        // A layout guessed (Chrome Android, SDL database): it
+                        // is right most of the time, and one tap away from
+                        // fixed when it is not.
+                        onMapped: (gp) => {
+                            Toast.info(t('stream.gamepadAutoMapped', { name: padName(gp) }), {
+                                durationMs: 6000,
+                                action: {
+                                    label: t('stream.gamepadRemap'),
+                                    onClick: () => this._openGamepadDialog(padKey(gp)),
+                                },
                             });
                         },
                     },
@@ -8061,7 +8135,7 @@ export class StreamView {
         if (!el || typeof el.closest !== 'function') return false;
         return !!el.closest(
             'input, textarea, select, [contenteditable="true"], ' +
-                '.share-popin-overlay, .share-board-overlay',
+                '.share-popin-overlay, .share-board-overlay, .gamepad-remap-overlay',
         );
     }
 
@@ -10268,6 +10342,14 @@ export class StreamView {
             this._kbdBtn.remove();
             this._kbdBtn = null;
         }
+        if (this._padBtn) {
+            this._padBtn.remove();
+            this._padBtn = null;
+        }
+        if (this._gamepadDialog) {
+            this._gamepadDialog.close();
+            this._gamepadDialog = null;
+        }
         if (this._kbToolbar) {
             this._kbToolbar.remove();
             this._kbToolbar = null;
@@ -10455,6 +10537,14 @@ export class StreamView {
         if (this._kbdBtn) {
             this._kbdBtn.remove();
             this._kbdBtn = null;
+        }
+        if (this._padBtn) {
+            this._padBtn.remove();
+            this._padBtn = null;
+        }
+        if (this._gamepadDialog) {
+            this._gamepadDialog.close();
+            this._gamepadDialog = null;
         }
         if (this._kbToolbar) {
             this._kbToolbar.remove();

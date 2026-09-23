@@ -196,7 +196,57 @@
         "restartRequired": "Pilote installé. Redémarrez ce PC pour l’activer.",
         "installFailed": "Le pilote n’a pas pu être installé.",
         "download": "Télécharger le pilote",
-        "manualHint": "MoonlightWeb ne tourne pas ici avec les droits nécessaires pour l’installer."
+        "manualHint": "MoonlightWeb ne tourne pas ici avec les droits nécessaires pour l’installer.",
+        "remap": {
+            "title": "Manette",
+            "pick": "Choisir une manette",
+            "empty": "Branchez une manette et appuyez sur un bouton.",
+            "testPrompt": "Appuyez sur les boutons et bougez les sticks pour les vérifier.",
+            "unknown": "La disposition de cette manette est inconnue. Configurez-la pour l’utiliser.",
+            "guessed": "Cette disposition a été reconnue automatiquement. Si un bouton ne fait pas ce qu’il faut, remappez-la.",
+            "release": "Relâchez tous les boutons et les sticks…",
+            "done": "Toutes les commandes sont réglées. Enregistrez pour utiliser cette disposition.",
+            "guideHint": "Certains navigateurs se réservent ce bouton. Passez l’étape s’il ne se passe rien.",
+            "saved": "Disposition enregistrée pour « {{name}} ».",
+            "remap": "Remapper",
+            "start": "Configurer cette manette",
+            "reset": "Revenir à l’automatique",
+            "close": "Fermer",
+            "back": "Retour",
+            "skip": "Passer",
+            "cancel": "Annuler",
+            "save": "Enregistrer",
+            "source": {
+                "standard": "Reconnue",
+                "user": "Personnalisée",
+                "android": "Auto",
+                "db": "Auto",
+                "none": "Inconnue"
+            },
+            "steps": {
+                "a": "Appuyez sur A (bouton du bas)",
+                "b": "Appuyez sur B (bouton de droite)",
+                "x": "Appuyez sur X (bouton de gauche)",
+                "y": "Appuyez sur Y (bouton du haut)",
+                "leftshoulder": "Appuyez sur la gâchette haute gauche (LB)",
+                "rightshoulder": "Appuyez sur la gâchette haute droite (RB)",
+                "lefttrigger": "Pressez la gâchette gauche (LT)",
+                "righttrigger": "Pressez la gâchette droite (RT)",
+                "back": "Appuyez sur Affichage (Back / Select)",
+                "start": "Appuyez sur Menu (Start)",
+                "guide": "Appuyez sur le bouton central (Home)",
+                "leftstick": "Enfoncez le stick gauche (L3)",
+                "rightstick": "Enfoncez le stick droit (R3)",
+                "dpup": "Appuyez sur la croix : haut",
+                "dpright": "Appuyez sur la croix : droite",
+                "dpdown": "Appuyez sur la croix : bas",
+                "dpleft": "Appuyez sur la croix : gauche",
+                "leftx": "Poussez le stick gauche vers la droite",
+                "lefty": "Poussez le stick gauche vers le bas",
+                "rightx": "Poussez le stick droit vers la droite",
+                "righty": "Poussez le stick droit vers le bas"
+            }
+        }
     },
     "securing": {
         "working": "Sécurisation de la communication…",
@@ -355,7 +405,14 @@
         "algoQualGl": "Qualité (FSR1 WebGL2)",
         "algoQualGpu": "Qualité (FSR1 WebGPU)",
         "language": "Langue",
-        "languageDesc": "Langue de l'interface. La page se recharge lors du changement."
+        "languageDesc": "Langue de l'interface. La page se recharge lors du changement.",
+        "controllers": "Manettes",
+        "controllersDesc": "Vérifiez chaque manette et placez ses boutons comme vous voulez. Les dispositions restent dans ce navigateur.",
+        "controllersNone": "Aucune manette détectée. Branchez-en une et appuyez sur un bouton.",
+        "controllersSaved": "Dispositions enregistrées (manette non branchée)",
+        "controllersTest": "Tester / remapper",
+        "controllersReset": "Réinitialiser",
+        "controllersDelete": "Supprimer"
     },
     "admin": {
         "title": "Paramètres serveur",
@@ -520,7 +577,7 @@
         "webcodecsUnsupported": "WebCodecs non pris en charge",
         "codecUnsupported": "Codec non pris en charge par le navigateur",
         "streamDisconnected": "Flux déconnecté",
-        "gamepadIgnored": "« {{name}} » ignorée : disposition inconnue. Passez-la en mode XInput si elle en a un, ou utilisez un outil de remappage.",
+        "gamepadIgnored": "« {{name}} » n’est pas transmise : sa disposition est inconnue. Configurez-la une fois et elle fonctionnera.",
         "textInputNeedsIme": "Clavier tactile : sur un hôte Linux, le texte passe par IBus. Sans méthode de saisie active dans la session de l'hôte, rien d'utilisable n'est tapé.",
         "webrtcError": "Erreur de connexion WebRTC",
         "degradeBitrate": "Réseau instable — débit réduit à {{mbps}} Mbps",
@@ -628,7 +685,11 @@
         "tsDragVal": "Appui long, puis glisser",
         "tsScrollVal": "Glisser à 1 doigt",
         "console": "Wolf UI",
-        "consoleHint": "Retour à Wolf UI (Ctrl+Alt+Shift+W, que le navigateur peut intercepter)"
+        "consoleHint": "Retour à Wolf UI (Ctrl+Alt+Shift+W, que le navigateur peut intercepter)",
+        "gamepadConfigure": "Configurer",
+        "gamepadAutoMapped": "« {{name}} » a été reconnue automatiquement. Des boutons mal placés ?",
+        "gamepadRemap": "Remapper",
+        "gamepadButton": "Manette"
     },
     "transport": {
         "webrtcDcUdp": "WebRTC DataChannel (UDP)",
@@ -768,7 +829,12 @@
         "endedBody": "Ton hôte a arrêté le jeu, et le flux s'est arrêté avec lui. Rien n'est cassé — on t'a juste débranché.",
         "endedHint": "Passe-lui un coup de fil et demande un nouveau lien.",
         "appGone": "L'application prévue pour cette invitation n'est plus sur l'hôte. Demande un nouveau lien.",
-        "alreadyBound": "Cette invitation est déjà liée à une autre machine. Demande un nouveau lien."
+        "alreadyBound": "Cette invitation est déjà liée à une autre machine. Demande un nouveau lien.",
+        "gamepad": "Manette",
+        "gamepadNone": "Branche une manette et appuie sur un bouton.",
+        "gamepadConfigure": "Configurer la manette",
+        "gamepadCheck": "Vérifier les boutons",
+        "gamepadNeedsMap": "La disposition de cette manette est inconnue. Configure-la une fois pour jouer."
     },
     "backend": {
         "title": "Backend de {{name}}",

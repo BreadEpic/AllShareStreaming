@@ -192,6 +192,49 @@ USB/Bluetooth et version du système. Détection à plusieurs niveaux :
 > secondes, avec le nom rapporté par le navigateur et le conseil de passer en
 > XInput. Rebrancher la manette réarme le message.
 
+> **Révisé le 23/09/2026 : la décision du 02/09 est renversée.** Une GameSir
+> G8+ sur Chrome Android (qui n'a pas de mode XInput à proposer) a été écartée ;
+> le conseil « passez en XInput » n'y peut rien. Les deux niveaux sont écrits,
+> **côté navigateur uniquement** — l'hôte voit toujours un état X360, le
+> protocole ne change pas.
+>
+> `stream/gamepadMapping.js` résout chaque manette, dans cet ordre :
+>
+> 1. **mappage de l'utilisateur** (`util/gamepadMappingsStore.js`, localStorage
+>    `mw-gamepad-mappings`, clé = `usb:vid:pid` ou `name:<nom>`) — aussi sur une
+>    manette standard, pour qui veut remapper ;
+> 2. `mapping === 'standard'` → inchangé ;
+> 3. **Chrome Android**, `mapping: ''` → lue comme standard : Chromium
+>    (`UnknownGamepadMappings`) a déjà rangé boutons et axes dans l'ordre
+>    standard, il ne le déclare simplement pas ;
+> 4. **SDL_GameControllerDB** (zlib, `stream/gamepadDb.js` généré par
+>    `npm run gamepad-db` à un commit épinglé ; Windows, macOS, Linux ; ~1 900
+>    entrées, chargé par `import()` seulement quand une manette non standard
+>    apparaît). Boutons SDL = boutons navigateur ; axes gardés s'ils existent ;
+>    le chapeau `h0.N` devient l'axe 9 de Chrome Windows/macOS (pas de 2/7,
+>    neutre à 9/7) ou la dernière paire d'axes sous Linux ;
+> 5. rien → pas transmise, toast avec **Configurer**.
+>
+> Une manette **devinée** (3 ou 4) est annoncée par un toast « reconnue
+> automatiquement » avec **Remapper** : la crainte d'origine (boutons ailleurs,
+> difficile à diagnostiquer) devient une correction en un geste.
+>
+> **Assistant** (`ui/GamepadRemapDialog.js` + `ui/GamepadArt.js`, manette SVG) :
+> vue test en direct, puis une commande à la fois (21 étapes, Passer/Retour) ;
+> la première entrée qui bouge est retenue (`detectInput` : gâchette au repos à
+> −1 → axe entier, chapeau à 9/7 → direction du chapeau, axe centré → demi-axe
+> ou axe entier pour un stick). Le stream est mis en pause pendant l'assistant
+> (`GamepadManager.setPaused`). Accès : Réglages → Manettes (propriétaire),
+> toasts, et pour l'invité la page d'accueil du partage et un bouton manette
+> dans l'en-tête.
+>
+> **Invités (liens de partage avec manette autorisée)** : une seule manette par
+> partage, choisie sur la page d'accueil, toujours envoyée comme manette 0
+> (`GamepadManager` mode `single`). Cela corrige aussi une collision : avec
+> `gamepadOffset`, une manette d'invité à l'index navigateur 1 tombait sur la
+> manette virtuelle de l'invité suivant. Une manette non reconnue doit être
+> configurée avant d'entrer.
+
 ### 7.1 Sélection manuelle — debug uniquement
 
 L'auto-détection est le comportement de production. Un sélecteur manuel de

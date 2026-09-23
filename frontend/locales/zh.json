@@ -196,7 +196,57 @@
         "restartRequired": "驱动已安装。重启这台电脑即可生效。",
         "installFailed": "无法安装该驱动。",
         "download": "下载驱动",
-        "manualHint": "MoonlightWeb 在这里没有安装它所需的权限。"
+        "manualHint": "MoonlightWeb 在这里没有安装它所需的权限。",
+        "remap": {
+            "title": "手柄",
+            "pick": "选择手柄",
+            "empty": "请连接手柄并按任意键。",
+            "testPrompt": "按下按键、移动摇杆以进行检查。",
+            "unknown": "此手柄的布局未知。请先映射后再使用。",
+            "guessed": "此布局为自动识别。如有按键不对，请重新映射。",
+            "release": "请松开所有按键和摇杆…",
+            "done": "所有按键已设置。保存后即可使用此布局。",
+            "guideHint": "部分浏览器会占用此按键。若无反应请跳过。",
+            "saved": "已为“{{name}}”保存布局。",
+            "remap": "重新映射",
+            "start": "映射此手柄",
+            "reset": "恢复自动",
+            "close": "关闭",
+            "back": "上一步",
+            "skip": "跳过",
+            "cancel": "取消",
+            "save": "保存",
+            "source": {
+                "standard": "已识别",
+                "user": "自定义",
+                "android": "自动",
+                "db": "自动",
+                "none": "未知"
+            },
+            "steps": {
+                "a": "按 A（下方按键）",
+                "b": "按 B（右侧按键）",
+                "x": "按 X（左侧按键）",
+                "y": "按 Y（上方按键）",
+                "leftshoulder": "按左肩键（LB）",
+                "rightshoulder": "按右肩键（RB）",
+                "lefttrigger": "按下左扳机（LT）",
+                "righttrigger": "按下右扳机（RT）",
+                "back": "按视图键（Back / Select）",
+                "start": "按菜单键（Start）",
+                "guide": "按主页键（Home）",
+                "leftstick": "按下左摇杆（L3）",
+                "rightstick": "按下右摇杆（R3）",
+                "dpup": "按方向键：上",
+                "dpright": "按方向键：右",
+                "dpdown": "按方向键：下",
+                "dpleft": "按方向键：左",
+                "leftx": "将左摇杆推向右",
+                "lefty": "将左摇杆推向下",
+                "rightx": "将右摇杆推向右",
+                "righty": "将右摇杆推向下"
+            }
+        }
     },
     "securing": {
         "working": "正在建立安全连接…",
@@ -355,7 +405,14 @@
         "algoQualGl": "画质（FSR1 WebGL2）",
         "algoQualGpu": "画质（FSR1 WebGPU）",
         "language": "语言",
-        "languageDesc": "界面语言。更改后页面将重新加载。"
+        "languageDesc": "界面语言。更改后页面将重新加载。",
+        "controllers": "手柄",
+        "controllersDesc": "检查每个手柄并按你的习惯映射按键。布局仅保存在此浏览器中。",
+        "controllersNone": "未检测到手柄。请连接手柄并按任意键。",
+        "controllersSaved": "已保存的布局（手柄未连接）",
+        "controllersTest": "测试 / 重新映射",
+        "controllersReset": "重置",
+        "controllersDelete": "删除"
     },
     "admin": {
         "title": "服务器设置",
@@ -520,7 +577,7 @@
         "webcodecsUnsupported": "不支持 WebCodecs",
         "codecUnsupported": "浏览器不支持该编解码器",
         "streamDisconnected": "串流已断开",
-        "gamepadIgnored": "已忽略“{{name}}”：布局未知。如支持请切换到 XInput 模式，否则请使用按键映射工具。",
+        "gamepadIgnored": "“{{name}}”未被转发：布局未知。映射一次即可使用。",
         "textInputNeedsIme": "触摸键盘：在 Linux 主机上，文本通过 IBus 输入。若主机会话中没有运行输入法，将无法正确输入。",
         "webrtcError": "WebRTC 连接错误",
         "degradeBitrate": "网络不稳定——码率已降至 {{mbps}} Mbps",
@@ -628,7 +685,11 @@
         "tsDragVal": "长按，然后移动",
         "tsScrollVal": "单指拖动",
         "console": "Wolf UI",
-        "consoleHint": "返回 Wolf UI（Ctrl+Alt+Shift+W，浏览器可能会拦截该组合键）"
+        "consoleHint": "返回 Wolf UI（Ctrl+Alt+Shift+W，浏览器可能会拦截该组合键）",
+        "gamepadConfigure": "映射",
+        "gamepadAutoMapped": "“{{name}}”已自动识别。按键位置不对？",
+        "gamepadRemap": "重新映射",
+        "gamepadButton": "手柄"
     },
     "transport": {
         "webrtcDcUdp": "WebRTC 数据通道（UDP）",
@@ -768,7 +829,12 @@
         "endedBody": "主机停止了游戏，串流也随之结束。没有出错——只是被拔掉了插头。",
         "endedHint": "打个电话，请对方给你一个新链接。",
         "appGone": "此邀请对应的应用已不在主机上。请索取新链接。",
-        "alreadyBound": "此邀请已绑定到另一台机器。请索取新链接。"
+        "alreadyBound": "此邀请已绑定到另一台机器。请索取新链接。",
+        "gamepad": "手柄",
+        "gamepadNone": "请连接手柄并按任意键。",
+        "gamepadConfigure": "映射手柄",
+        "gamepadCheck": "检查按键",
+        "gamepadNeedsMap": "此手柄的布局未知。映射一次即可开始游戏。"
     },
     "backend": {
         "title": "{{name}} 的后端",

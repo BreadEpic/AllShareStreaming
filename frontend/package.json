@@ -11,6 +11,7 @@
     "format:fix": "prettier --write \"js/**/*.js\" \"scripts/**/*.{js,cjs}\"",
     "typecheck": "tsc --noEmit",
     "i18n": "node scripts/check-i18n.cjs",
+    "gamepad-db": "node scripts/update-gamepad-db.cjs",
     "check": "npm run format && npm run lint && npm run i18n",
     "test": "vitest run",
     "test:watch": "vitest",

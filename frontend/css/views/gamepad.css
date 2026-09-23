@@ -1,0 +1,445 @@
+/*
+ * Controller art + remap dialog (GamepadArt.js, GamepadRemapDialog.js).
+ * The pad is drawn dark and matte; light only means something: yellow for
+ * a pressed control, cyan for the one the wizard waits for.
+ */
+
+/* ── The drawn controller ─────────────────────────────────────────────── */
+
+.gp-art {
+    display: block;
+    width: 100%;
+    height: auto;
+    overflow: visible;
+    font-family: var(--font-ui);
+}
+
+.gp-floor {
+    fill: rgba(0, 229, 255, 0.05);
+    filter: blur(6px);
+}
+
+.gp-edge {
+    stroke: var(--neon-cyan);
+    stroke-opacity: 0.32;
+    stroke-width: 1.2;
+    filter: drop-shadow(0 0 3px rgba(0, 229, 255, 0.35));
+}
+
+.gp-sheen {
+    stroke: #ffffff;
+    stroke-opacity: 0.1;
+    stroke-width: 1.5;
+    stroke-linecap: round;
+}
+
+.gp-spec {
+    fill: #ffffff;
+    fill-opacity: 0.07;
+}
+
+.gp-plate {
+    fill: rgba(0, 0, 0, 0.22);
+    stroke: rgba(255, 255, 255, 0.04);
+    stroke-width: 1;
+}
+
+.gp-well-rim {
+    stroke: rgba(255, 255, 255, 0.07);
+    stroke-width: 1;
+}
+
+.gp-face-well {
+    fill: rgba(0, 0, 0, 0.18);
+    stroke: rgba(255, 255, 255, 0.03);
+}
+
+.gp-cap-grip {
+    stroke: rgba(255, 255, 255, 0.08);
+    stroke-width: 2.4;
+    stroke-dasharray: 1.2 3.1;
+}
+
+.gp-face-rim,
+.gp-guide-rim {
+    stroke: rgba(255, 255, 255, 0.09);
+    stroke-width: 1;
+}
+
+.gp-face-letter {
+    font-size: 18px;
+    font-weight: 700;
+    text-anchor: middle;
+    pointer-events: none;
+}
+.gp-face-a {
+    fill: var(--c-success);
+}
+.gp-face-b {
+    fill: var(--neon-magenta);
+}
+.gp-face-x {
+    fill: var(--neon-cyan);
+}
+.gp-face-y {
+    fill: var(--accent-1);
+}
+
+.gp-dpad-glyph {
+    fill: rgba(255, 255, 255, 0.22);
+}
+
+.gp-glyph rect,
+.gp-glyph path {
+    fill: none;
+    stroke: rgba(234, 253, 255, 0.55);
+    stroke-width: 1.4;
+    stroke-linecap: round;
+}
+
+.gp-guide-mark {
+    stroke: var(--neon-cyan);
+    stroke-opacity: 0.8;
+    stroke-width: 2.4;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.gp-bumper > path:first-child {
+    stroke: rgba(255, 255, 255, 0.06);
+}
+
+.gp-trigger-fill {
+    fill: var(--accent-1);
+    fill-opacity: 0.75;
+}
+
+/* Lit when pressed. */
+.gp-hot {
+    fill: var(--accent-1);
+    opacity: 0;
+    transition: opacity 60ms linear;
+    pointer-events: none;
+}
+.gp-ctl.is-pressed .gp-hot {
+    opacity: 0.92;
+}
+/* A trigger shows its travel (the fill), not a flat light. */
+.gp-trigger.is-pressed .gp-hot {
+    opacity: 0.18;
+}
+.gp-ctl.is-pressed {
+    filter: drop-shadow(0 0 6px rgba(252, 238, 10, 0.55));
+}
+.gp-stick.is-moved .gp-stick-cap {
+    filter: drop-shadow(0 0 5px rgba(252, 238, 10, 0.35));
+}
+.gp-face.is-pressed .gp-face-letter {
+    fill: var(--on-accent);
+}
+
+/* The wizard's current step, and the steps already done. */
+.gp-ring {
+    fill: none;
+    stroke: var(--neon-cyan);
+    stroke-width: 2;
+    opacity: 0;
+    pointer-events: none;
+}
+.gp-ctl.is-mapped .gp-ring {
+    opacity: 0.3;
+    stroke-dasharray: 3 4;
+}
+.gp-ctl.is-target .gp-ring {
+    opacity: 1;
+    stroke-dasharray: none;
+    filter: drop-shadow(0 0 6px rgba(0, 229, 255, 0.8));
+    animation: gp-pulse 1.4s ease-in-out infinite;
+}
+@keyframes gp-pulse {
+    50% {
+        opacity: 0.35;
+    }
+}
+
+.gp-arrow {
+    fill: var(--neon-cyan);
+    opacity: 0;
+    filter: drop-shadow(0 0 4px rgba(0, 229, 255, 0.8));
+}
+.gp-ctl.is-target-x .gp-arrow[data-dir='x'],
+.gp-ctl.is-target-y .gp-arrow[data-dir='y'] {
+    opacity: 1;
+    animation: gp-pulse 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .gp-ctl.is-target .gp-ring,
+    .gp-arrow {
+        animation: none !important;
+    }
+}
+
+/* ── The dialog ───────────────────────────────────────────────────────── */
+
+.gamepad-remap-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 1100;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    background: rgba(2, 4, 6, 0.78);
+    backdrop-filter: blur(4px);
+}
+
+.gamepad-remap {
+    position: relative;
+    width: min(680px, 100%);
+    max-height: calc(100vh - 32px);
+    max-height: calc(100dvh - 32px);
+    overflow-y: auto;
+    padding: 20px 24px 20px;
+    background:
+        radial-gradient(120% 70% at 50% 0%, rgba(0, 229, 255, 0.06), transparent 60%),
+        var(--surface-1);
+    clip-path: var(--notch-lg);
+    box-shadow: var(--edge-cyan);
+    color: var(--text-1);
+}
+
+.gamepad-remap-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 4px;
+}
+
+.gamepad-remap-title {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--text-1);
+}
+
+.gamepad-remap-pad {
+    flex: 1 1 200px;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    justify-content: flex-end;
+}
+
+.gamepad-remap-select {
+    max-width: 100%;
+    min-width: 0;
+    padding: 6px 10px;
+    background: var(--surface-2);
+    color: var(--text-1);
+    border: 1px solid var(--border-1);
+    border-radius: var(--radius-sm);
+    font: inherit;
+    font-size: 13px;
+}
+
+.gamepad-remap-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 14px;
+    color: var(--text-2);
+}
+
+.gp-badge {
+    flex: none;
+    padding: 2px 8px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    border: 1px solid currentColor;
+    border-radius: var(--radius-sm);
+    white-space: nowrap;
+}
+.gp-badge-standard {
+    color: var(--c-success);
+}
+.gp-badge-user {
+    color: var(--neon-cyan);
+}
+.gp-badge-android,
+.gp-badge-db {
+    color: var(--c-warning-text);
+}
+.gp-badge-none {
+    color: var(--c-danger-text);
+}
+
+.gamepad-remap-stage {
+    position: relative;
+    margin: 6px auto 0;
+    max-width: 560px;
+}
+
+.gamepad-remap-empty {
+    position: absolute;
+    inset: 30% 10% auto;
+    text-align: center;
+    font-size: 14px;
+    color: var(--text-2);
+}
+.gamepad-remap-stage.is-empty .gp-art {
+    opacity: 0.35;
+    filter: grayscale(0.6);
+}
+
+.gamepad-remap-status {
+    min-height: 48px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 14px;
+    margin-top: 4px;
+    background: var(--surface-2);
+    clip-path: var(--notch-sm);
+    box-shadow: var(--edge-cyan);
+}
+
+.gamepad-remap-prompt {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-1);
+}
+.gamepad-remap-prompt strong {
+    color: var(--neon-cyan);
+    font-weight: 700;
+}
+
+.gamepad-remap-raw {
+    flex: none;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    color: var(--text-3);
+}
+.gamepad-remap-raw.is-caught {
+    color: var(--accent-1);
+}
+
+.gamepad-remap-progress {
+    height: 2px;
+    margin-top: 8px;
+    background: var(--surface-3);
+}
+.gamepad-remap-progress > span {
+    display: block;
+    height: 100%;
+    width: 0;
+    background: var(--neon-cyan);
+    box-shadow: 0 0 8px rgba(0, 229, 255, 0.6);
+    transition: width 160ms ease-out;
+}
+
+.gamepad-remap-hint {
+    margin: 10px 0 0;
+    font-size: 13px;
+    color: var(--text-2);
+}
+
+.gamepad-remap-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 16px;
+}
+.gamepad-remap-actions .gp-spacer {
+    flex: 1;
+}
+
+@media (max-height: 520px) and (orientation: landscape) {
+    /* Phone held sideways: the pad and the prompt side by side. */
+    .gamepad-remap {
+        width: min(860px, 100%);
+        display: grid;
+        grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+        column-gap: 18px;
+        padding: 14px 18px;
+    }
+    .gamepad-remap-head {
+        grid-column: 1 / -1;
+    }
+    .gamepad-remap-stage {
+        grid-row: 2 / span 4;
+        margin: 0;
+        align-self: center;
+    }
+}
+
+/* ── Guest landing: controller field ──────────────────────────────────── */
+
+.player-gamepad {
+    margin-top: 14px;
+}
+.player-gamepad-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+}
+.player-gamepad-row .gamepad-remap-select {
+    flex: 1;
+}
+.player-gamepad-empty {
+    font-size: 13px;
+    color: var(--text-2);
+}
+.player-gamepad-check {
+    margin-top: 6px;
+    padding: 0;
+    background: none;
+    border: none;
+    font: inherit;
+    font-size: 12.5px;
+    color: var(--neon-cyan);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    cursor: pointer;
+}
+
+/* ── Settings: controllers section ────────────────────────────────────── */
+
+.settings-pads {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.settings-pad {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    padding: 10px 12px;
+    background: var(--surface-2);
+    clip-path: var(--notch-sm);
+    box-shadow: var(--edge-cyan);
+}
+.settings-pad-name {
+    flex: 1 1 160px;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 600;
+}
+.settings-pad.is-absent {
+    opacity: 0.7;
+}
+.settings-pad .btn {
+    padding: 6px 12px;
+}

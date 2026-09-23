@@ -1,0 +1,407 @@
+/*
+ * MoonlightWeb — Browser-based Moonlight streaming client.
+ * Copyright (C) 2026 Bruno Martin.
+ *
+ * This program is free software: you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the Free
+ * Software Foundation, either version 3 of the License, or (at your option)
+ * any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
+ * more details.
+ *
+ * You should have received a copy of the GNU General Public License along with
+ * this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+/**
+ * gamepadMapping — turns a controller the browser cannot lay out into one
+ * GamepadManager can read as a W3C "standard" pad.
+ *
+ * The browser says `mapping: 'standard'` when it knows which raw button is A;
+ * otherwise it hands over bare `buttons[]` / `axes[]` indices. A mapping is a
+ * set of BINDINGS, one per standard control, each naming the raw input that
+ * drives it:
+ *
+ *   { t: 'b', i }            raw button i
+ *   { t: 'a', i, s, inv }    raw axis i — s = +1/-1 for one half of it, 0 for
+ *                            the whole axis; inv flips it
+ *   { t: 'h', i, bit }       a d-pad packed into ONE axis, as Chrome reports a
+ *                            HID hat switch on Windows/macOS (bit: 1 up,
+ *                            2 right, 4 down, 8 left — SDL's hat bits)
+ *
+ * Bindings come from, in this order (resolveMapping):
+ *   1. the user's own mapping for this pad (gamepadMappingsStore);
+ *   2. the browser's standard layout;
+ *   3. Chrome Android: an unknown pad is reported without a mapping, but
+ *      Chromium (UnknownGamepadMappings) has already put its buttons and axes
+ *      in the standard slots — read it as standard;
+ *   4. SDL_GameControllerDB (gamepadDb.js, desktop only, loaded on demand);
+ *   5. nothing: the pad is not forwarded until the user maps it.
+ *
+ * Bindings are plain JSON so the user's mapping is stored as is.
+ */
+
+/** Standard control names, in W3C standard button order (index = button). */
+export const BUTTON_TARGETS = [
+    'a',
+    'b',
+    'x',
+    'y',
+    'leftshoulder',
+    'rightshoulder',
+    'lefttrigger',
+    'righttrigger',
+    'back',
+    'start',
+    'leftstick',
+    'rightstick',
+    'dpup',
+    'dpdown',
+    'dpleft',
+    'dpright',
+    'guide',
+];
+
+/** Stick axes, in W3C standard axis order (index = axis). */
+export const AXIS_TARGETS = ['leftx', 'lefty', 'rightx', 'righty'];
+
+// A HID hat switch on Chrome Windows/macOS: logical 0..7 (up, then clockwise)
+// normalised to -1..1 in steps of 2/7; the null state (8) lands at 9/7.
+const HAT_BITS = [1, 3, 2, 6, 4, 12, 8, 9];
+const HAT_NEUTRAL_MIN = 1.1;
+// Chrome puts the hat usage (0x39) at axis 0x39 - 0x30.
+const CHROME_HAT_AXIS = 9;
+
+/** Pressed threshold for an axis read as a button, and for the wizard. */
+const AXIS_PRESS = 0.5;
+
+/** Which d-pad bits a hat axis value holds (0 when centred). */
+export function hatBits(v) {
+    if (typeof v !== 'number' || v > HAT_NEUTRAL_MIN || v < -1.05) return 0;
+    const pos = Math.round((v + 1) * 3.5);
+    return pos >= 0 && pos <= 7 ? HAT_BITS[pos] : 0;
+}
+
+/**
+ * Name and USB ids from a Gamepad id, whatever the browser:
+ *   Chrome desktop  "Name (STANDARD GAMEPAD Vendor: 054c Product: 09cc)"
+ *   Firefox         "054c-09cc-Name"
+ *   Safari macOS    "54c-9cc-Name"  (not zero-padded)
+ *   Chrome Android  "Name"          (no ids at all)
+ */
+export function parsePadId(id) {
+    const s = String(id || '').trim();
+    let m =
+        /^(.*?)\s*\((?:.*?)Vendor:\s*([0-9a-f]{1,4})\s+Product:\s*([0-9a-f]{1,4})\s*\)\s*$/i.exec(
+            s,
+        );
+    if (m) return { name: m[1].trim() || s, vid: pad4(m[2]), pid: pad4(m[3]) };
+    m = /^([0-9a-f]{1,4})-([0-9a-f]{1,4})-(.*)$/i.exec(s);
+    if (m) return { name: m[3].trim() || s, vid: pad4(m[1]), pid: pad4(m[2]) };
+    // Chrome desktop without ids ("Name (STANDARD GAMEPAD)").
+    m = /^(.*?)\s*\([^)]*\)\s*$/.exec(s);
+    return { name: (m ? m[1] : s).trim() || s, vid: null, pid: null };
+}
+
+function pad4(h) {
+    return h.toLowerCase().padStart(4, '0');
+}
+
+/**
+ * The key a pad's user mapping is stored under. USB ids when the browser
+ * gives them — the same pad then keeps its mapping across Chrome and Firefox
+ * — the name otherwise (Android, iOS). A pad switched to another mode
+ * reports other ids, and rightly gets its own mapping.
+ */
+export function padKey(gpOrId) {
+    const id = typeof gpOrId === 'string' ? gpOrId : gpOrId && gpOrId.id;
+    const { name, vid, pid } = parsePadId(id);
+    if (vid && pid) return `usb:${vid}:${pid}`;
+    return `name:${name.toLowerCase()}`;
+}
+
+/** Display name of a pad: its id without the browser's decorations. */
+export function padName(gpOrId) {
+    const id = typeof gpOrId === 'string' ? gpOrId : gpOrId && gpOrId.id;
+    return parsePadId(id).name || '?';
+}
+
+/** The platform whose raw layout the browser reports. */
+export function detectPlatform(ua = typeof navigator !== 'undefined' ? navigator.userAgent : '') {
+    const s = String(ua || '');
+    if (/Android/i.test(s)) return 'android';
+    if (/iPhone|iPad|iPod/i.test(s)) return 'ios';
+    if (/Windows/i.test(s)) return 'win';
+    if (/Macintosh|Mac OS X/i.test(s)) return 'mac';
+    if (/Linux|CrOS|X11/i.test(s)) return 'linux';
+    return 'other';
+}
+
+/**
+ * SDL mapping string → bindings, translated to the browser's raw indices.
+ *
+ * Buttons are the same on both sides (HID button order). Axes keep SDL's
+ * index when the browser has that axis — SDL's DirectInput/IOKit indices
+ * follow the usage order Chrome uses — and are dropped otherwise, leaving the
+ * control for the user to map. Hats differ: Chrome Windows/macOS packs one
+ * into axis 9; Linux (joydev) reports it as an axis pair, after the others.
+ *
+ * @param {string} str   "a:b0,b:b1,dpup:h0.1,lefttrigger:a2,…"
+ * @param {{platform: string, axesLength: number}} ctx
+ */
+export function parseSdlMapping(str, ctx) {
+    const platform = ctx.platform;
+    const axesLength = ctx.axesLength || 0;
+    const out = {};
+    for (const field of String(str || '').split(',')) {
+        const m = /^([a-z]+):([+-]?)([abh])(\d+)(?:\.(\d+))?(~?)$/.exec(field.trim());
+        if (!m) continue;
+        const [, target, half, kind, num, hatBit, tilde] = m;
+        if (!BUTTON_TARGETS.includes(target) && !AXIS_TARGETS.includes(target)) continue;
+        const i = Number(num);
+        if (kind === 'b') {
+            out[target] = { t: 'b', i };
+        } else if (kind === 'a') {
+            if (i >= axesLength) continue;
+            const b = { t: 'a', i, s: half === '+' ? 1 : half === '-' ? -1 : 0 };
+            if (tilde) b.inv = true;
+            out[target] = b;
+        } else {
+            const bit = Number(hatBit);
+            if (Number(num) !== 0) continue; // a second hat has no home here
+            if (platform === 'linux') {
+                // joydev: HAT0X then HAT0Y, normally the last two axes.
+                if (axesLength < 2) continue;
+                const hx = axesLength - 2;
+                const hy = axesLength - 1;
+                if (bit === 1) out[target] = { t: 'a', i: hy, s: -1 };
+                else if (bit === 4) out[target] = { t: 'a', i: hy, s: 1 };
+                else if (bit === 8) out[target] = { t: 'a', i: hx, s: -1 };
+                else if (bit === 2) out[target] = { t: 'a', i: hx, s: 1 };
+            } else if (axesLength > CHROME_HAT_AXIS) {
+                out[target] = { t: 'h', i: CHROME_HAT_AXIS, bit };
+            }
+        }
+    }
+    return out;
+}
+
+/** A binding read as a button: {pressed, value 0..1}. */
+function readButton(gp, b) {
+    if (!b) return { pressed: false, value: 0 };
+    if (b.t === 'b') {
+        const btn = gp.buttons[b.i];
+        return btn ? { pressed: !!btn.pressed, value: btn.value || (btn.pressed ? 1 : 0) } : REST;
+    }
+    const raw = gp.axes[b.i];
+    if (typeof raw !== 'number') return REST;
+    if (b.t === 'h') {
+        const on = (hatBits(raw) & b.bit) !== 0;
+        return { pressed: on, value: on ? 1 : 0 };
+    }
+    const v = b.inv ? -raw : raw;
+    let value;
+    if (b.s > 0) value = Math.max(0, v);
+    else if (b.s < 0) value = Math.max(0, -v);
+    else value = (v + 1) / 2; // a whole axis as a trigger: -1 at rest, +1 full
+    value = Math.min(1, value);
+    return { pressed: value > AXIS_PRESS, value };
+}
+
+const REST = { pressed: false, value: 0 };
+
+/** A binding read as a stick axis, -1..1. */
+function readAxis(gp, b) {
+    if (!b) return 0;
+    if (b.t === 'a') {
+        const raw = gp.axes[b.i];
+        if (typeof raw !== 'number') return 0;
+        const v = b.inv ? -raw : raw;
+        if (b.s > 0) return Math.max(0, v);
+        if (b.s < 0) return Math.min(0, v);
+        return v;
+    }
+    return readButton(gp, b).pressed ? 1 : 0;
+}
+
+/**
+ * The pad as a standard one: 17 buttons and 4 axes in W3C order, read
+ * through `bindings`. Unbound controls read as released / centred.
+ */
+export function readVirtualPad(gp, bindings) {
+    const buttons = BUTTON_TARGETS.map((t) => readButton(gp, bindings[t]));
+    const axes = AXIS_TARGETS.map((t) => readAxis(gp, bindings[t]));
+    return { buttons, axes };
+}
+
+/**
+ * Chrome Android pads Chromium lays out itself but still reports without a
+ * mapping, whose layout is known to be off anyway. Matched on the name (the
+ * only thing Android gives); value = SDL mapping string over the browser's
+ * (already standardised) indices. Empty until a pad proves it needs one.
+ */
+export const ANDROID_NAME_FIXES = [];
+
+/**
+ * How to read this pad.
+ *
+ * @param {Gamepad} gp
+ * @param {{ user?: (key: string) => ({bindings: object}|null),
+ *           db?: object|null|undefined, platform?: string }} ctx
+ *   `db` undefined = not loaded yet (the result is then 'pending' for a pad
+ *   that needs it); null = unavailable.
+ * @returns {{ source: 'user'|'standard'|'android'|'db'|'pending'|null,
+ *             bindings: object|null, key: string, name: string, dbName?: string }}
+ *   bindings null with source 'standard'/'android' = read the pad as is.
+ */
+export function resolveMapping(gp, ctx = {}) {
+    const key = padKey(gp);
+    const name = padName(gp);
+    const base = { key, name };
+    const saved = ctx.user ? ctx.user(key) : null;
+    if (saved && saved.bindings) return { ...base, source: 'user', bindings: saved.bindings };
+    if (gp.mapping === 'standard') return { ...base, source: 'standard', bindings: null };
+
+    const platform = ctx.platform || detectPlatform();
+    const axesLength = gp.axes ? gp.axes.length : 0;
+    if (platform === 'android') {
+        const fix = ANDROID_NAME_FIXES.find(([re]) => re.test(name));
+        const bindings = fix ? parseSdlMapping(fix[1], { platform, axesLength }) : null;
+        return { ...base, source: 'android', bindings };
+    }
+    if (platform === 'win' || platform === 'mac' || platform === 'linux') {
+        if (ctx.db === undefined) return { ...base, source: 'pending', bindings: null };
+        const entry = ctx.db ? lookupDb(ctx.db, platform, gp.id) : null;
+        if (entry) {
+            const bindings = parseSdlMapping(entry[1], { platform, axesLength });
+            if (Object.keys(bindings).length > 0) {
+                return { ...base, source: 'db', bindings, dbName: entry[0] };
+            }
+        }
+    }
+    return { ...base, source: null, bindings: null };
+}
+
+/** [name, mapping] for this pad's ids on this platform; the name breaks ties. */
+function lookupDb(db, platform, id) {
+    const { name, vid, pid } = parsePadId(id);
+    if (!vid || !pid || !db[platform]) return null;
+    const entries = db[platform][`${vid}:${pid}`];
+    if (!entries || entries.length === 0) return null;
+    const lower = name.toLowerCase();
+    return entries.find(([n]) => n.toLowerCase() === lower) || entries[0];
+}
+
+let dbPromise = null;
+
+/** SDL_GameControllerDB, loaded once and only when a pad needs it. */
+export function loadGamepadDb() {
+    if (!dbPromise) {
+        dbPromise = import('./gamepadDb.js').then(
+            (m) => m.default,
+            () => null,
+        );
+    }
+    return dbPromise;
+}
+
+// ── Capture (the remap wizard) ────────────────────────────────────────────
+
+/** What the pad looks like at rest, to detect what the user moves. */
+export function snapshot(gp) {
+    return {
+        buttons: Array.from(gp.buttons || [], (b) => !!(b && b.pressed)),
+        axes: Array.from(gp.axes || [], (v) => (typeof v === 'number' ? v : 0)),
+    };
+}
+
+/**
+ * The raw input the user just moved, as a binding for `target`, or null.
+ *
+ * Triggers look at axes first (many pads report an analog trigger both as an
+ * axis and a button, and the axis is the one with the travel); everything else
+ * looks at buttons first. An axis resting at an extreme (a trigger at -1) is
+ * taken whole; one resting at 9/7 is a packed hat; one resting at the centre
+ * gives a half — or, for a stick target, the whole axis in the pushed sense.
+ * Inputs in `exclude` (already bound this pass) are skipped.
+ *
+ * @param {{buttons:boolean[], axes:number[]}} base  snapshot at rest
+ * @param {Gamepad} gp
+ * @param {string} target  a BUTTON_TARGETS or AXIS_TARGETS name
+ * @param {object[]} [exclude]
+ */
+export function detectInput(base, gp, target, exclude = []) {
+    const used = (b) => exclude.some((e) => e && sameBinding(e, b));
+    const isStick = AXIS_TARGETS.includes(target);
+    const isTrigger = target === 'lefttrigger' || target === 'righttrigger';
+
+    const fromButtons = () => {
+        for (let i = 0; i < gp.buttons.length; i++) {
+            const btn = gp.buttons[i];
+            if (!btn || base.buttons[i]) continue;
+            if (btn.pressed || btn.value > AXIS_PRESS) {
+                const b = { t: 'b', i };
+                if (!used(b)) return b;
+            }
+        }
+        return null;
+    };
+    const fromAxes = () => {
+        for (let i = 0; i < gp.axes.length; i++) {
+            const v = gp.axes[i];
+            const rest = base.axes[i] ?? 0;
+            if (typeof v !== 'number') continue;
+            let b = null;
+            if (rest > HAT_NEUTRAL_MIN) {
+                const bits = hatBits(v);
+                // Only a clean direction: a diagonal says nothing about which.
+                if (bits === 1 || bits === 2 || bits === 4 || bits === 8)
+                    b = { t: 'h', i, bit: bits };
+            } else {
+                const d = v - rest;
+                if (Math.abs(d) <= AXIS_PRESS) continue;
+                if (isStick) b = { t: 'a', i, s: 0, ...(d < 0 ? { inv: true } : {}) };
+                else if (Math.abs(rest) > 0.9)
+                    b = { t: 'a', i, s: 0, ...(rest > 0 ? { inv: true } : {}) };
+                else b = { t: 'a', i, s: d > 0 ? 1 : -1 };
+            }
+            if (b && !used(b)) return b;
+        }
+        return null;
+    };
+    if (isStick) return fromAxes();
+    if (isTrigger) return fromAxes() || fromButtons();
+    return fromButtons() || fromAxes();
+}
+
+/** True once every input is back where the snapshot had it. */
+export function isAtRest(base, gp) {
+    for (let i = 0; i < gp.buttons.length; i++) {
+        const btn = gp.buttons[i];
+        if (btn && !base.buttons[i] && (btn.pressed || btn.value > 0.3)) return false;
+    }
+    for (let i = 0; i < gp.axes.length; i++) {
+        const v = gp.axes[i];
+        if (typeof v === 'number' && Math.abs(v - (base.axes[i] ?? 0)) > 0.3) return false;
+    }
+    return true;
+}
+
+/** Same raw input (the sense of an axis does not matter for reuse). */
+export function sameBinding(a, b) {
+    if (!a || !b || a.t !== b.t || a.i !== b.i) return false;
+    if (a.t === 'h') return a.bit === b.bit;
+    if (a.t === 'a') return (a.s || 0) === 0 || (b.s || 0) === 0 || a.s === b.s;
+    return true;
+}
+
+/** Short label of the raw input: "B7", "A2+", "A5~", "H9↑". */
+export function describeBinding(b) {
+    if (!b) return '—';
+    if (b.t === 'b') return `B${b.i}`;
+    if (b.t === 'h') return `H${b.i}${{ 1: '↑', 2: '→', 4: '↓', 8: '←' }[b.bit] || '?'}`;
+    return `A${b.i}${b.s > 0 ? '+' : b.s < 0 ? '−' : ''}${b.inv ? '~' : ''}`;
+}

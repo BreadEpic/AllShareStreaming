@@ -440,7 +440,7 @@ const MoonlightApp = {
         const view = new PlayerJoinView(
             container,
             token,
-            async ({ height, gaming, touchScreen }) => {
+            async ({ height, gaming, touchScreen, padKey }) => {
                 const result = await BackendClient.playerJoin(token, height);
 
                 // StreamView renders (and connects) from its constructor, so the
@@ -467,6 +467,10 @@ const MoonlightApp = {
                         sessionSlot: typeof result.slot === 'number' ? result.slot : 2,
                         playerMode: true,
                         shareToken: token,
+                        // One controller per invitation: the one picked on the
+                        // join screen, when the invitation allows a gamepad.
+                        gamepadAllowed: view.info.permissions?.gamepad === true,
+                        padKey: padKey || null,
                     },
                 );
                 this.streamView = streamView;

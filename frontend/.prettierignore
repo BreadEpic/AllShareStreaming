@@ -3,3 +3,5 @@ js/vendor/
 **/*.min.js
 build/
 locales/
+# Generated from SDL_GameControllerDB (scripts/update-gamepad-db.cjs)
+js/stream/gamepadDb.js

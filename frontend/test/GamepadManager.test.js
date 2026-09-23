@@ -72,14 +72,144 @@ describe('GamepadManager', () => {
         gm.stop();
     });
 
-    it('ignores non-standard controllers', () => {
+    it('ignores a non-standard controller nothing maps, and says so once', () => {
         const send = vi.fn();
-        const gm = new GamepadManager(send);
+        const onIgnored = vi.fn();
+        const gm = new GamepadManager(send, {
+            onIgnored,
+            platform: 'win',
+            db: null,
+            user: () => null,
+        });
         gm.start();
         const evt = new window.Event('gamepadconnected');
-        evt.gamepad = fakePad({ mapping: 'no-mapping' });
+        evt.gamepad = fakePad({ mapping: '' });
+        window.dispatchEvent(evt);
         window.dispatchEvent(evt);
         expect(send).not.toHaveBeenCalled();
+        expect(onIgnored).toHaveBeenCalledTimes(1);
+        gm.stop();
+    });
+
+    it('forwards an unknown Chrome Android pad as standard, and says it was guessed', () => {
+        const send = vi.fn();
+        const onMapped = vi.fn();
+        const buttons = Array(17).fill(0);
+        buttons[1] = 1; // B
+        setPads([fakePad({ id: 'GameSir-G8+', mapping: '', buttons })]);
+        const gm = new GamepadManager(send, { onMapped, platform: 'android', user: () => null });
+        gm.start();
+        const msg = send.mock.calls.find((c) => c[0].type === 'gamepad');
+        expect(msg[0].buttons & 0x2000).toBe(0x2000);
+        expect(onMapped).toHaveBeenCalledWith(
+            expect.anything(),
+            expect.objectContaining({ source: 'android' }),
+        );
+        gm.stop();
+    });
+
+    it('reads a database-mapped pad through its bindings', () => {
+        const send = vi.fn();
+        const db = { win: { '1234:5678': [['Pad', 'a:b3,leftx:a1,dpup:h0.1']] } };
+        const buttons = Array(16).fill(0);
+        buttons[3] = 1;
+        const axes = [0, 1, 0, 0, 0, 0, 0, 0, 0, -1]; // hat up
+        setPads([fakePad({ id: 'Pad (Vendor: 1234 Product: 5678)', mapping: '', buttons, axes })]);
+        const gm = new GamepadManager(send, { platform: 'win', db, user: () => null });
+        gm.start();
+        const msg = send.mock.calls.find((c) => c[0].type === 'gamepad')[0];
+        expect(msg.buttons & 0x1000).toBe(0x1000); // A from raw button 3
+        expect(msg.buttons & 0x0001).toBe(0x0001); // d-pad up from the hat
+        expect(msg.lx).toBe(32767); // left X from raw axis 1
+        gm.stop();
+    });
+
+    it('loads the database before deciding on a desktop pad', async () => {
+        const send = vi.fn();
+        setPads([fakePad({ id: 'Mystery (Vendor: 0001 Product: 0002)', mapping: '' })]);
+        const onIgnored = vi.fn();
+        const gm = new GamepadManager(send, { onIgnored, platform: 'win', user: () => null });
+        gm.start();
+        // Not decided yet: no announce, no warning.
+        expect(onIgnored).not.toHaveBeenCalled();
+        await vi.waitFor(() => {
+            rafCb();
+            expect(onIgnored).toHaveBeenCalledTimes(1);
+        });
+        gm.stop();
+    });
+
+    it("prefers the user's own mapping, and picks up a change live", () => {
+        const send = vi.fn();
+        let saved = null;
+        const buttons = Array(17).fill(0);
+        buttons[0] = 1;
+        setPads([fakePad({ buttons })]);
+        const gm = new GamepadManager(send, { platform: 'win', user: () => saved });
+        gm.start();
+        expect(send.mock.calls.find((c) => c[0].type === 'gamepad')[0].buttons).toBe(0x1000);
+
+        // Swapped A and B, saved elsewhere (the dialog).
+        saved = { bindings: { b: { t: 'b', i: 0 }, a: { t: 'b', i: 1 } } };
+        gm.refreshMappings();
+        send.mockClear();
+        rafCb();
+        expect(send.mock.calls.find((c) => c[0].type === 'gamepad')[0].buttons).toBe(0x2000);
+        gm.stop();
+    });
+
+    it('in single mode forwards one pad as controller 0, the preferred one first', () => {
+        const send = vi.fn();
+        const a = fakePad({ index: 0, id: 'A (Vendor: 0001 Product: 0001)' });
+        const b = fakePad({ index: 1, id: 'B (Vendor: 0002 Product: 0002)', vibration: true });
+        setPads([a, b]);
+        const gm = new GamepadManager(send, {
+            single: true,
+            preferredKey: 'usb:0002:0002',
+            platform: 'win',
+            user: () => null,
+        });
+        gm.start();
+        const connects = send.mock.calls.filter((c) => c[0].type === 'gamepadconnect');
+        // Pad A came first and took the place; B (preferred) took it over.
+        expect(connects.map((c) => c[0].index)).toEqual([0, 0]);
+        expect(send).toHaveBeenCalledWith(
+            expect.objectContaining({ type: 'gamepaddisconnect', index: 0 }),
+        );
+        expect(gm.forwardedKey()).toBe('usb:0002:0002');
+        const states = send.mock.calls.filter((c) => c[0].type === 'gamepad').map((c) => c[0]);
+        expect(states.every((m) => m.index === 0 && m.mask === 1)).toBe(true);
+
+        // The host's controller 0 rumbles the pad in hand (browser index 1).
+        gm.rumble(0, 65535, 0);
+        expect(b.vibrationActuator.playEffect).toHaveBeenCalled();
+
+        // Switching pads releases the current one.
+        send.mockClear();
+        gm.setPreferredPad('usb:0001:0001');
+        rafCb();
+        expect(gm.forwardedKey()).toBe('usb:0001:0001');
+        gm.stop();
+    });
+
+    it('while paused puts pads at rest once and sends nothing', () => {
+        const send = vi.fn();
+        const pad = fakePad({ axes: [1, 0, 0, 0] });
+        setPads([pad]);
+        const gm = new GamepadManager(send, { platform: 'win', user: () => null });
+        gm.start();
+        send.mockClear();
+        gm.setPaused(true);
+        expect(send).toHaveBeenCalledWith(
+            expect.objectContaining({ type: 'gamepad', lx: 0, buttons: 0 }),
+        );
+        send.mockClear();
+        pad.axes = [-1, 0, 0, 0];
+        rafCb();
+        expect(send).not.toHaveBeenCalled();
+        gm.setPaused(false);
+        rafCb();
+        expect(send).toHaveBeenCalledWith(expect.objectContaining({ type: 'gamepad', lx: -32767 }));
         gm.stop();
     });
 

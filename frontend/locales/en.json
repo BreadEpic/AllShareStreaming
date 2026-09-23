@@ -196,7 +196,57 @@
         "restartRequired": "Driver installed. Restart this PC to activate it.",
         "installFailed": "The driver could not be installed.",
         "download": "Download the driver",
-        "manualHint": "MoonlightWeb is not running here with the rights to install it."
+        "manualHint": "MoonlightWeb is not running here with the rights to install it.",
+        "remap": {
+            "title": "Controller",
+            "pick": "Choose a controller",
+            "empty": "Connect a controller and press any button.",
+            "testPrompt": "Press buttons and move the sticks to check them.",
+            "unknown": "This controller's layout is unknown. Map it to use it.",
+            "guessed": "This layout was recognized automatically. If a button does the wrong thing, remap it.",
+            "release": "Release every button and stick…",
+            "done": "Every control is set. Save to use this layout.",
+            "guideHint": "Some browsers keep this button for themselves. Skip it if nothing happens.",
+            "saved": "Layout saved for “{{name}}”.",
+            "remap": "Remap",
+            "start": "Map this controller",
+            "reset": "Reset to automatic",
+            "close": "Close",
+            "back": "Back",
+            "skip": "Skip",
+            "cancel": "Cancel",
+            "save": "Save",
+            "source": {
+                "standard": "Recognized",
+                "user": "Custom",
+                "android": "Auto",
+                "db": "Auto",
+                "none": "Unknown"
+            },
+            "steps": {
+                "a": "Press A (bottom face button)",
+                "b": "Press B (right face button)",
+                "x": "Press X (left face button)",
+                "y": "Press Y (top face button)",
+                "leftshoulder": "Press the left bumper (LB)",
+                "rightshoulder": "Press the right bumper (RB)",
+                "lefttrigger": "Pull the left trigger (LT)",
+                "righttrigger": "Pull the right trigger (RT)",
+                "back": "Press View (Back / Select)",
+                "start": "Press Menu (Start)",
+                "guide": "Press the Guide button (Home)",
+                "leftstick": "Click the left stick (L3)",
+                "rightstick": "Click the right stick (R3)",
+                "dpup": "Press D-pad up",
+                "dpright": "Press D-pad right",
+                "dpdown": "Press D-pad down",
+                "dpleft": "Press D-pad left",
+                "leftx": "Push the left stick to the right",
+                "lefty": "Push the left stick down",
+                "rightx": "Push the right stick to the right",
+                "righty": "Push the right stick down"
+            }
+        }
     },
     "securing": {
         "working": "Securing the communication…",
@@ -355,7 +405,14 @@
         "algoQualGl": "Quality (FSR1 WebGL2)",
         "algoQualGpu": "Quality (FSR1 WebGPU)",
         "language": "Language",
-        "languageDesc": "Interface language. The page reloads when you change it."
+        "languageDesc": "Interface language. The page reloads when you change it.",
+        "controllers": "Controllers",
+        "controllersDesc": "Check each controller and map its buttons your way. Layouts are kept in this browser only.",
+        "controllersNone": "No controller detected. Connect one and press any button.",
+        "controllersSaved": "Saved layouts (controller not connected)",
+        "controllersTest": "Test / remap",
+        "controllersReset": "Reset",
+        "controllersDelete": "Delete"
     },
     "admin": {
         "title": "Server Settings",
@@ -520,7 +577,7 @@
         "webcodecsUnsupported": "WebCodecs not supported",
         "codecUnsupported": "Codec not supported by browser",
         "streamDisconnected": "Stream disconnected",
-        "gamepadIgnored": "\"{{name}}\" ignored: unknown layout. Switch it to XInput mode if it has one, or use a remapping tool.",
+        "gamepadIgnored": "\"{{name}}\" is not forwarded: its layout is unknown. Map it once and it will work.",
         "textInputNeedsIme": "Touch keyboard: on a Linux host, text is entered through IBus. Without an input method running in the host's session, nothing usable is typed.",
         "webrtcError": "WebRTC connection error",
         "degradeBitrate": "Unstable network — bitrate reduced to {{mbps}} Mbps",
@@ -628,7 +685,11 @@
         "tsDragVal": "Long press, then move",
         "tsScrollVal": "1 finger drag",
         "console": "Wolf UI",
-        "consoleHint": "Back to Wolf UI (Ctrl+Alt+Shift+W, which the browser may swallow)"
+        "consoleHint": "Back to Wolf UI (Ctrl+Alt+Shift+W, which the browser may swallow)",
+        "gamepadConfigure": "Map it",
+        "gamepadAutoMapped": "\"{{name}}\" was recognized automatically. Buttons in the wrong place?",
+        "gamepadRemap": "Remap",
+        "gamepadButton": "Controller"
     },
     "transport": {
         "webrtcDcUdp": "WebRTC DataChannel (UDP)",
@@ -768,7 +829,12 @@
         "endedBody": "Your host stopped the game, so the stream stopped with it. Nothing broke - you were just unplugged.",
         "endedHint": "Give them a ring and ask for a new link.",
         "appGone": "The app this invitation was made for is no longer on the host. Ask for a new link.",
-        "alreadyBound": "This invitation is already tied to another machine. Ask for a fresh link."
+        "alreadyBound": "This invitation is already tied to another machine. Ask for a fresh link.",
+        "gamepad": "Controller",
+        "gamepadNone": "Connect a controller and press any button.",
+        "gamepadConfigure": "Map the controller",
+        "gamepadCheck": "Check the buttons",
+        "gamepadNeedsMap": "This controller's layout is unknown. Map it once to play."
     },
     "backend": {
         "title": "Backend for {{name}}",
