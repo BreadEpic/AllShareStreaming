@@ -19,12 +19,37 @@
 
 #include "server/NetClassify.h"
 
+#include <QDeadlineTimer>
 #include <QHostAddress>
 #include <QJsonObject>
 #include <QJsonArray>
+#include <QMutex>
 #include <QNetworkInterface>
 
 #include <algorithm>
+
+namespace {
+
+/// This machine's own interface addresses, re-read at most every few seconds.
+/// QNetworkInterface::allAddresses() walks every adapter through
+/// GetAdaptersAddresses — a few milliseconds each on a PC with Hyper-V, VPN
+/// and virtual display adapters — and isLocalMachine() runs twice per host on
+/// every /api/hosts, on the GUI thread: ~120 ms per call for 18 hosts, and
+/// 2-3 s while the adapters settle just after start.
+QList<QHostAddress> ownAddresses()
+{
+    static QMutex mutex;
+    static QList<QHostAddress> cached;
+    static QDeadlineTimer fresh(0);
+    QMutexLocker lock(&mutex);
+    if (fresh.hasExpired()) {
+        cached = QNetworkInterface::allAddresses();
+        fresh.setRemainingTime(5000);
+    }
+    return cached;
+}
+
+} // namespace
 
 // --- Construction from serverInfo XML ---------------------------------------
 
@@ -319,7 +344,7 @@ bool NvComputer::isLocalMachine() const
     // loopback, or an address bound to one of this machine's own network
     // interfaces (mDNS may register the local Sunshine under its LAN IP rather
     // than 127.0.0.1).
-    const QList<QHostAddress> selfAddrs = QNetworkInterface::allAddresses();
+    const QList<QHostAddress> selfAddrs = ownAddresses();
     for (const NvAddress& na : {activeAddress, localAddress, manualAddress}) {
         if (na.isNull()) continue;
         const QString addrStr = na.address();
