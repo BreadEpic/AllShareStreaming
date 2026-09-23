@@ -58,6 +58,11 @@ struct InputEvent
         ControllerState,
         ControllerRemoval,
         LockKeySync, ///< align host NumLock/CapsLock/ScrollLock with the client
+        /// Ctrl+Alt+Suppr, which is not a key combination at all: Windows
+        /// reserves it in the kernel and no injected key can forge it. It goes
+        /// through SendSAS instead, and only a SYSTEM worker may call that —
+        /// every other host ignores it, having nothing honest to do with it.
+        SecureAttention,
     };
 
     Type type = Type::KeyDown;

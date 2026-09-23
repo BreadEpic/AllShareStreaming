@@ -17,6 +17,8 @@
 
 #include "Win32Input.h"
 
+#include "../../platform/windows/InputDesktop.h"
+
 #include "../../core/Log.h"
 #include "UsScanCode.h"
 
@@ -27,9 +29,9 @@
 
 #include <algorithm>
 #include <atomic>
-#include <chrono>
 #include <cstdlib>
 #include <string>
+#include <chrono>
 #include <thread>
 #include <vector>
 
@@ -242,6 +244,7 @@ const char* describe(InputEvent::Type type)
     case InputEvent::Type::ControllerState: return "controller state";
     case InputEvent::Type::ControllerRemoval: return "controller removal";
     case InputEvent::Type::LockKeySync: return "lock-key sync";
+    case InputEvent::Type::SecureAttention: return "Ctrl+Alt+Suppr";
     }
     return "event";
 }
@@ -569,6 +572,19 @@ bool Win32Input::start(std::string& error)
             log::info("[native] no virtual gamepad: " + gamepadError);
     }
 
+    // Only a SYSTEM worker can stand on the secure desktop; for everybody else
+    // this stays exactly the path that was measured — no queue, no thread.
+    //
+    // Settled BEFORE m_Started, which is what opens inject() to callers: the
+    // other order lets the first events through on the caller's thread while
+    // this is still false, and those are the ones that would miss the desktop.
+    m_Follow = platform::runningAsSystem();
+    if (m_Follow) {
+        m_FollowerQuit = false;
+        m_Follower = std::thread([this] { runFollower(); });
+        log::info("[native] input: running as SYSTEM — following the desktop switch, so the "
+                  "UAC prompt and the lock screen take input too");
+    }
     m_Started = true;
     log::info("[native] input: SendInput on the display at " + std::to_string(m_DisplayRect.left) +
               "," + std::to_string(m_DisplayRect.top) + " " +
@@ -586,7 +602,22 @@ void Win32Input::stop()
         std::lock_guard<std::mutex> lock(m_UnblockMutex);
         if (m_UnblockThread.joinable()) m_UnblockThread.join();
     }
-    releaseAll();
+    if (m_Follow) {
+        // The follower releases what is held on its way out — it is the only
+        // thread that can still reach the desktop the keys were pressed on.
+        {
+            std::lock_guard<std::mutex> lock(m_QueueMutex);
+            m_FollowerQuit = true;
+        }
+        m_QueueWake.notify_one();
+        if (m_Follower.joinable()) m_Follower.join();
+        if (m_Dropped)
+            log::warning("[native] input: " + std::to_string(m_Dropped) +
+                         " event(s) dropped — the host stopped accepting them");
+        m_Follow = false;
+    } else {
+        releaseAll();
+    }
     // Unplugged before anything else: a virtual pad that outlived its session
     // would sit in the Windows game controller list forever, and the next game
     // to start would see a controller nobody is holding.
@@ -596,6 +627,24 @@ void Win32Input::stop()
               " event(s) injected this session" +
               (gated ? ", " + std::to_string(gated) + " press(es) dropped at the gate" : ""));
     m_Started = false;
+}
+
+/// Forget what is held without releasing it — the desktop it was pressed on is
+/// gone, and Windows dropped the state with it. Releasing into the NEW desktop
+/// would be a key-up nobody pressed, which some applications act on.
+void Win32Input::forgetHeld()
+{
+    size_t keys = 0, buttons = 0;
+    {
+        std::lock_guard<std::mutex> lock(m_HeldMutex);
+        keys = m_HeldKeys.size();
+        buttons = m_HeldButtons.size();
+        m_HeldKeys.clear();
+        m_HeldButtons.clear();
+    }
+    if (keys || buttons)
+        log::info("[native] input: the desktop switched while " + std::to_string(keys) +
+                  " key(s) and " + std::to_string(buttons) + " button(s) were down — forgotten");
 }
 
 void Win32Input::releaseAll()
@@ -626,6 +675,75 @@ void Win32Input::releaseAll()
               std::to_string(buttons.size()) + " button(s) at session end");
 }
 
+/// Straight to the OS, or through the thread that follows the desktop switch.
+void Win32Input::inject(const InputEvent& event)
+{
+    if (!m_Started) return;
+    if (!m_Follow) {
+        injectNow(event);
+        return;
+    }
+    // A SYSTEM worker: hand it to the one thread that may stand on the secure
+    // desktop. The bound is generous — a second of the fastest mouse there is —
+    // and reaching it means SendInput itself has stopped returning, in which
+    // case the newest events are the ones worth keeping.
+    constexpr size_t kMaxQueued = 4096;
+    {
+        std::lock_guard<std::mutex> lock(m_QueueMutex);
+        if (m_Queue.size() >= kMaxQueued) {
+            m_Queue.pop_front();
+            ++m_Dropped;
+        }
+        m_Queue.push_back(event);
+    }
+    m_QueueWake.notify_one();
+}
+
+void Win32Input::runFollower()
+{
+    // The attach has to happen HERE, on this thread: a desktop is a property of
+    // the thread, not of the process.
+    std::string desktop;
+    platform::attachThread(&desktop);
+    // How often the desktop is re-read while events are flowing. A switch that
+    // is missed costs at most this much input sent to the desktop that just
+    // left; reading it on every single event would cost an OpenInputDesktop per
+    // mouse move, which at 1000 Hz is not free.
+    constexpr auto kRecheck = std::chrono::milliseconds(100);
+    auto nextCheck = std::chrono::steady_clock::now();
+
+    for (;;) {
+        std::deque<InputEvent> batch;
+        {
+            std::unique_lock<std::mutex> lock(m_QueueMutex);
+            m_QueueWake.wait(lock, [this] { return m_FollowerQuit || !m_Queue.empty(); });
+            if (m_FollowerQuit && m_Queue.empty()) break;
+            batch.swap(m_Queue);
+        }
+        // Before injecting, not after: the events in hand were produced for
+        // whatever is on screen NOW.
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= nextCheck) {
+            nextCheck = now + kRecheck;
+            std::string current = platform::inputDesktopName();
+            if (!current.empty() && current != desktop) {
+                if (platform::attachThread(&desktop)) {
+                    // Whatever was held belongs to the desktop that just left;
+                    // on the new one nothing is pressed, and a key still marked
+                    // down would never be released.
+                    forgetHeld();
+                }
+            }
+        }
+        for (const InputEvent& event : batch)
+            injectNow(event);
+    }
+
+    // The release has to happen on this thread too, and before it ends: after
+    // the join there is nobody left who can reach the desktop.
+    releaseAll();
+}
+
 /// One line the first time anything is injected, and a count at the end.
 ///
 /// Worth its keep: "the stream works but nothing responds" has too many
@@ -633,10 +751,8 @@ void Win32Input::releaseAll()
 /// the sink never constructed, Windows refusing — and they look identical from
 /// the outside. This separates "nothing arrived" from "arrived and was
 /// refused", which is the first question every time.
-void Win32Input::inject(const InputEvent& event)
+void Win32Input::injectNow(const InputEvent& event)
 {
-    if (!m_Started) return;
-
     // First of each KIND, not first overall. A stream where the pointer moves
     // but nothing clicks, or where the mouse works and the keyboard does not,
     // is the failure that actually happens, and one line per kind separates
@@ -678,6 +794,16 @@ void Win32Input::inject(const InputEvent& event)
     case InputEvent::Type::MouseScrollVertical: injectScroll(event.scrollAmount, false); break;
     case InputEvent::Type::MouseScrollHorizontal: injectScroll(event.scrollAmount, true); break;
     case InputEvent::Type::LockKeySync: syncLockKeys(event); break;
+    case InputEvent::Type::SecureAttention: {
+        // On the follower thread, so the switch to the secure desktop that
+        // SendSAS causes is one this very thread follows on its next round.
+        std::string error;
+        if (platform::sendSecureAttention(error))
+            log::info("[native] input: Ctrl+Alt+Suppr sent");
+        else
+            log::warning("[native] input: Ctrl+Alt+Suppr not sent — " + error);
+        break;
+    }
 
     // Ignored when ViGEmBus is absent, never approximated: mapping a stick onto
     // the mouse would be a surprise, not a feature.

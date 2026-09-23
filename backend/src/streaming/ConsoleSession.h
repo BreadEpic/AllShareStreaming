@@ -22,6 +22,7 @@
 #include <QString>
 #include <QStringList>
 
+#include <functional>
 #include <memory>
 
 /**
@@ -35,15 +36,20 @@
  * session — the one with the monitor and the keyboard — in a process that
  * runs as the user logged on there.
  *
- * This is how Sunshine's service works too, with one difference that is
- * deliberate: Sunshine puts SYSTEM into the user's session, so it can capture
- * the UAC secure desktop and type into elevated windows. MoonlightWeb runs the
- * worker as the logged-on USER (their full, elevated token when UAC gives them
- * one, the plain token otherwise). A network-facing process that decodes input
- * from a browser is exactly the process to hold the least privilege it can, and
- * the price — a black picture while a UAC prompt is up, which the capture loop
- * already handles as a lost display — is one Sunshine users pay in a different
- * form (the prompt is captured, but the stream cannot answer it either).
+ * This is how Sunshine's service works too. What runs there differs by how much
+ * the machine offers, and the choice is made per launch in StreamWorkerHost:
+ *
+ *   the launcher service   SYSTEM on the console desktop, following the desktop
+ *                          switch — the UAC prompt, the lock screen and
+ *                          Ctrl+Alt+Suppr included (WorkerService.h)
+ *   the elevated task      the logged-on user's FULL token: every administrator
+ *                          window, but not the secure desktop
+ *   neither                the user's ordinary token, as it always was
+ *
+ * The SERVER is never raised by any of this — the process that listens on the
+ * network, decodes a browser's input, draws the tray and opens the browser
+ * keeps the user's own level. Only the worker moves, and only as far as the
+ * machine was set up to let it.
  *
  * Nothing here runs when the process already sits on the desktop (a dev
  * instance, a manual launch): launchesElsewhere() is false, and the worker is
@@ -112,6 +118,17 @@ QString elevatedWorkerTaskName();
 /// the user's ordinary level.
 bool elevatedWorkerAvailable();
 
+/// Full image path of the process @p pid, or empty when Windows will not say.
+/// PROCESS_QUERY_LIMITED_INFORMATION is granted across integrity levels, so
+/// this reads an elevated — or SYSTEM — process of ours too.
+QString processImage(quint32 pid);
+
+/// Whether @p image is this very executable: the check both ends of a worker
+/// launch make about the other, since the pipes are the only introduction they
+/// get. Case-insensitive, separators normalized; an empty image is never a
+/// match.
+bool isThisExecutable(const QString& image);
+
 /// Worker side of ConsoleProcess::startThroughTask(): open the three pipes
 /// named after `base`, check that the process at the other end is this same
 /// executable, and make them this process's stdin, stdout and stderr — CRT and
@@ -166,6 +183,18 @@ public:
     /// gone" and exits within seconds.
     bool startThroughTask(const QString& taskName, QString* error);
 
+    /// Launch a stream worker through the LocalSystem launcher service
+    /// (WorkerService::available()), in the console session, as SYSTEM — which
+    /// is what buys the secure desktop: the UAC prompt, the lock screen and the
+    /// Ctrl+Alt+Suppr screen.
+    ///
+    /// The same three named pipes as startThroughTask(), with one difference:
+    /// their DACL admits SYSTEM as well as the user, or the worker could not
+    /// open them. The rest — the random names, the single instance, the image
+    /// check in both directions, the 10 s wait for the worker to connect back —
+    /// is identical, and so is what kill() does.
+    bool startThroughService(QString* error);
+
     /// Write to the child's stdin. Dropped when the child is gone.
     void write(const QByteArray& data);
 
@@ -185,6 +214,14 @@ signals:
     void finished(int exitCode, bool crashed);
 
 private:
+    /// What startThroughTask() and startThroughService() both are: create the
+    /// three named pipes, have @p launch start a worker on their base name,
+    /// wait for it, check its image, adopt it. @p systemWorker widens the pipe
+    /// DACL to SYSTEM. @p launch reports its own failure in `error`.
+    bool startWithNamedPipes(bool systemWorker,
+                             const std::function<bool(const QString&, QString*)>& launch,
+                             QString* error);
+
     /// Readers for stdout/stderr and the exit waiter, once the child is up.
     void beginDraining();
 

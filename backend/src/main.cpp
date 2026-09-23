@@ -101,6 +101,7 @@
 #include "streaming/TransportPriorities.h"
 #include "streaming/ConsoleSession.h"
 #include "streaming/StreamWorkerHost.h"
+#include "streaming/WorkerService.h"
 #include "streaming/worker/StreamWorkerMain.h"
 #include "network/InternetAccessManager.h"
 #include "network/RendezvousClient.h"
@@ -1363,6 +1364,9 @@ int main(int argc, char* argv[])
     // noise that breaks `moonlightweb --help | less`.
     for (int i = 1; i < argc; ++i) {
         static const char* const kQuietStdout[] = {"--stream-worker",
+                                                   "--worker-service",
+                                                   "--worker-service-install",
+                                                   "--worker-service-remove",
                                                    "--native-probe",
                                                    "--vdisplay-apply",
                                                    "--status",
@@ -1395,13 +1399,19 @@ int main(int argc, char* argv[])
     // its own file (two processes appending to one file interleave), an
     // operator command that prints and exits gets none, and an explicit --log
     // wins over all of it.
+    QString workerCrashDir;
     {
         const QString logDir =
             QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/logs";
         QDir().mkpath(logDir);
 
         QString explicitLog;
+        // The SYSTEM worker's own AppData is systemprofile's; the launcher
+        // service passes the console user's instead, and it has to be read here
+        // with the rest, before the first line is written.
+        QString workerDataDir;
         bool probe = false, worker = false, transient = false, vdisplay = false;
+        bool service = false;
         for (int i = 1; i < argc; ++i) {
             // --log <path> and --log=<path>, the two spellings QCommandLineParser
             // accepts; read here so the very first line lands in the right file.
@@ -1415,6 +1425,12 @@ int main(int argc, char* argv[])
                 worker = true;
             else if (qstrcmp(argv[i], "--vdisplay-apply") == 0)
                 vdisplay = true;
+            else if (qstrcmp(argv[i], "--worker-service") == 0)
+                service = true;
+            else if (qstrcmp(argv[i], "--worker-data-dir") == 0 && i + 1 < argc)
+                workerDataDir = QString::fromLocal8Bit(argv[++i]);
+            else if (qstrncmp(argv[i], "--worker-data-dir=", 18) == 0)
+                workerDataDir = QString::fromLocal8Bit(argv[i] + 18);
             else {
                 // Commands that print and exit. Both spellings again: --status
                 // and --native-bench=<spec>. Matching the bare prefix would also
@@ -1429,14 +1445,30 @@ int main(int argc, char* argv[])
             }
         }
 
+        // Where the worker writes, when it was told: the same per-PID file as
+        // below, under the directory the launcher chose for it.
+        const QString workerLogDir =
+            workerDataDir.isEmpty() ? logDir : workerDataDir + QStringLiteral("/logs");
+        if (worker && !workerDataDir.isEmpty()) {
+            QDir().mkpath(workerLogDir);
+            workerCrashDir = workerDataDir;
+        }
+
         if (!explicitLog.isEmpty()) {
             // An operator chose this path for one run: never roll it, or a
             // capture they asked for could lose its own beginning.
             Logger::instance()->setLogFile(explicitLog, /*rotating=*/false);
         } else if (worker) {
-            Logger::instance()->setLogFile(logDir + QStringLiteral("/moonlightweb-worker-%1.log")
-                                                        .arg(QCoreApplication::applicationPid()),
+            Logger::instance()->setLogFile(workerLogDir +
+                                               QStringLiteral("/moonlightweb-worker-%1.log")
+                                                   .arg(QCoreApplication::applicationPid()),
                                            /*rotating=*/false); // dies with the session
+        } else if (service) {
+            // The launcher service outlives every server run and says one line
+            // per worker: its own file, rolled, under SYSTEM's AppData — which
+            // is the one place a LocalSystem process is sure it may write.
+            Logger::instance()->setLogFile(logDir +
+                                           QStringLiteral("/moonlightweb-worker-service.log"));
         } else if (probe) {
             // The console probe runs in the user's session, where the tray
             // client already owns moonlightweb.log.
@@ -1456,8 +1488,10 @@ int main(int argc, char* argv[])
     // a post-mortem the .pdb can symbolize. Free until an actual crash → safe in
     // production. Dumps land in the per-user data dir (writable under an admin
     // install), same rationale as the log path above.
-    CrashHandler::install(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
-                          "/crashes");
+    CrashHandler::install(workerCrashDir.isEmpty()
+                              ? QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
+                                    "/crashes"
+                              : workerCrashDir + "/crashes");
 
     // Load .env file before anything reads environment variables, then fall back
     // to any values baked in at build time (CI secrets) for vars still unset.
@@ -1521,6 +1555,29 @@ int main(int argc, char* argv[])
         "worker-pipe", "Internal: attach the stream worker to these named pipes", "name");
     workerPipeOption.setFlags(QCommandLineOption::HiddenFromHelp);
     parser.addOption(workerPipeOption);
+    // Internal: where a SYSTEM worker writes its log and its minidumps. Its own
+    // AppData is systemprofile's, which is not where anybody looks; the
+    // launcher service passes the console user's, beside the server's own.
+    QCommandLineOption workerDataDirOption(
+        "worker-data-dir", "Internal: the stream worker's log and crash directory", "dir");
+    workerDataDirOption.setFlags(QCommandLineOption::HiddenFromHelp);
+    parser.addOption(workerDataDirOption);
+
+    // Internal: the LocalSystem launcher service — the process Windows starts,
+    // and the two verbs the installer runs elevated to register and remove it
+    // (WorkerService.h).
+    QCommandLineOption workerServiceOption(
+        "worker-service", "Internal: run as the LocalSystem stream-worker launcher service");
+    workerServiceOption.setFlags(QCommandLineOption::HiddenFromHelp);
+    parser.addOption(workerServiceOption);
+    QCommandLineOption workerServiceInstallOption(
+        "worker-service-install", "Internal: register the stream-worker launcher service");
+    workerServiceInstallOption.setFlags(QCommandLineOption::HiddenFromHelp);
+    parser.addOption(workerServiceInstallOption);
+    QCommandLineOption workerServiceRemoveOption(
+        "worker-service-remove", "Internal: remove the stream-worker launcher service");
+    workerServiceRemoveOption.setFlags(QCommandLineOption::HiddenFromHelp);
+    parser.addOption(workerServiceRemoveOption);
 
     // Headless operator commands: query / configure the RUNNING instance from a
     // terminal, then exit. No server is started and no lock is taken.
@@ -1603,6 +1660,13 @@ int main(int argc, char* argv[])
     if (parser.isSet(vdisplayApplyOption))
         return VirtualDisplayApply::run(parser.value(vdisplayStageOption),
                                         parser.value(vdisplayDirOption));
+
+    // ── The stream-worker launcher service ──────────────────────────────────
+    // Before the lock too: the service is a second process of this binary, and
+    // it outlives every server run. Its two verbs are the installer's, elevated.
+    if (parser.isSet(workerServiceOption)) return WorkerService::runService();
+    if (parser.isSet(workerServiceInstallOption)) return WorkerService::installService();
+    if (parser.isSet(workerServiceRemoveOption)) return WorkerService::removeService();
 
     // ── Stream-worker child process ─────────────────────────────────────────
     // Branch BEFORE the single-instance lock (the worker is a deliberate second

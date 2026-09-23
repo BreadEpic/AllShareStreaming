@@ -65,6 +65,7 @@ const char* describe(InputEvent::Type type)
     case InputEvent::Type::ControllerState: return "controller state";
     case InputEvent::Type::ControllerRemoval: return "controller removal";
     case InputEvent::Type::LockKeySync: return "lock-key sync";
+    case InputEvent::Type::SecureAttention: return "Ctrl+Alt+Suppr";
     }
     return "event";
 }
@@ -374,6 +375,8 @@ void CgInput::inject(const InputEvent& event)
     case InputEvent::Type::MouseScrollVertical: injectScroll(event.scrollAmount, false); break;
     case InputEvent::Type::MouseScrollHorizontal: injectScroll(event.scrollAmount, true); break;
     case InputEvent::Type::LockKeySync: syncLockKeys(event); break;
+    // Windows' secure desktop has no macOS counterpart to reach.
+    case InputEvent::Type::SecureAttention: break;
     // No virtual gamepad on macOS (see §8 of the plan: a signed DriverKit
     // extension, which needs an Apple entitlement). Ignored, never mapped
     // onto the mouse.

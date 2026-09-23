@@ -97,11 +97,24 @@ signals:
     void exited();
 
 private:
+    /// How far the native worker is raised. Tried top down in start(), each
+    /// step reaching less of the desktop than the one above and none of them
+    /// changing what the stream itself does.
+    enum class Launch
+    {
+        /// From a service, into the console session, as the user sitting there.
+        ConsoleAsUser,
+        /// From the desktop, through the elevated scheduled task: the user's
+        /// full token, so administrator windows take input (§30, level 1).
+        TaskElevated,
+        /// From the desktop, through the LocalSystem launcher service: SYSTEM
+        /// on the console desktop, so the secure desktop does too (level 2).
+        ServiceAsSystem,
+    };
+
     bool startInProcess(const QStringList& args, const QByteArray& configLine, bool native);
-    /// Through ConsoleProcess: into the console session from a service, or —
-    /// `throughTask` — through the elevated worker task from the desktop.
-    bool startInConsoleSession(const QStringList& args, const QByteArray& configLine,
-                               bool throughTask);
+    /// Through ConsoleProcess, in one of the three ways above.
+    bool startInConsoleSession(const QStringList& args, const QByteArray& configLine, Launch how);
     void onStdoutData(const QByteArray& data);
     void onStderrData(const QByteArray& data);
     void onStdout();

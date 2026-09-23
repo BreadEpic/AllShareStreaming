@@ -17,6 +17,7 @@
 
 #include "ConsoleSession.h"
 
+#include "WorkerService.h"
 #include "common/Edition.h"
 
 #include <QCoreApplication>
@@ -262,10 +263,49 @@ QString taskExecutable(IRegisteredTask* task)
     return result;
 }
 
+/// Start the registered task `taskName`, handing it `base` as its $(Arg0) —
+/// the only thing that travels, the fixed arguments being in the task itself.
+bool runWorkerTask(const QString& taskName, const QString& base, QString* error)
+{
+    auto fail = [&](const QString& why) {
+        *error = why;
+        return false;
+    };
+    ComApartment com;
+    Com<ITaskService> service;
+    Com<IRegisteredTask> task;
+    if (!com.usable() || !openTask(taskName, service, task))
+        return fail(QStringLiteral("task \"%1\" not found").arg(taskName));
+
+    SAFEARRAY* params = ::SafeArrayCreateVector(VT_BSTR, 0, 1);
+    LONG index = 0;
+    BSTR arg = ::SysAllocString(reinterpret_cast<const OLECHAR*>(base.utf16()));
+    ::SafeArrayPutElement(params, &index, arg); // copies
+    ::SysFreeString(arg);
+    VARIANT variant;
+    ::VariantInit(&variant);
+    variant.vt = VT_ARRAY | VT_BSTR;
+    variant.parray = params;
+    Com<IRunningTask> running;
+    const HRESULT hr = task->RunEx(variant, TASK_RUN_NO_FLAGS, 0, nullptr, running.out());
+    ::VariantClear(&variant);
+    if (FAILED(hr))
+        return fail(QStringLiteral("running task \"%1\" failed (0x%2)")
+                        .arg(taskName)
+                        .arg(static_cast<quint32>(hr), 8, 16, QLatin1Char('0')));
+    return true;
+}
+
 /// "D:P(A;;GA;;;<our user SID>)": the pipes admit the user this process runs
 /// as — which an elevated process of theirs still is — and nobody else. A
 /// default pipe DACL would also let Everyone read.
-bool userOnlySecurity(SECURITY_ATTRIBUTES& sa, PSECURITY_DESCRIPTOR& sd)
+///
+/// @p admitSystem adds "(A;;GA;;;SY)", for the worker the launcher service
+/// starts: it runs as SYSTEM, which the user's own ACE does not cover, and
+/// without the entry it could not open its own stdin. SYSTEM can help itself to
+/// any handle on the machine anyway — the ACE grants nothing it did not have,
+/// it only saves it the trouble.
+bool userOnlySecurity(SECURITY_ATTRIBUTES& sa, PSECURITY_DESCRIPTOR& sd, bool admitSystem)
 {
     HANDLE token = nullptr;
     if (!::OpenProcessToken(::GetCurrentProcess(), TOKEN_QUERY, &token)) return false;
@@ -278,8 +318,9 @@ bool userOnlySecurity(SECURITY_ATTRIBUTES& sa, PSECURITY_DESCRIPTOR& sd)
         ::ConvertSidToStringSidW(reinterpret_cast<TOKEN_USER*>(buffer.data())->User.Sid, &sid);
     ::CloseHandle(token);
     if (!gotSid) return false;
-    const std::wstring sddl = L"D:P(A;;GA;;;" + std::wstring(sid) + L")";
+    std::wstring sddl = L"D:P(A;;GA;;;" + std::wstring(sid) + L")";
     ::LocalFree(sid);
+    if (admitSystem) sddl += L"(A;;GA;;;SY)";
     if (!::ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1, &sd,
                                                                 nullptr))
         return false;
@@ -415,6 +456,26 @@ bool elevatedWorkerAvailable()
     if (!openTask(elevatedWorkerTaskName(), service, task)) return false;
     return sameFile(taskExecutable(task.p), ownExecutable());
 #else
+    return false;
+#endif
+}
+
+QString processImage(quint32 pid)
+{
+#ifdef Q_OS_WIN
+    return ::processImage(static_cast<DWORD>(pid));
+#else
+    Q_UNUSED(pid);
+    return {};
+#endif
+}
+
+bool isThisExecutable(const QString& image)
+{
+#ifdef Q_OS_WIN
+    return sameFile(image, ownExecutable());
+#else
+    Q_UNUSED(image);
     return false;
 #endif
 }
@@ -677,8 +738,40 @@ bool ConsoleProcess::startThroughTask(const QString& taskName, QString* error)
     if (error) *error = QStringLiteral("task launch exists on Windows only");
     return false;
 #else
+    const bool started = startWithNamedPipes(
+        /*systemWorker=*/false,
+        [&taskName](const QString& base, QString* why) {
+            return runWorkerTask(taskName, base, why);
+        },
+        error);
+    if (!started) g_TaskLaunchBroken.store(true);
+    return started;
+#endif
+}
+
+bool ConsoleProcess::startThroughService(QString* error)
+{
+#ifndef Q_OS_WIN
+    if (error) *error = QStringLiteral("the worker service exists on Windows only");
+    return false;
+#else
+    return startWithNamedPipes(
+        /*systemWorker=*/true,
+        [](const QString& base, QString* why) { return WorkerService::requestWorker(base, why); },
+        error);
+#endif
+}
+
+bool ConsoleProcess::startWithNamedPipes(
+    bool systemWorker, const std::function<bool(const QString&, QString*)>& launch, QString* error)
+{
+#ifndef Q_OS_WIN
+    Q_UNUSED(systemWorker);
+    Q_UNUSED(launch);
+    if (error) *error = QStringLiteral("named-pipe launch exists on Windows only");
+    return false;
+#else
     auto fail = [&](const QString& why) {
-        g_TaskLaunchBroken.store(true);
         if (error) *error = why;
         return false;
     };
@@ -687,7 +780,7 @@ bool ConsoleProcess::startThroughTask(const QString& taskName, QString* error)
     // ── Three named pipes, the user's alone ─────────────────────────────────
     SECURITY_ATTRIBUTES sa;
     PSECURITY_DESCRIPTOR sd = nullptr;
-    if (!userOnlySecurity(sa, sd))
+    if (!userOnlySecurity(sa, sd, systemWorker))
         return fail(QStringLiteral("cannot build the pipe DACL (error %1)").arg(::GetLastError()));
     const quint64 nonce[2] = {QRandomGenerator::system()->generate64(),
                               QRandomGenerator::system()->generate64()};
@@ -720,32 +813,14 @@ bool ConsoleProcess::startThroughTask(const QString& taskName, QString* error)
         return fail(QStringLiteral("CreateNamedPipe failed (error %1)").arg(pipeError));
     }
 
-    // ── Run the task, the pipe name as $(Arg0) ──────────────────────────────
+    // ── Have somebody start a worker on that name ───────────────────────────
+    // The task scheduler or the launcher service; from here on the two are the
+    // same thing — something that runs this executable somewhere we cannot.
     {
-        ComApartment com;
-        Com<ITaskService> service;
-        Com<IRegisteredTask> task;
-        if (!com.usable() || !openTask(taskName, service, task)) {
+        QString why;
+        if (!launch(base, &why)) {
             closePipes();
-            return fail(QStringLiteral("task \"%1\" not found").arg(taskName));
-        }
-        SAFEARRAY* params = ::SafeArrayCreateVector(VT_BSTR, 0, 1);
-        LONG index = 0;
-        BSTR arg = ::SysAllocString(reinterpret_cast<const OLECHAR*>(base.utf16()));
-        ::SafeArrayPutElement(params, &index, arg); // copies
-        ::SysFreeString(arg);
-        VARIANT variant;
-        ::VariantInit(&variant);
-        variant.vt = VT_ARRAY | VT_BSTR;
-        variant.parray = params;
-        Com<IRunningTask> running;
-        const HRESULT hr = task->RunEx(variant, TASK_RUN_NO_FLAGS, 0, nullptr, running.out());
-        ::VariantClear(&variant);
-        if (FAILED(hr)) {
-            closePipes();
-            return fail(QStringLiteral("running task \"%1\" failed (0x%2)")
-                            .arg(taskName)
-                            .arg(static_cast<quint32>(hr), 8, 16, QLatin1Char('0')));
+            return fail(why);
         }
     }
 
@@ -754,8 +829,7 @@ bool ConsoleProcess::startThroughTask(const QString& taskName, QString* error)
     for (HANDLE h : {in, out, err}) {
         if (!awaitClient(h, deadline)) {
             closePipes();
-            return fail(
-                QStringLiteral("the worker started by task \"%1\" never connected").arg(taskName));
+            return fail(QStringLiteral("the worker never connected"));
         }
     }
     ULONG pid = 0;
@@ -786,8 +860,8 @@ bool ConsoleProcess::startThroughTask(const QString& taskName, QString* error)
     d->stdinWrite = in;
     d->stdoutRead = out;
     d->stderrRead = err;
-    // What the task actually gave: a standard user's HighestAvailable is their
-    // ordinary token, and the log should say so rather than promise more.
+    // What the launch actually gave: a standard user's HighestAvailable is
+    // their ordinary token, and the log should say so rather than promise more.
     bool elevated = false;
     HANDLE workerToken = nullptr;
     if (::OpenProcessToken(process, TOKEN_QUERY, &workerToken)) {
@@ -798,8 +872,11 @@ bool ConsoleProcess::startThroughTask(const QString& taskName, QString* error)
                    elevation.TokenIsElevated;
         ::CloseHandle(workerToken);
     }
-    d->user = elevated ? QStringLiteral("this user, elevated (task)")
-                       : QStringLiteral("this user, not elevated (task)");
+    if (systemWorker)
+        d->user = QStringLiteral("SYSTEM (launcher service)");
+    else
+        d->user = elevated ? QStringLiteral("this user, elevated (task)")
+                           : QStringLiteral("this user, not elevated (task)");
     d->running.store(true);
     beginDraining();
     return true;

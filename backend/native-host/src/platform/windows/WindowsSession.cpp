@@ -38,6 +38,7 @@
 #include "../../encode/windows/VplEncoder.h"
 #include "../../input/windows/Win32Input.h"
 #include "CrossGpuBridge.h"
+#include "InputDesktop.h"
 #include "StreamPriority.h"
 
 // GetCursorInfo/LoadCursorW, for naming the pointer — see currentCursorKind().
@@ -757,6 +758,18 @@ private:
 
     bool openCapture(std::string& error)
     {
+        // Follow the desktop switch before asking for a duplication. DXGI
+        // duplicates the desktop of the CALLING thread, and refuses outright
+        // ("only a SecureUI is displayed") when that thread sits on `Default`
+        // while Windows shows the UAC prompt or the lock screen on `Winlogon`.
+        // A SYSTEM worker may cross; anything less may not, and for it this is
+        // a no-op, leaving the wait in restartCapture() as the whole answer.
+        //
+        // Placed here rather than in the loop so that the one call site that
+        // matters — restartCapture(), which runs ON the capture thread — is
+        // covered, and so is every future one.
+        platform::attachThread();
+
         // MW_CAPTURE=wgc takes the fallback on a machine where Desktop
         // Duplication works perfectly well. Without it the WGC path is only
         // reachable on hardware nobody here has, which is how a fallback rots:

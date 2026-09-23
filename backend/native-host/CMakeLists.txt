@@ -39,6 +39,7 @@ if(WIN32)
         src/platform/windows/WindowsProbe.cpp
         src/platform/windows/WindowsEncoderProbe.cpp
         src/platform/windows/WindowsSession.cpp
+        src/platform/windows/InputDesktop.cpp
         src/platform/windows/CrossGpuBridge.cpp
         src/platform/windows/StreamPriority.cpp
         src/capture/windows/DxgiDuplication.cpp

@@ -649,6 +649,12 @@ void StreamRelay::onWsTextMessage(const QString& message)
     } else if (type == "mousehwheel") {
         short delta = static_cast<short>(msg["delta"].toInt(0));
         m_Shim->sendMouseHScroll(delta);
+    } else if (type == "secureattention") {
+        // Ctrl+Alt+Suppr: the one combination a browser can never deliver — the
+        // OS running the viewer eats it first — so it arrives as a message of
+        // its own, from a button. Whether it reaches the host's secure desktop
+        // depends on the host (IMediaEngine::sendSecureAttention).
+        m_Shim->sendSecureAttention();
     } else if (type == "textinput") {
         // Virtual/soft keyboard text (UTF-8) — forwarded as a text event.
         m_Shim->sendUtf8Text(msg["text"].toString());

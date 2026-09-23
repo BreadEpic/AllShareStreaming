@@ -289,6 +289,7 @@ add_executable(mw-server
     src/streaming/SignalingServer.cpp
     src/streaming/StreamWorkerHost.cpp
     src/streaming/ConsoleSession.cpp
+    src/streaming/WorkerService.cpp
     src/streaming/worker/StreamWorkerMain.cpp
     src/streaming/worker/CoopSessionResolver.cpp
 )
@@ -459,9 +460,11 @@ if(WIN32)
     # tray and the admin page (Autostart.cpp).
     # setupapi + newdev + cfgmgr32: the virtual display driver's device node,
     # created and removed by the --vdisplay-apply helper (VirtualDisplayApply.cpp).
+    # advapi32 + shell32: the LocalSystem launcher service — the SCM, the pipe
+    # DACLs and the console user's AppData (WorkerService.cpp).
     target_link_libraries(mw-server PRIVATE ws2_32 winmm Bcrypt Crypt32 iphlpapi Dbghelp avrt
                                             wtsapi32 userenv taskschd ole32 oleaut32
-                                            setupapi newdev cfgmgr32)
+                                            setupapi newdev cfgmgr32 advapi32 shell32)
     # OpenSSL is linked dynamically (import libs) — ship the DLLs next to the exe.
     file(GLOB _mw_ssl_dlls "${_mw_ssl}/lib/${_mw_ssl_arch}/*-3-${_mw_ssl_arch}.dll")
     foreach(_dll ${_mw_ssl_dlls})

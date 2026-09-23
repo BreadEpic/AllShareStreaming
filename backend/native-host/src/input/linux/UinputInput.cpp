@@ -723,6 +723,10 @@ void UinputInput::inject(const InputEvent& event)
     // on somebody's real desktop from a state the client only thinks it knows.
     // Ignored rather than approximated.
     case Type::LockKeySync:
+    // Ctrl+Alt+Suppr is a Windows notion (SendSAS on the secure desktop); the
+    // key combination itself already arrives as three ordinary keys when a
+    // viewer presses it, and there is nothing further to do here.
+    case Type::SecureAttention:
     case Type::ControllerArrival:
     case Type::ControllerState:
     case Type::ControllerRemoval: break;

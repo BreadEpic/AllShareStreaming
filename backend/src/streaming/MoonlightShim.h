@@ -109,6 +109,7 @@ public:
     void syncLockKeys(bool numLock, bool capsLock, bool scrollLock) override;
     // Send UTF-8 text (virtual/soft keyboard input) to the host.
     void sendUtf8Text(const QString& text) override;
+    void sendSecureAttention() override;
     // A key the client's layout gives a different character than its US
     // position would. GameStream carries no layout, so the only exact channel
     // left here is the UTF-8 text event — which has no key state, hence the

@@ -315,7 +315,7 @@ export class StreamViewKeyboard {
         // [label, kind, id]. kind: 'mod' | 'key'.
         // [label, kind, id] — `id` is a virtual-key code for 'key' entries and a
         // modifier name for 'mod' entries, so the tuple is deliberately mixed.
-        /** @type {Array<[string, 'key', number] | [string, 'mod', string]>} */
+        /** @type {Array<[string, 'key', number] | [string, 'mod', string] | [string, 'sas', number]>} */
         const items = [
             ['Win', 'key', 0x5b], // momentary tap → Start menu (single press)
             ['Esc', 'key', 0x1b],
@@ -324,6 +324,11 @@ export class StreamViewKeyboard {
             ['Ctrl', 'mod', 'ctrl'],
             ['Alt', 'mod', 'alt'],
             ['Del', 'key', 0x2e],
+            // Not the three keys: the viewer's own OS swallows that combination
+            // before the page ever sees it, and even forwarded it would be
+            // refused — Windows reserves it in the kernel. It goes as a message
+            // of its own, which the host turns into a real SAS when it can.
+            ['C+A+Suppr', 'sas', 0],
             ['←', 'key', 0x25],
             ['↑', 'key', 0x26],
             ['↓', 'key', 0x28],
@@ -403,6 +408,17 @@ export class StreamViewKeyboard {
                 btn.addEventListener('pointerup', release);
                 btn.addEventListener('pointercancel', release);
                 btn.addEventListener('lostpointercapture', release);
+            } else if (kind === 'sas') {
+                btn.addEventListener('pointerdown', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    // Latched modifiers first: the host is about to switch to
+                    // the secure desktop, where anything still held would stay
+                    // held with nobody to release it.
+                    this._releaseLatchedMods();
+                    this.webrtc.send({ type: 'secureattention' });
+                    this._refocusCapture();
+                });
             } else {
                 btn.addEventListener('pointerdown', (e) => {
                     e.preventDefault();

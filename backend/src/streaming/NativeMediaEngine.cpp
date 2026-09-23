@@ -687,6 +687,14 @@ void NativeMediaEngine::sendKeyEvent(short keyCode, bool down, char modifiers, c
     m_Session->sendInput(event);
 }
 
+void NativeMediaEngine::sendSecureAttention()
+{
+    if (!m_Session) return;
+    mw::native::InputEvent event;
+    event.type = mw::native::InputEvent::Type::SecureAttention;
+    m_Session->sendInput(event);
+}
+
 void NativeMediaEngine::sendUtf8Text(const QString& text)
 {
     if (!m_Session) return;

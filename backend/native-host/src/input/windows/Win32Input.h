@@ -23,7 +23,9 @@
 #include "VigemGamepad.h"
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -78,6 +80,17 @@ public:
 private:
     /// The body of releaseBlock, on its own thread — see the .cpp.
     void runRelease(void* blockerWindow);
+
+    /// inject()'s own body: the gate, then the switch onto the platform calls.
+    /// Called directly on the caller's thread in the ordinary case, and from
+    /// the follower thread when this worker follows the desktop.
+    void injectNow(const InputEvent& event);
+    /// The follower thread: attach to the input desktop, drain the queue,
+    /// re-attach whenever Windows has switched. See m_Follow.
+    void runFollower();
+    /// Drop the held-key bookkeeping without pressing anything, for a desktop
+    /// switch that took the real state with it.
+    void forgetHeld();
 
     void injectKey(const InputEvent& event, bool down);
     /// One character the client's layout produced, pressed and released as the
@@ -148,6 +161,30 @@ private:
     /// on the thread that asked. Joined by stop().
     std::mutex m_UnblockMutex;
     std::thread m_UnblockThread;
+
+    // ── Following the desktop switch (SYSTEM workers only) ──────────────────
+    //
+    // SendInput injects into the desktop of the CALLING thread, so reaching a
+    // UAC prompt means standing on `Winlogon` when it is up. SetThreadDesktop
+    // refuses to move a thread that owns a window or a hook, and the thread
+    // that delivers input here runs a Qt event loop — which on Windows owns an
+    // internal window. It can never follow, so it hands the event to a thread
+    // that can: one thread, created by start(), that does nothing else.
+    //
+    // This is the exception to InputEvent.h's "no queue, no thread hop": it
+    // buys the secure desktop, it costs one condition-variable wake (tens of
+    // microseconds, against a frame time of 8 ms), and it exists ONLY when the
+    // worker runs as SYSTEM. An ordinary worker still injects on the caller's
+    // thread, on exactly the path that was measured.
+    bool m_Follow = false;
+    std::thread m_Follower;
+    std::mutex m_QueueMutex;
+    std::condition_variable m_QueueWake;
+    std::deque<InputEvent> m_Queue;
+    bool m_FollowerQuit = false;
+    /// Events dropped because the queue hit its bound — a host so wedged that
+    /// SendInput itself is not returning. Reported once, at stop().
+    uint64_t m_Dropped = 0;
 
     /// Not const: the display can be re-resolved under a running session (see
     /// setDisplayRect). Written and read under the caller's own serialisation.

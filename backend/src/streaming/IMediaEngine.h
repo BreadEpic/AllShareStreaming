@@ -166,6 +166,16 @@ public:
     /// of the modifiers had drifted.
     virtual void sendKeyChar(const QString& ch, bool down, char modifiers = 0) = 0;
 
+    /// Ctrl+Alt+Suppr on the host.
+    ///
+    /// Not a key combination: Windows reserves it in the kernel, so no amount
+    /// of injected keys produces it and every engine has to ask the OS by name.
+    /// A native host does it through SendSAS, and only when its worker runs as
+    /// SYSTEM; a GameStream host is sent the three keys and left to make of
+    /// them what its own service can. Either way the client may ask, and the
+    /// engine says in the log what became of it.
+    virtual void sendSecureAttention() = 0;
+
     virtual void sendMouseMove(short deltaX, short deltaY) = 0;
     virtual void sendMousePosition(short x, short y, short referenceWidth,
                                    short referenceHeight) = 0;

@@ -735,6 +735,25 @@ void MoonlightShim::sendUtf8Text(const QString& text)
     LiSendUtf8TextEvent(utf8.constData(), static_cast<unsigned int>(utf8.size()));
 }
 
+void MoonlightShim::sendSecureAttention()
+{
+    // GameStream has no message for it, so what goes over the wire is the
+    // combination itself — the same three keys a physical keyboard sends. On a
+    // host whose own service can raise the secure desktop (Sunshine running as
+    // one) that is what it takes; anywhere else it is three ordinary keys, and
+    // the prompt stays out of reach. Better than refusing: the common case on
+    // the other side is an ordinary desktop, where Ctrl+Alt+Suppr does open the
+    // security screen when the host can show it.
+    if (!m_Connected.load(std::memory_order_acquire)) return;
+    constexpr short kCtrl = 0x11, kAlt = 0x12, kDelete = 0x2E;
+    sendKeyEvent(kCtrl, true, 0, 0);
+    sendKeyEvent(kAlt, true, 0, 0);
+    sendKeyEvent(kDelete, true, 0, 0);
+    sendKeyEvent(kDelete, false, 0, 0);
+    sendKeyEvent(kAlt, false, 0, 0);
+    sendKeyEvent(kCtrl, false, 0, 0);
+}
+
 void MoonlightShim::sendKeyChar(const QString& ch, bool down, char /*modifiers*/)
 {
     // The modifier mask is dropped on purpose: on GameStream the modifier

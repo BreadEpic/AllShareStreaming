@@ -4815,8 +4815,162 @@ login » continue d'écrire une tâche `LeastPrivilege` sans élévation.
   juste). L'invite UAC et l'écran de verrouillage sont sur le **bureau sécurisé**,
   hors de portée d'un processus utilisateur même élevé : c'est le niveau 2.
 
-**Niveau 2 (à faire) : comme Parsec.** Un service SYSTEM lanceur, qui démarre le
-worker en session console sous un jeton SYSTEM ; capture DXGI et `Win32Input`
-suivant le bureau d'entrée (`OpenInputDesktop`/`SetThreadDesktop`) ; `SendSAS`
-pour Ctrl+Alt+Suppr. Le transport par tubes nommés ci-dessus sert tel quel : le
-service remplace la tâche.
+## 31. Le worker SYSTEM : le bureau sécurisé répond aussi (23/09/2026)
+
+Le niveau 1 achète toutes les fenêtres administrateur, pas le **bureau
+sécurisé** : l'invite UAC, l'écran de verrouillage et l'écran Ctrl+Alt+Suppr
+vivent sur `Winlogon`, un autre bureau de la même station, et Windows n'y laisse
+entrer que SYSTEM. C'est le niveau 2, et c'est ce que fait Parsec.
+
+### 31.1 Le service lanceur
+
+Un service **LocalSystem** minuscule, `MoonlightWeb Worker`
+(`WorkerService.{h,cpp}`), dont l'unique travail est de démarrer le worker en
+session console sous un jeton SYSTEM. L'exe s'enregistre lui-même
+(`--worker-service-install` / `--worker-service-remove`, lancés élevés par
+l'installeur) et tourne sous `--worker-service`. Démarrage **automatique** et
+non « à la demande » : un service à la demande obligerait à accorder
+`SERVICE_START` à l'utilisateur interactif, et le droit de démarrer un processus
+LocalSystem est une chose plus grosse à distribuer que les quelques centaines de
+kilo-octets que coûte l'attente sur un tube.
+
+Le jeton : celui du service, dupliqué, puis déplacé vers la session console par
+`SetTokenInformation(TokenSessionId)` — qui demande `SeTcbPrivilege`, que
+LocalSystem a. `lpDesktop` vaut explicitement `winsta0\default` : le défaut d'un
+service est une station que personne ne regarde, et un worker démarré là
+capturerait le vide.
+
+**Ce qui n'est PAS élevé** : le serveur. Le processus qui écoute sur le réseau,
+décode le WebRTC, dessine le tray et ouvre le navigateur garde le niveau de
+l'utilisateur, exactement comme avant.
+
+**Le transport** ne bouge pas : les trois tubes nommés du niveau 1, créés par le
+serveur, leur nom passé en paramètre. Une seule différence, la DACL, qui gagne
+`(A;;GA;;;SY)` — le worker est SYSTEM et n'ouvrirait pas son propre stdin sans.
+
+### 31.2 La frontière de confiance, dite franchement
+
+N'importe quel processus de l'utilisateur console peut demander un worker au
+service et obtient un processus SYSTEM branché sur des tubes qu'il a créés.
+C'est une vraie frontière, et c'est la même que celle des services de Parsec et
+de Sunshine. Elle est réduite à ce que la fonction exige :
+
+- le service lance **une** commande, l'image sous laquelle il a été installé,
+  avec des arguments fixes — rien de la requête ne devient un chemin, un drapeau
+  ou un mot de shell ;
+- la requête ne porte qu'un **nom de tube**, accepté seulement en
+  `[A-Za-z0-9._-]{1,128}` : pas de séparateur, pas de `..`, pas d'UNC ;
+- l'appelant doit être sur la **session console** (son jeton est impersonné au
+  niveau identification et son `TokenSessionId` comparé) et son image doit être
+  **ce même exe** ;
+- le worker vérifie la même chose dans l'autre sens avant de lire un octet de
+  config ;
+- la DACL du tube de contrôle est `D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x12019f;;;IU)`
+  — la DACL par défaut d'un tube laisserait entrer toutes les sessions
+  d'ouverture de la machine.
+
+Ce qui n'est **pas** prétendu : un utilisateur capable de lancer l'exe installé
+peut obtenir un worker SYSTEM et lui passer une session à lui. Le propriétaire
+de la machine installe ça exprès, comme il installe Parsec ; la fonction ne peut
+pas exister sans cette étape, et le dire vaut mieux que faire croire que le
+contrôle la referme.
+
+### 31.3 Suivre la bascule de bureau
+
+Les deux moitiés du stream sont **par thread** :
+
+- **Desktop Duplication** duplique le bureau du thread **appelant**. Sur un
+  thread resté sur `Default` pendant que l'UAC est affichée, `DuplicateOutput`
+  répond « only a SecureUI is displayed ».
+- **SendInput** injecte dans le bureau du thread **appelant**. Depuis `Default`,
+  rien n'atteint une invite UAC.
+
+D'où `platform::attachThread()` (`InputDesktop.{h,cpp}`) : `OpenInputDesktop` +
+`SetThreadDesktop`, l'ancien handle fermé **après** la bascule seulement (fermer
+le bureau sur lequel un thread se tient est indéfini). Tout y est un no-op qui
+répond faux hors SYSTEM, donc le moteur se comporte exactement comme avant.
+
+- **Capture** : l'appel est en tête de `openCapture()`, ce qui couvre le seul
+  site qui compte — `restartCapture()`, qui tourne **sur** le thread de capture,
+  et où l'attente « l'écran est absent » du §30 devient une reconnexion.
+- **Entrée** : `SetThreadDesktop` refuse de déplacer un thread qui possède une
+  fenêtre ou un hook, et le thread qui livre l'entrée fait tourner une boucle
+  d'événements Qt — laquelle possède une fenêtre interne sous Windows. Il ne
+  suivra **jamais**. L'entrée passe donc par un thread dédié, créé par
+  `Win32Input::start()` **et seulement quand le worker est SYSTEM** : file
+  `deque` + condition variable, bornée à 4096 événements. C'est l'exception
+  assumée au « pas de file, pas de saut de thread » d'`InputEvent.h` — elle
+  coûte un réveil de condition variable (quelques dizaines de µs contre 8 ms de
+  frame) et un worker ordinaire injecte toujours sur le thread appelant, sur le
+  chemin exact qui avait été mesuré.
+- À chaque bascule détectée (nom du bureau relu au plus toutes les 100 ms), ce
+  qui était enfoncé est **oublié** sans être relâché : l'état appartenait au
+  bureau qui vient de partir, et un key-up envoyé au nouveau serait une touche
+  que personne n'a pressée.
+
+### 31.4 Ctrl+Alt+Suppr
+
+Ce n'est pas une combinaison de touches : Windows la réserve dans le noyau et
+aucune entrée injectée ne la fabrique. Elle passe par `SendSAS` (`sas.dll`),
+réservé à SYSTEM. Chaîne complète : bouton `C+A+Suppr` de la barre d'outils
+tactile → message `secureattention` → les trois relais →
+`IMediaEngine::sendSecureAttention()`. Côté natif, un
+`InputEvent::Type::SecureAttention` qui finit sur le thread suiveur — donc sur
+le bureau qui vient d'apparaître. Côté GameStream, `MoonlightShim` envoie les
+trois touches réelles : sur un hôte dont le propre service sait lever le bureau
+sécurisé, c'est ce qu'il faut ; ailleurs ce sont trois touches ordinaires, ce
+qui reste plus utile qu'un refus.
+
+Le bouton n'existe pas seulement pour le tactile : le système d'exploitation du
+spectateur avale la combinaison avant que la page ne la voie, sur toutes les
+plateformes. Un bouton est le **seul** chemin.
+
+### 31.5 La dégradation
+
+`StreamWorkerHost::start()` essaie de haut en bas, et chaque cran perd de la
+portée sans rien changer au stream :
+
+| Chemin | Jeton | Atteint |
+|---|---|---|
+| service lanceur | SYSTEM, bureau console | bureau sécurisé compris |
+| tâche élevée (§30) | jeton complet de l'utilisateur | fenêtres administrateur |
+| enfant simple | jeton ordinaire | ce qui marchait avant |
+
+Un échec coûte ce lancement-là, jamais le stream : on tombe à la ligne suivante,
+et les deux détours se coupent d'eux-mêmes pour le reste du run après un échec.
+
+### 31.6 Journal et diagnostics
+
+L'AppData d'un processus SYSTEM est celui de `systemprofile`, où personne ne
+regarde. Le service passe donc au worker `--worker-data-dir <AppData de
+l'utilisateur console>` (obtenu par `SHGetKnownFolderPath` avec le jeton de
+l'utilisateur), et le journal comme les minidumps du worker SYSTEM atterrissent
+à côté de ceux du serveur. Le service lui-même écrit dans
+`moonlightweb-worker-service.log`, sous l'AppData de SYSTEM — le seul endroit
+où un processus LocalSystem est certain de pouvoir écrire.
+
+Conséquence assumée : le worker SYSTEM lit `AppSettings` depuis le profil de
+SYSTEM, donc aux valeurs par défaut. Sans effet en pratique — toute la
+configuration de session arrive par stdin, et il ne reste que le bouton de
+débogage clavier.
+
+### 31.7 Vérifié
+
+Compilation complète propre (MSVC, warnings as errors), `mw-native-tests`
+**4129/4129**, ESLint + Prettier propres sur `StreamViewKeyboard.js`,
+clang-format 19.1.7 propre sur `backend/src`. **À confirmer par Bruno sur une
+vraie installation**, en trois temps, depuis l'iPhone : (1) l'invite UAC
+apparaît dans le stream et le bouton « Oui » répond au clic ; (2) Win+L puis
+déverrouillage au mot de passe tapé depuis le client ; (3) le bouton
+`C+A+Suppr` ouvre l'écran de sécurité. Puis les mêmes trois avec le service
+arrêté (`sc stop "MoonlightWeb Worker"`), qui doivent retomber sur le niveau 1 —
+stream normal, fenêtres admin toujours pilotables, bureau sécurisé noir.
+
+**Concrètement, pour l'utilisateur** : le stream ne s'arrête plus devant une
+porte. Quand Windows demande une autorisation administrateur, l'invite apparaît
+à l'écran distant et le bouton « Oui » se clique comme n'importe quel autre ;
+si la machine se verrouille, on tape son mot de passe depuis le client au lieu
+de regarder un écran noir en attendant ; et le bouton Ctrl+Alt+Suppr de la barre
+de touches ouvre l'écran de sécurité, ce qu'aucune combinaison au clavier n'a
+jamais pu faire depuis un navigateur. Si le service n'est pas installé ou a été
+arrêté, rien ne casse : on retrouve exactement le comportement précédent.

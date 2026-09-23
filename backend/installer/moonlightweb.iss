@@ -1013,6 +1013,32 @@ begin
          '', SW_HIDE, ewWaitUntilTerminated, rc);
 end;
 
+// --- The SYSTEM worker launcher service ------------------------------------
+//
+// Level 2 of the elevated-worker story: a LocalSystem service whose only job is
+// to start the stream worker on the console desktop with a SYSTEM token, so a
+// remote viewer can answer a UAC prompt, unlock the screen and press
+// Ctrl+Alt+Suppr — the secure desktop, which the elevated task above cannot
+// reach. The exe registers and removes itself (WorkerService.cpp); the
+// installer only has to run it elevated, which it is.
+//
+// Refreshed on every install so the service's image follows {app}.
+procedure RegisterWorkerService();
+var
+  rc: Integer;
+begin
+  Exec(ExpandConstant('{app}\{#MyAppExe}'), '--worker-service-install', '', SW_HIDE,
+       ewWaitUntilTerminated, rc);
+end;
+
+procedure UnregisterWorkerService();
+var
+  rc: Integer;
+begin
+  Exec(ExpandConstant('{app}\{#MyAppExe}'), '--worker-service-remove', '', SW_HIDE,
+       ewWaitUntilTerminated, rc);
+end;
+
 // Run the app's own elevated helper for one verb on "MoonlightWeb Virtual
 // Display": `install` creates the driver's device node from the files under
 // {app}\drivers\vdd, named, disabled, and creates none when one is there;
@@ -1450,6 +1476,9 @@ begin
   // The elevated stream worker task: every edition, refreshed so the action
   // follows {app}.
   RegisterStreamWorkerTask();
+  // And the launcher service above it, which the worker prefers when it is
+  // there. Both are kept: the task is the fallback if the service is stopped.
+  RegisterWorkerService();
   // "MoonlightWeb Virtual Display" itself: on Accept, and again on every
   // update once accepted (the helper finds the node and creates no second
   // one — this is what makes an update a no-op and a reinstall a repair).
@@ -1637,6 +1666,9 @@ begin
     // The elevated stream worker task.
     Exec('schtasks.exe', '/Delete /TN "' + WorkerTaskName + '" /F', '', SW_HIDE,
          ewWaitUntilTerminated, rc);
+    // The launcher service, while the exe that knows how to remove it is still
+    // under {app} — and before the taskkill below, which would take it too.
+    UnregisterWorkerService();
     Exec('taskkill.exe', '/IM "{#MyAppExe}" /F', '', SW_HIDE,
          ewWaitUntilTerminated, rc);
     // Remove the firewall rule added at install time.

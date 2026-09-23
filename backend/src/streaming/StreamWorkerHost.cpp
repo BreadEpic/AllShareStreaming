@@ -17,6 +17,7 @@
 
 #include "StreamWorkerHost.h"
 #include "ConsoleSession.h"
+#include "WorkerService.h"
 #include "common/Edition.h"
 #include "common/LinuxCapabilities.h"
 
@@ -58,14 +59,24 @@ bool StreamWorkerHost::start(const QJsonObject& config)
     // other backend talks to a host over the network and runs fine from here.
     const bool native = config["backendType"].toString() == QLatin1String("native");
     if (native && ConsoleSession::launchesElsewhere())
-        return startInConsoleSession(args, configLine, false);
-    // On the desktop, the native worker goes through the elevated task when the
-    // installer registered one: elevated windows then take its input like any
-    // other (ConsoleSession::elevatedWorkerAvailable()). A failed launch costs
-    // this one attempt, never the stream: the plain child below still works,
-    // it just cannot touch those windows.
+        return startInConsoleSession(args, configLine, Launch::ConsoleAsUser);
+    // On the desktop, the native worker is raised as far as the machine lets
+    // it, and every step down still streams:
+    //
+    //   the launcher service  SYSTEM on the console desktop — the secure
+    //                         desktop too: UAC, the lock screen, Ctrl+Alt+Suppr
+    //   the elevated task     the user's full token — every administrator
+    //                         window, but not the secure desktop
+    //   a plain child         what it always was
+    //
+    // A failed attempt costs this one launch, never the stream: it falls to the
+    // next line, which loses reach and nothing else. Both detours also switch
+    // themselves off for the rest of the run once they have failed once.
+    if (native && WorkerService::available() &&
+        startInConsoleSession(args, configLine, Launch::ServiceAsSystem))
+        return true;
     if (native && ConsoleSession::elevatedWorkerAvailable() &&
-        startInConsoleSession(args, configLine, true))
+        startInConsoleSession(args, configLine, Launch::TaskElevated))
         return true;
     return startInProcess(args, configLine, native);
 }
@@ -109,7 +120,7 @@ bool StreamWorkerHost::startInProcess(const QStringList& args, const QByteArray&
 }
 
 bool StreamWorkerHost::startInConsoleSession(const QStringList& args, const QByteArray& configLine,
-                                             bool throughTask)
+                                             Launch how)
 {
     m_Console = new ConsoleProcess(this);
     connect(m_Console, &ConsoleProcess::stdoutData, this, &StreamWorkerHost::onStdoutData);
@@ -117,13 +128,19 @@ bool StreamWorkerHost::startInConsoleSession(const QStringList& args, const QByt
     connect(m_Console, &ConsoleProcess::finished, this, &StreamWorkerHost::onChildFinished);
 
     QString error;
-    if (throughTask) {
-        // The task's action carries the fixed arguments itself (--stream-worker,
-        // and --dev for a dev registration); only the pipe name travels.
-        if (!m_Console->startThroughTask(ConsoleSession::elevatedWorkerTaskName(), &error)) {
-            qWarning() << "[StreamWorkerHost] Elevated worker task unavailable, falling back to a "
-                          "plain worker:"
-                       << error;
+    if (how == Launch::ServiceAsSystem || how == Launch::TaskElevated) {
+        // Neither a task nor a service can be handed our pipes, and neither
+        // takes the arguments from here: both carry the fixed ones themselves
+        // (--stream-worker, --dev), and only the pipe name travels.
+        const bool started =
+            how == Launch::ServiceAsSystem
+                ? m_Console->startThroughService(&error)
+                : m_Console->startThroughTask(ConsoleSession::elevatedWorkerTaskName(), &error);
+        if (!started) {
+            qWarning() << "[StreamWorkerHost]"
+                       << (how == Launch::ServiceAsSystem ? "SYSTEM worker service"
+                                                          : "Elevated worker task")
+                       << "unavailable, falling back to a worker with less reach:" << error;
             m_Console->deleteLater();
             m_Console = nullptr;
             return false;
@@ -139,7 +156,8 @@ bool StreamWorkerHost::startInConsoleSession(const QStringList& args, const QByt
 
     m_Console->write(configLine);
     qInfo() << "[StreamWorkerHost] Worker spawned"
-            << (throughTask ? "through its task as" : "in the console session as")
+            << (how == Launch::ConsoleAsUser ? "in the console session as"
+                                             : "through its launcher as")
             << m_Console->userName() << ", pid=" << m_Console->processId();
     return true;
 }
