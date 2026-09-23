@@ -620,12 +620,17 @@ export class AdminView {
         // outside a debug build, or a hand-written value) is listed anyway:
         // dropping it would leave the select showing "auto" while the saved
         // setting says otherwise, and the next save would silently change it.
+        // transport_mode "all" is the auto chain with wss offered too: while wss
+        // is on the list, the Auto entry saves "all" so the list survives a save.
         const offered = this._availableTransports.slice();
-        if (this._transportMode !== 'auto' && !offered.includes(this._transportMode)) {
+        const autoValue = offered.includes('wss') ? 'all' : 'auto';
+        if (this._transportMode === 'all' || this._transportMode === 'auto') {
+            this._transportMode = autoValue;
+        } else if (!offered.includes(this._transportMode)) {
             offered.push(this._transportMode);
         }
         const transportOptions = [
-            { value: 'auto', label: t('admin.transportAuto') },
+            { value: autoValue, label: t('admin.transportAuto') },
             ...offered.map((mode) => ({
                 value: mode,
                 label:

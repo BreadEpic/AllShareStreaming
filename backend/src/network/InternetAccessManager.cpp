@@ -287,10 +287,15 @@ QJsonObject InternetAccessManager::statusJson() const
     // Offering it there is offering a choice that silently becomes another one.
     // The capability itself is untouched: it stays the last rung of the `auto`
     // fallback chain for a LAN-IP browser, and a settings.json written by hand
-    // is still honoured.
+    // is still honoured. `transport_mode: "all"` (the `auto` chain, unchanged)
+    // puts it back in the selector for those who reach the host directly — a
+    // LAN IP, or a domain of their own. It stays offered while `wss` is the
+    // saved mode, so picking it does not take away the way back to "all".
     QStringList availableTransports = TransportPriorities::orderedTransports();
 #ifndef QT_DEBUG
-    availableTransports.removeAll(QStringLiteral("wss"));
+    const QString savedMode = m_Settings->transportMode();
+    if (savedMode != QStringLiteral("all") && savedMode != QStringLiteral("wss"))
+        availableTransports.removeAll(QStringLiteral("wss"));
 #endif
     obj[QStringLiteral("available_transports")] = QJsonArray::fromStringList(availableTransports);
     // The certificate this host serves. Empty on a plain install (the

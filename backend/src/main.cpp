@@ -2948,6 +2948,8 @@ int main(int argc, char* argv[])
         //
         // transport_mode values:
         //   "auto"                 → automatic fallback chain (see below)
+        //   "all"                  → same chain as "auto"; only makes the admin
+        //                            selector offer "wss" as well
         //   "webrtc-media-udp"     → MediaTrack + UDP only
         //   "webrtc-dc-udp"       → DataChannel + UDP only
         //   "webrtc-media-tcp"    → MediaTrack + UDP+TCP
@@ -2962,6 +2964,7 @@ int main(int argc, char* argv[])
         // transport_index to walk the fallback chain on relaunch.
         if (body.contains("transport_mode") && !body["transport_mode"].toString().isEmpty())
             transportMode = body["transport_mode"].toString();
+        if (transportMode == QStringLiteral("all")) transportMode = QStringLiteral("auto");
 
         // Index into the fallback chain that this attempt targets (the browser
         // increments it and relaunches when a transport fails to connect).
