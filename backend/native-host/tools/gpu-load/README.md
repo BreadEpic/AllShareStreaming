@@ -37,8 +37,9 @@ It is a lab instrument: built on demand, never installed, never shipped.
     an audible click. The window counts the host's own underruns (`Music:
     playing, 60 ms buffered, 0 underruns`, and `audioUnderruns` in the JSON). A
     click heard on the client while the host counts none was made on the way.
-  - **Sync.** The knot's edges and the grid flash on every kick drum, timed on
-    what the audio device is playing. On the client, flash and kick should land
+  - **Sync.** The knot's edges and the grid flash on every kick drum, and the
+    knot swells a little like a heartbeat, timed on what the audio device is
+    playing. On the client, flash and kick should land
     together; a visible lag between them is the stream's audio/video offset.
   - `--no-music` or the *Music* box turns it off.
 - **The client drives the knot.** The mouse turns it as it moves (a drag
