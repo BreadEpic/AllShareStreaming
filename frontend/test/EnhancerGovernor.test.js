@@ -14,8 +14,14 @@
  * measurements this policy was calibrated on (4K client, FSR1, HEVC), so a
  * threshold change that would start degrading a healthy stream fails here.
  */
-import { describe, it, expect } from 'vitest';
-import { EnhancerGovernor } from '../js/stream/EnhancerGovernor.js';
+import { describe, it, expect, beforeEach } from 'vitest';
+import {
+    EnhancerGovernor,
+    ladderRung,
+    rendererAlgo,
+    rememberedRung,
+    rememberRung,
+} from '../js/stream/EnhancerGovernor.js';
 
 /** Feed the same window repeatedly, 500ms apart (the real posting cadence). */
 function feed(gov, obs, seconds, startMs = 0) {
@@ -286,5 +292,68 @@ describe('EnhancerGovernor — a starved decoder behind a cheap draw', () => {
         // A backlog with nothing enhancing is not the ladder's problem.
         expect(feedQueued(gov, STARVED, 60)).toEqual([]);
         expect(gov.level).toBe('off');
+    });
+});
+
+describe('EnhancerGovernor — WebGL2 passes and the memory of a verdict', () => {
+    const STARVED = { serviceMs: 0.2, arrivalMs: 9.0, decodeQueue: 13 };
+    const CLEAR = { serviceMs: 0.2, arrivalMs: 9.0, decodeQueue: 0 };
+
+    beforeEach(() => localStorage.clear());
+
+    it('names the same rung on both renderers', () => {
+        expect(ladderRung('gl-sgsr')).toBe('sgsr');
+        expect(ladderRung('sgsr')).toBe('sgsr');
+        expect(ladderRung('off')).toBe('off');
+        expect(rendererAlgo('sgsr', 'webgl')).toBe('gl-sgsr');
+        expect(rendererAlgo('off', 'webgl')).toBe('off');
+        expect(rendererAlgo('nis', 'webgpu')).toBe('nis');
+    });
+
+    it('starts where the last session left it, under the same ceiling', () => {
+        const gov = new EnhancerGovernor('sgsr', { startRung: 'off' });
+        expect(gov.level).toBe('off');
+        expect(gov.degraded).toBe(true);
+        expect(gov.ceiling).toBe('sgsr');
+        // A start above the ceiling is not a start: the setting wins.
+        expect(new EnhancerGovernor('sgsr', { startRung: 'fsr1' }).level).toBe('sgsr');
+    });
+
+    it('climbs back from a remembered start when the decoder is clear', () => {
+        const gov = new EnhancerGovernor('sgsr', { startRung: 'off' });
+        const steps = feedQueued(gov, CLEAR, 30);
+        expect(steps.map((s) => s.algo)).toEqual(['sgsr']);
+        expect(gov.degraded).toBe(false);
+    });
+
+    it("keeps the previous session's wait before its first bet", () => {
+        const gov = new EnhancerGovernor('sgsr', { startRung: 'off', recoverAfterMs: 60000 });
+        expect(gov.recoverAfterMs).toBe(60000);
+        expect(feedQueued(gov, CLEAR, 50)).toEqual([]);
+        expect(feedQueued(gov, CLEAR, 20, 50000).map((s) => s.algo)).toEqual(['sgsr']);
+    });
+
+    it('remembers a step down and forgets it back at the setting', () => {
+        expect(rememberedRung('webgl', 'sgsr')).toBeNull();
+        const gov = new EnhancerGovernor('sgsr');
+        const down = feedQueued(gov, STARVED, 10);
+        expect(down.map((s) => s.algo)).toEqual(['off']);
+        rememberRung('webgl', gov.ceiling, gov.level, gov.recoverAfterMs);
+        expect(rememberedRung('webgl', 'sgsr')).toEqual({ rung: 'off', recoverAfterMs: 15000 });
+        // Another renderer, another setting: nothing carried over.
+        expect(rememberedRung('webgpu', 'sgsr')).toBeNull();
+        expect(rememberedRung('webgl', 'fsr1')).toBeNull();
+        rememberRung('webgl', 'sgsr', 'sgsr', 15000);
+        expect(rememberedRung('webgl', 'sgsr')).toBeNull();
+    });
+
+    it('reads a damaged memory as nothing', () => {
+        localStorage.setItem('mw_enhancer_rung', '{not json');
+        expect(rememberedRung('webgl', 'sgsr')).toBeNull();
+        localStorage.setItem(
+            'mw_enhancer_rung',
+            JSON.stringify({ webgl: { ceiling: 'sgsr', rung: 'x' } }),
+        );
+        expect(rememberedRung('webgl', 'sgsr')).toBeNull();
     });
 });

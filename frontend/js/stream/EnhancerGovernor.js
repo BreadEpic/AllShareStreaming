@@ -16,8 +16,9 @@
  */
 
 /**
- * EnhancerGovernor — steps the WebGPU enhancer down when its GPU cost stops
- * fitting in a frame.
+ * EnhancerGovernor — steps the enhancer down when its GPU cost stops fitting in
+ * a frame, on WebGPU and on WebGL2 alike (the WebGL2 passes carry a 'gl-'
+ * prefix, see ladderRung / rendererAlgo).
  *
  * The enhancer runs on the same GPU as everything else the machine is doing.
  * Measured on a 4K client (see PipelineDiag): FSR1 costs ~10ms of GPU wait per
@@ -37,6 +38,12 @@
  * cost at the level above cannot be measured from the level below, so a restore
  * is a bet. Each undone bet doubles the wait before the next one, which turns a
  * long call into one failed attempt instead of a flip-flop every 15 seconds.
+ *
+ * What the ladder settled on is remembered on this device (rememberRung), and
+ * the next session starts there instead of at the setting: a phone that could
+ * not decode 1440p and run SGSR within a frame last time is not handed the pair
+ * again, only to lose its first seconds re-learning it. The setting stays the
+ * ceiling, so a session that finds room climbs back — and forgets the verdict.
  */
 
 /**
@@ -44,6 +51,54 @@
  * calls them Quality (FSR1), Balanced (NIS) and Performance (SGSR1).
  */
 export const ENHANCER_LADDER = ['fsr1', 'nis', 'sgsr', 'off'];
+
+/** A renderer's pass as a rung of the ladder: 'gl-sgsr' is 'sgsr'. */
+export function ladderRung(algo) {
+    return typeof algo === 'string' && algo.startsWith('gl-') ? algo.slice(3) : algo;
+}
+
+/** A rung as the pass a renderer of this kind runs: 'sgsr' on WebGL is 'gl-sgsr'. */
+export function rendererAlgo(rung, kind) {
+    return kind === 'webgl' && rung !== 'off' ? 'gl-' + rung : rung;
+}
+
+const MEMORY_KEY = 'mw_enhancer_rung';
+
+function readMemory() {
+    try {
+        const all = JSON.parse(localStorage.getItem(MEMORY_KEY) || '{}');
+        return all && typeof all === 'object' ? all : {};
+    } catch (e) {
+        return {};
+    }
+}
+
+/**
+ * Where the ladder left this renderer kind the last time the setting was the
+ * same, or null when it was at the setting (or nothing is known).
+ * @param {'webgl'|'webgpu'} kind
+ * @param {string} ceiling the setting, as a rung
+ * @returns {{rung: string, recoverAfterMs: number}|null}
+ */
+export function rememberedRung(kind, ceiling) {
+    const e = readMemory()[kind];
+    if (!e || e.ceiling !== ceiling) return null;
+    const top = ENHANCER_LADDER.indexOf(ceiling);
+    const at = ENHANCER_LADDER.indexOf(e.rung);
+    if (top < 0 || at <= top) return null;
+    return { rung: e.rung, recoverAfterMs: e.recoverAfterMs > 0 ? e.recoverAfterMs : 0 };
+}
+
+/** Keep the ladder's latest verdict for the next session; back at the
+ *  setting, there is nothing to keep. */
+export function rememberRung(kind, ceiling, rung, recoverAfterMs) {
+    try {
+        const all = readMemory();
+        if (rung === ceiling) delete all[kind];
+        else all[kind] = { ceiling, rung, recoverAfterMs };
+        localStorage.setItem(MEMORY_KEY, JSON.stringify(all));
+    } catch (e) {}
+}
 
 /** Draw wait above this share of the frame budget = it no longer fits. */
 const DEGRADE_RATIO = 0.8;
@@ -91,7 +146,8 @@ const MAX_BUDGET_MS = 200;
 export class EnhancerGovernor {
     /**
      * @param {string} preferred The user's setting — the ceiling, never exceeded.
-     * @param {{fixedBudgetMs?: number, warmupMs?: number, noRecovery?: boolean}} [profile]
+     * @param {{fixedBudgetMs?: number, warmupMs?: number, noRecovery?: boolean,
+     *          startRung?: string, recoverAfterMs?: number}} [profile]
      *   Overrides for a session that is not the owner's own:
      *   - fixedBudgetMs replaces the frame-arrival budget with a flat cost cap.
      *     An invited player's stream is fixed at 60fps and the guest never chose
@@ -101,14 +157,21 @@ export class EnhancerGovernor {
      *     shader compilation and pipeline warm-up, which are not the steady cost.
      *   - noRecovery keeps the enhancer off once it has been dropped —
      *     predictable beats optimal for someone who is only visiting.
+     *   - startRung / recoverAfterMs resume where a previous session left the
+     *     ladder (rememberedRung): below the ceiling, with that session's
+     *     wait before the next bet.
      */
     constructor(preferred, profile = {}) {
         const idx = ENHANCER_LADDER.indexOf(preferred);
         this._ceiling = idx >= 0 ? idx : 0;
-        this._level = this._ceiling;
+        const start = ENHANCER_LADDER.indexOf(profile.startRung);
+        this._level = start > this._ceiling ? start : this._ceiling;
         this._degradeSince = 0;
         this._recoverSince = 0;
-        this._recoverAfterMs = RECOVER_BASE_MS;
+        this._recoverAfterMs = Math.min(
+            RECOVER_MAX_MS,
+            Math.max(RECOVER_BASE_MS, profile.recoverAfterMs > 0 ? profile.recoverAfterMs : 0),
+        );
         this._lastRecoveryMs = 0;
         this._settleUntil = 0;
         this._fixedBudgetMs = profile.fixedBudgetMs > 0 ? profile.fixedBudgetMs : 0;
@@ -126,6 +189,16 @@ export class EnhancerGovernor {
     /** True while the governor holds the enhancer below the user's setting. */
     get degraded() {
         return this._level > this._ceiling;
+    }
+
+    /** The user's setting, as a rung. */
+    get ceiling() {
+        return ENHANCER_LADDER[this._ceiling];
+    }
+
+    /** How long the ladder waits in the clear before its next bet upward. */
+    get recoverAfterMs() {
+        return this._recoverAfterMs;
     }
 
     /**

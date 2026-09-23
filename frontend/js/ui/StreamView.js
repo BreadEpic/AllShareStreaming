@@ -77,7 +77,13 @@ import {
 } from '../stream/PipelineDiag.js';
 import { shouldFlushAtKeyframe } from '../stream/DecodeQueuePolicy.js';
 import { DecodeRateGovernor } from '../stream/DecodeRateGovernor.js';
-import { EnhancerGovernor } from '../stream/EnhancerGovernor.js';
+import {
+    EnhancerGovernor,
+    ladderRung,
+    rendererAlgo,
+    rememberedRung,
+    rememberRung,
+} from '../stream/EnhancerGovernor.js';
 import { drawCapFor } from '../stream/RenderPacing.js';
 import { LatencyProbe } from '../stream/LatencyProbe.js';
 import { t } from '../i18n/i18n.js';
@@ -1041,10 +1047,36 @@ export class StreamView {
         // posts a snapshot with the counters, kept in _workerDiag.
         this._diag = new PipelineDiag(2000);
         this._workerDiag = null;
-        // Enhancer ladder, created with the renderer when it is the WebGPU one
-        // (the worker path owns its own instance and reports its verdicts).
+        // Enhancer ladder, created with the renderer when it runs an enhancer
+        // pass — WebGPU or WebGL2 (the worker path owns its own instance and
+        // reports its verdicts).
         this._governor = null;
         this._enhancerDegraded = false;
+        // The setting is the ladder's ceiling; the pass a session starts with
+        // may be lower, where the ladder settled last time on this device
+        // (EnhancerGovernor's memory) — a phone that could not decode and
+        // enhance within a frame is not handed the same pair again. An invited
+        // player's ladder has its own fixed rule and starts at the setting.
+        this._enhancerCeiling = this._videoEnhancementAlgo;
+        this._enhancerStart = null;
+        {
+            const ceiling = ladderRung(this._enhancerCeiling);
+            const kind = this._enhancerCeiling.startsWith('gl-') ? 'webgl' : 'webgpu';
+            const start =
+                !this._playerMode && ceiling !== 'off' ? rememberedRung(kind, ceiling) : null;
+            if (start) {
+                this._enhancerStart = start;
+                this._videoEnhancementAlgo = rendererAlgo(start.rung, kind);
+                this._enhancerDegraded = true;
+                console.log(
+                    '[StreamView] Enhancer starts at ' +
+                        this._videoEnhancementAlgo +
+                        ' (setting ' +
+                        this._enhancerCeiling +
+                        '): it did not fit a frame last time',
+                );
+            }
+        }
         // Presented (actually drawn) frames vs decoded ones: the fps readout
         // counts decoded frames, so a pipeline dropping a third of them at the
         // render stage still reads 60.
@@ -2170,7 +2202,8 @@ export class StreamView {
                     tearing: this._tearing,
                     webgpu: this._wantWebGpu,
                     algo: this._videoEnhancementAlgo,
-                    enhancerProfile: this._enhancerProfile,
+                    ceiling: this._enhancerCeiling,
+                    enhancerProfile: this._governorProfile(),
                     hdr: this._hdrEnabled,
                     pacing: this._pacingEnabled,
                 },
@@ -2191,6 +2224,7 @@ export class StreamView {
                 isChromeWindowsHevc: this._isChromeWindowsHevc,
                 webgpu: this._wantWebGpu,
                 algo: this._videoEnhancementAlgo,
+                ceiling: this._enhancerCeiling,
                 hdr: (this._useVideoSink && this._hdrEnabled) || this._hdrLinear,
                 hdrTonemap: this._hdrTonemap,
                 hdrLinear: this._hdrLinear,
@@ -2201,6 +2235,7 @@ export class StreamView {
                 this._renderer = r;
                 this._activeRendererKind = r.kind;
                 this._rendererHdrActive = !!r.hdrActive;
+                this._createEnhancerGovernor(r);
                 this._applyRendererSink(r);
                 this._applyOutputSize();
                 this.setupDecoder();
@@ -2282,6 +2317,7 @@ export class StreamView {
                 // what the overlay names.
                 this._videoEnhancementAlgo = m.algo;
                 this._enhancerDegraded = !!m.degraded;
+                this._rememberEnhancer(m.kind, ladderRung(m.algo), m.recoverAfterMs);
                 break;
             case 'fatal':
                 this._fatalDecodeError = true;
@@ -4287,6 +4323,7 @@ export class StreamView {
                         isChromeWindowsHevc: this._isChromeWindowsHevc,
                         webgpu: this._wantWebGpu,
                         algo: this._videoEnhancementAlgo,
+                        ceiling: this._enhancerCeiling,
                         hdr: (this._useVideoSink && this._hdrEnabled) || this._hdrLinear,
                         hdrTonemap: this._hdrTonemap,
                         hdrLinear: this._hdrLinear,
@@ -4297,13 +4334,7 @@ export class StreamView {
                         this._renderer = r;
                         this._activeRendererKind = r.kind;
                         this._rendererHdrActive = !!r.hdrActive;
-                        // Enhancer ladder for the main-thread path (the worker
-                        // runs its own): the setting is the ceiling.
-                        if (r.kind === 'webgpu')
-                            this._governor = new EnhancerGovernor(
-                                this._videoEnhancementAlgo,
-                                this._enhancerProfile,
-                            );
+                        this._createEnhancerGovernor(r);
                         console.log(
                             '[StreamView] renderer=' +
                                 r.kind +
@@ -5284,18 +5315,23 @@ export class StreamView {
             // Stepped down by the governor: say so, otherwise the card reads as
             // if the user's setting silently changed.
             if (this._enhancerDegraded) enhancerName += ' (auto)';
-        } else if (NO_WEBGPU_ALGOS.includes(this._videoEnhancementAlgo)) {
-            // Enhancers without WebGPU: name what actually runs. The renderer
-            // may have fallen back (no WebGL2 → Canvas2D), so the kind decides,
-            // not the setting.
+        } else if (this._activeRendererKind === 'webgl') {
+            // Enhancers without WebGPU: name what actually runs, which the
+            // ladder may have stepped below the setting like on WebGPU.
             enhancerName =
-                this._activeRendererKind === 'webgl'
-                    ? { 'gl-fsr1': 'WebGL FSR1', 'gl-sgsr': 'WebGL SGSR', 'gl-nis': 'WebGL NIS' }[
+                this._videoEnhancementAlgo === 'off'
+                    ? t('stream.enhancerOff')
+                    : { 'gl-fsr1': 'WebGL FSR1', 'gl-sgsr': 'WebGL SGSR', 'gl-nis': 'WebGL NIS' }[
                           this._videoEnhancementAlgo
-                      ] || 'WebGL'
-                    : this._videoEnhancementAlgo === 'smooth2d'
-                      ? 'Canvas2D smoothing high'
-                      : 'OFF (WebGL unavailable)';
+                      ] || 'WebGL';
+            if (this._enhancerDegraded) enhancerName += ' (auto)';
+        } else if (NO_WEBGPU_ALGOS.includes(this._enhancerCeiling)) {
+            // The renderer may have fallen back (no WebGL2 → Canvas2D), so the
+            // kind decides, not the setting.
+            enhancerName =
+                this._enhancerCeiling === 'smooth2d'
+                    ? 'Canvas2D smoothing high'
+                    : 'OFF (WebGL unavailable)';
         } else if (this._transport === 'webrtc-media' && this._videoEnhancementRequested) {
             enhancerName = 'OFF (not available on MediaTrack)';
         } else if (
@@ -5908,9 +5944,35 @@ export class StreamView {
             now,
         });
         if (!algo) return;
-        if (!this._renderer.setAlgo(algo)) return;
-        this._videoEnhancementAlgo = algo;
+        const pass = rendererAlgo(algo, this._renderer.kind);
+        if (!this._renderer.setAlgo(pass)) return;
+        this._videoEnhancementAlgo = pass;
         this._enhancerDegraded = this._governor.degraded;
+        this._rememberEnhancer(this._renderer.kind, algo, this._governor.recoverAfterMs);
+    }
+
+    /** The ladder's profile: the session's own, plus where to start from. */
+    _governorProfile() {
+        const s = this._enhancerStart;
+        return s
+            ? { ...this._enhancerProfile, startRung: s.rung, recoverAfterMs: s.recoverAfterMs }
+            : this._enhancerProfile;
+    }
+
+    /** Main-thread ladder, for a renderer that has an enhancer pass to switch. */
+    _createEnhancerGovernor(r) {
+        if (r.kind !== 'webgpu' && r.kind !== 'webgl') return;
+        this._governor = new EnhancerGovernor(
+            ladderRung(this._enhancerCeiling),
+            this._governorProfile(),
+        );
+    }
+
+    /** Keep the ladder's verdict for this device's next session (owner only:
+     *  a guest's ladder follows its own fixed rule). */
+    _rememberEnhancer(kind, rung, recoverAfterMs) {
+        if (this._playerMode) return;
+        rememberRung(kind, ladderRung(this._enhancerCeiling), rung, recoverAfterMs);
     }
 
     /**

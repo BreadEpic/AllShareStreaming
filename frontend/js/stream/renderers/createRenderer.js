@@ -67,8 +67,11 @@ export async function createVideoRenderer(canvas, opts) {
     // rejects — is safe to fall back from: getContext('webgl2') returning null
     // leaves the canvas free, and a compile error happens before any draw. A
     // context that was obtained is committed, though, so the renderer only
-    // throws before asking for one or after losing it for good.
-    if (WEBGL_ALGOS.includes(opts.algo)) {
+    // throws before asking for one or after losing it for good. The setting
+    // (`ceiling`) picks the renderer, not the pass it starts with: a session
+    // the enhancer ladder starts on its plain rung stays on WebGL, so it can
+    // climb back.
+    if (WEBGL_ALGOS.includes(opts.ceiling || opts.algo)) {
         try {
             return await WebGlRenderer.create(canvas, opts);
         } catch (e) {

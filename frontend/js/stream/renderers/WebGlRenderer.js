@@ -569,13 +569,27 @@ void main() {
 }
 `;
 
+// The enhancer ladder's last rung: the picture as it is, stretched by the
+// sampler's bilinear filter. Only ever reached through setAlgo — the menu's
+// "no enhancer" is Canvas2D — so a session the ladder stepped down can climb
+// back without changing renderer.
+const BLIT_FS = `#version 300 es
+precision mediump float;
+uniform sampler2D uTex;
+in vec2 vUv;
+out vec4 oColor;
+void main() {
+    oColor = vec4(texture(uTex, vUv).rgb, 1.0);
+}
+`;
+
 export const WEBGL_ALGOS = ['gl-fsr1', 'gl-sgsr', 'gl-nis'];
 
 export class WebGlRenderer extends VideoRenderer {
     constructor() {
         super();
         this.videoCodec = '';
-        /** @type {'gl-fsr1'|'gl-sgsr'|'gl-nis'} */
+        /** @type {string} one of WEBGL_ALGOS, or 'off' */
         this._algo = 'gl-fsr1';
         this.gl = null;
         this._outW = 0;
@@ -627,12 +641,14 @@ export class WebGlRenderer extends VideoRenderer {
     /**
      * @param {HTMLCanvasElement|OffscreenCanvas} canvas
      * @param {{videoCodec: string, algo: string, desynchronized?: boolean}} opts
+     *        `algo` may be 'off' when the enhancer ladder starts this session
+     *        below the setting (see EnhancerGovernor's memory)
      */
     static async create(canvas, opts) {
         const r = new WebGlRenderer();
         r.canvas = canvas;
         r.videoCodec = opts.videoCodec;
-        r._algo = WEBGL_ALGOS.includes(opts.algo) ? opts.algo : 'gl-fsr1';
+        r._algo = WEBGL_ALGOS.includes(opts.algo) || opts.algo === 'off' ? opts.algo : 'gl-fsr1';
         // desynchronized is the whole point (see the file comment); the other
         // flags remove work the stream never needs: no depth, no blending with
         // the page, no MSAA, no readback of the previous frame.
@@ -673,7 +689,30 @@ export class WebGlRenderer extends VideoRenderer {
     get algoName() {
         if (this._algo === 'gl-nis') return 'WebGL NIS';
         if (this._algo === 'gl-sgsr') return 'WebGL SGSR';
+        if (this._algo === 'off') return 'WebGL';
         return 'WebGL FSR1';
+    }
+
+    /**
+     * Switch the enhancement pass at runtime — the enhancer ladder's lever, as
+     * on WebGPU. The program of the new pass is built the first time it is
+     * needed; a build that fails leaves the current pass running.
+     * @param {string} algo one of WEBGL_ALGOS, or 'off' for the plain copy
+     * @returns {boolean} true when the renderer switched.
+     */
+    setAlgo(algo) {
+        if (algo === this._algo) return false;
+        if (algo !== 'off' && !WEBGL_ALGOS.includes(algo)) return false;
+        if (!this.gl || this.isContextLost()) return false;
+        try {
+            this._buildAlgo(algo);
+        } catch (e) {
+            console.error('[WebGlRenderer] setAlgo(' + algo + ') failed: ' + e.message);
+            return false;
+        }
+        this._algo = algo;
+        console.log('[WebGlRenderer] algo → ' + algo);
+        return true;
     }
 
     isContextLost() {
@@ -741,16 +780,32 @@ export class WebGlRenderer extends VideoRenderer {
         this._inW = 0;
         this._inH = 0;
 
-        if (this._algo === 'gl-fsr1') {
+        // Only the pass in use is built; setAlgo builds the others on demand.
+        // Whatever a lost context held is gone with it.
+        this._easu = this._rcas = this._sgsr = this._nis = this._blit = null;
+        this._intermTex = this._fbo = this._coefTex = null;
+        this._buildAlgo(this._algo);
+        gl.disable(gl.DEPTH_TEST);
+        gl.disable(gl.BLEND);
+        gl.disable(gl.SCISSOR_TEST);
+    }
+
+    _buildAlgo(algo) {
+        const gl = this.gl;
+        if (algo === 'off') {
+            if (!this._blit) this._blit = this._program(BLIT_FS, ['uTex']);
+        } else if (algo === 'gl-fsr1') {
+            if (this._easu) return;
             this._easu = this._program(EASU_FS, ['uTex', 'uRes']);
             this._rcas = this._program(RCAS_FS, ['uTex', 'uRes']);
             this._intermTex = this._texture(gl.LINEAR);
             this._intermW = 0;
             this._intermH = 0;
             this._fbo = gl.createFramebuffer();
-        } else if (this._algo === 'gl-sgsr') {
-            this._sgsr = this._program(SGSR_FS, ['uTex', 'uView']);
+        } else if (algo === 'gl-sgsr') {
+            if (!this._sgsr) this._sgsr = this._program(SGSR_FS, ['uTex', 'uView']);
         } else {
+            if (this._nis) return;
             this._nis = this._program(NIS_FS, [
                 'uTex',
                 'uCoef',
@@ -774,9 +829,6 @@ export class WebGlRenderer extends VideoRenderer {
                 nisCoefTexture(),
             );
         }
-        gl.disable(gl.DEPTH_TEST);
-        gl.disable(gl.BLEND);
-        gl.disable(gl.SCISSOR_TEST);
     }
 
     // NIS sharpness, live from the console (see NisTables.readNisSharpness),
@@ -919,6 +971,14 @@ export class WebGlRenderer extends VideoRenderer {
                 gl.uniform1i(this._sgsr.u.uTex, 0);
                 gl.uniform4f(this._sgsr.u.uView, 1 / inW, 1 / inH, inW, inH);
                 gl.drawArrays(gl.TRIANGLES, 0, 3);
+            } else if (this._algo === 'off') {
+                gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+                gl.viewport(0, 0, cw, ch);
+                gl.useProgram(this._blit.prog);
+                gl.activeTexture(gl.TEXTURE0);
+                gl.bindTexture(gl.TEXTURE_2D, this._inputTex);
+                gl.uniform1i(this._blit.u.uTex, 0);
+                gl.drawArrays(gl.TRIANGLES, 0, 3);
             } else {
                 // NIS is specified for scale factors in [0.5, 1] (up to 2× up).
                 // Outside that it still runs — it just is not what NVIDIA
@@ -980,7 +1040,7 @@ export class WebGlRenderer extends VideoRenderer {
                     if (t) gl.deleteTexture(t);
                 if (this._fbo) gl.deleteFramebuffer(this._fbo);
                 if (this._vao) gl.deleteVertexArray(this._vao);
-                for (const p of [this._easu, this._rcas, this._sgsr, this._nis])
+                for (const p of [this._easu, this._rcas, this._sgsr, this._nis, this._blit])
                     if (p) gl.deleteProgram(p.prog);
                 const ext = gl.getExtension('WEBGL_lose_context');
                 if (ext) ext.loseContext();

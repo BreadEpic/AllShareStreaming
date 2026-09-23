@@ -56,7 +56,7 @@ import {
 import { createVideoRenderer } from './renderers/createRenderer.js';
 import { PipelineDiag } from './PipelineDiag.js';
 import { shouldFlushAtKeyframe } from './DecodeQueuePolicy.js';
-import { EnhancerGovernor } from './EnhancerGovernor.js';
+import { EnhancerGovernor, ladderRung, rendererAlgo } from './EnhancerGovernor.js';
 import { drawCapFor } from './RenderPacing.js';
 import { FramePacer } from './FramePacer.js';
 
@@ -119,7 +119,7 @@ const S = {
     // drop causes (posted with the counters — see PipelineDiag).
     diag: new PipelineDiag(2000),
     // Steps the enhancer down when its GPU cost stops fitting between two
-    // frames; created at init from the requested algo (its ceiling).
+    // frames; created at init with the setting as its ceiling.
     governor: null,
 
     stopped: false,
@@ -290,8 +290,15 @@ function applyEnhancerGovernor(diag, now) {
         now,
     });
     if (!algo) return;
-    if (!S.renderer.setAlgo(algo)) return;
-    post({ type: 'enhancer', algo, degraded: S.governor.degraded });
+    const pass = rendererAlgo(algo, S.renderer.kind);
+    if (!S.renderer.setAlgo(pass)) return;
+    post({
+        type: 'enhancer',
+        algo: pass,
+        kind: S.renderer.kind,
+        degraded: S.governor.degraded,
+        recoverAfterMs: S.governor.recoverAfterMs,
+    });
 }
 
 // ── Decoder lifecycle ────────────────────────────────────────────────────────
@@ -1047,13 +1054,18 @@ self.onmessage = (e) => {
                 isChromeWindowsHevc: S.isChromeWindowsHevc,
                 webgpu: !!m.webgpu,
                 algo: m.algo,
+                ceiling: m.ceiling,
                 hdr: !!m.hdr,
             }).then((r) => {
                 S.renderer = r;
-                // The requested algo is the ceiling: the governor only steps
-                // below it, and only while the GPU cost does not fit a frame.
-                if (r.kind === 'webgpu')
-                    S.governor = new EnhancerGovernor(m.algo, m.enhancerProfile || {});
+                // The setting is the ceiling: the governor only steps below
+                // it, and only while the GPU cost does not fit a frame. It may
+                // start below it too (enhancerProfile.startRung, from main).
+                if (r.kind === 'webgpu' || r.kind === 'webgl')
+                    S.governor = new EnhancerGovernor(
+                        ladderRung(m.ceiling || m.algo),
+                        m.enhancerProfile || {},
+                    );
                 // Apply an output size that may have arrived before the renderer.
                 if (S.outW > 0 && S.outH > 0) r.setOutputSize(S.outW, S.outH);
                 console.log(
