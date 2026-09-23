@@ -42,12 +42,22 @@ bool ControlChannel::start()
     // Loopback only: the channel is always reached through the HttpServer proxy,
     // which connects to 127.0.0.1. Never expose it directly on the network.
     if (!m_Server->listen(QHostAddress::LocalHost, m_Port)) {
-        Logger::warning(QStringLiteral("[ControlChannel] Failed to listen on 127.0.0.1:%1 — %2")
+        // Taken, typically by another edition on this PC (a --dev instance
+        // beside an installed one derives the same port). Any free port does:
+        // the proxy reads port() after start(). Keeping the taken number
+        // instead handed this instance's tabs to the other instance's channel.
+        Logger::warning(QStringLiteral("[ControlChannel] 127.0.0.1:%1 unavailable (%2), "
+                                       "taking a free port")
                             .arg(m_Port)
                             .arg(m_Server->errorString()));
-        m_Server->deleteLater();
-        m_Server = nullptr;
-        return false;
+        if (!m_Server->listen(QHostAddress::LocalHost, 0)) {
+            Logger::warning(QStringLiteral("[ControlChannel] Failed to listen — %1")
+                                .arg(m_Server->errorString()));
+            m_Server->deleteLater();
+            m_Server = nullptr;
+            m_Port = 0;
+            return false;
+        }
     }
     m_Port = m_Server->serverPort();
     connect(m_Server, &QWebSocketServer::newConnection, this, &ControlChannel::onNewConnection);

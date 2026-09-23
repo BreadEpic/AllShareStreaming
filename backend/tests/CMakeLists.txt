@@ -44,7 +44,7 @@ endif()
 find_package(OpenSSL 1.1 REQUIRED)
 
 # ── Qt 6 ────────────────────────────────────────────────────────────────────
-find_package(Qt6 REQUIRED COMPONENTS Core Network)
+find_package(Qt6 REQUIRED COMPONENTS Core Network WebSockets)
 set(CMAKE_AUTOMOC ON)
 
 # ── Test runner ─────────────────────────────────────────────────────────────
@@ -84,6 +84,7 @@ add_executable(run_tests
     test_edition.cpp
     test_router_port_core.cpp
     test_logger_rotation.cpp
+    test_control_channel.cpp
     # In-scope production units (+ their real deps)
     # The router-port allocation policy, behind its gateway seam: the rules
     # that keep two MoonlightWeb hosts on one LAN out of each other's holes.
@@ -110,6 +111,8 @@ add_executable(run_tests
     ${_src}/src/server/HttpParser.cpp
     ${_src}/src/server/RequestGuard.cpp
     ${_src}/src/server/SessionPool.cpp
+    # The single-tab control channel: the port it lands on when its own is taken.
+    ${_src}/src/server/ControlChannel.cpp
     ${_src}/src/common/RendezvousId.cpp
     # Host persistence: the restart path for a paired host (issue #9).
     ${_src}/src/backend/NvComputer.cpp
@@ -150,7 +153,7 @@ target_include_directories(run_tests PRIVATE
 target_compile_definitions(run_tests PRIVATE QT_NO_DEBUG_OUTPUT)
 
 target_link_libraries(run_tests PRIVATE
-    Qt6::Core Qt6::Network
+    Qt6::Core Qt6::Network Qt6::WebSockets
     OpenSSL::SSL OpenSSL::Crypto
 )
 

@@ -45,6 +45,7 @@ void run_native_capabilities_json_tests();
 void run_edition_tests();
 void run_router_port_core_tests();
 void run_logger_rotation_tests();
+void run_control_channel_tests();
 
 int main(int argc, char** argv)
 {
@@ -85,6 +86,7 @@ int main(int argc, char** argv)
     run_native_capabilities_json_tests();
     run_edition_tests();
     run_router_port_core_tests();
+    run_control_channel_tests();
     // Last: it repoints the Logger singleton at its own temp files.
     run_logger_rotation_tests();
 
