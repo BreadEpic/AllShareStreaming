@@ -10412,11 +10412,16 @@ export class StreamView {
         } else if (this._playerMode) {
             // A guest leaving frees their slot and nothing else: the owner's
             // game keeps running and their invitation stays valid until the
-            // owner revokes it or the eight hours run out.
-            try {
-                await BackendClient.playerLeave();
-            } catch (err) {
-                console.warn('[StreamView] Leave failed:', err);
+            // owner revokes it or the eight hours run out. A retire is the
+            // guest's transport chain moving on: the next join replaces this
+            // worker itself, and leaving first would free the slot while the
+            // old worker still holds its ports.
+            if (!retire) {
+                try {
+                    await BackendClient.playerLeave();
+                } catch (err) {
+                    console.warn('[StreamView] Leave failed:', err);
+                }
             }
             this.webrtc.close();
         } else {

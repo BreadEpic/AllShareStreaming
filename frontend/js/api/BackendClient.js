@@ -456,9 +456,15 @@ export class BackendClient {
         return this.post('/api/share/player/pin', { token, pin });
     }
     /** @param {string} [aspect] "W:H" override; omitted, the backend reuses the
-     *  ratio the owner's session settled on for that host. */
-    static async playerJoin(token, height, aspect) {
+     *  ratio the owner's session settled on for that host.
+     *  @param {number} [transportIndex] rung of the transport chain to try; a
+     *  later rung replaces the guest's own failed one.
+     *  @param {string} [codec] 'h264' after this browser failed to decode the
+     *  codec the backend picked; omitted, the backend picks. */
+    static async playerJoin(token, height, aspect, transportIndex = 0, codec) {
         const body = aspect ? { token, height, aspect } : { token, height };
+        if (transportIndex > 0) body.transport_index = transportIndex;
+        if (codec) body.codec = codec;
         return this.post('/api/share/player/join', body, { timeoutMs: 25000 });
     }
     static async playerLeave() {

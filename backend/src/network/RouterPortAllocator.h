@@ -105,6 +105,12 @@ public:
     /// and a theft between sessions is still caught at renewal.
     void claimMediaPort(int slot, uint16_t internalPort, QObject* context, Callback callback);
 
+    /// Take a stream slot's hole off the router now instead of at exit. For
+    /// the invited players' slots, whose holes should not outlive the guest:
+    /// the owner's slots keep theirs, as described above. The number stays
+    /// remembered, so the next claim on the slot asks for the same one.
+    void releaseMediaPort(int slot);
+
     QList<Claim> heldTunnelPorts() const;
     std::optional<Claim> heldMediaPort(int slot) const;
     /// Claims handed to the router and not yet answered.

@@ -250,6 +250,18 @@ const MoonlightApp = {
         // Two addresses, one page. Reached directly, the token is in the path.
         // Reached through the introduction server it is not, and cannot be — see
         // _initPlayerMode.
+        //
+        // A third spelling: the invitation exactly as the board hands it out,
+        // `/<id>#t=<token>`, with only the domain swapped for one that reaches
+        // this host directly (Tailscale Funnel, a Cloudflare tunnel, a domain of
+        // one's own). Nothing in between reads that path here, so it is turned
+        // into the direct form before anything else looks at the address — the
+        // guest lands on the PIN screen, not on the owner's login.
+        if (!pageCameThroughTunnel()) {
+            const direct = window.location.pathname.match(/^\/[0-9a-z]{26}\/?$/i);
+            const token = new URLSearchParams(window.location.hash.slice(1)).get('t');
+            if (direct && token) history.replaceState(null, '', '/p/' + encodeURIComponent(token));
+        }
         if (window.location.pathname === '/p' || window.location.pathname.startsWith('/p/')) {
             await this._initPlayerMode();
             return;
@@ -440,8 +452,14 @@ const MoonlightApp = {
         const view = new PlayerJoinView(
             container,
             token,
-            async ({ height, gaming, touchScreen, padKey }) => {
-                const result = await BackendClient.playerJoin(token, height);
+            async ({ height, gaming, touchScreen, padKey }, transportIndex = 0, codec) => {
+                const result = await BackendClient.playerJoin(
+                    token,
+                    height,
+                    undefined,
+                    transportIndex,
+                    codec,
+                );
 
                 // StreamView renders (and connects) from its constructor, so the
                 // join screen has to be gone first.
@@ -474,11 +492,68 @@ const MoonlightApp = {
                     },
                 );
                 this.streamView = streamView;
+
+                // The guest walks the transport chain as the owner does: a rung
+                // that never connects is replaced by the next one, in place,
+                // instead of dropping them back on the join screen. One try per
+                // rung — the backend holds the app session for the next one.
+                const chain = Array.isArray(result.transport_chain) ? result.transport_chain : [];
+                const at =
+                    typeof result.transport_index === 'number'
+                        ? result.transport_index
+                        : transportIndex;
+
                 streamView.onQuit = () => {
                     this.streamView = null;
+                    // This browser could not decode what the backend picked: back
+                    // in H.264, the guest's one fallback, on the transport that
+                    // just carried the frames. Without it a guest on a browser with
+                    // no HEVC decoder (Firefox, Chrome on Linux) never saw a frame.
+                    if (
+                        !codec &&
+                        streamView._codecFallbackRequested &&
+                        streamView._codecFallback?.codec === 'h264'
+                    ) {
+                        console.warn('[MW] Guest: codec fallback → H.264');
+                        view.onJoin({ height, gaming, touchScreen, padKey }, at, 'h264').catch(
+                            (err) => {
+                                console.error('[MW] Guest codec fallback failed:', err);
+                                view.refresh();
+                            },
+                        );
+                        return;
+                    }
                     // Back to the join screen: the invitation outlives the stream.
                     if (streamView._sessionEndedByOwner) view.renderEnded();
                     else view.refresh();
+                };
+                streamView.onConnectionFailed = async (reason) => {
+                    const next = at + 1;
+                    // MW-BIND refused the host: no fallback, same rule as the
+                    // owner's (the wss rung has nothing to bind).
+                    if (reason === IDENTITY_REFUSED || next >= chain.length) {
+                        console.error(`[MW] Guest: ${chain[at] || '?'} failed (${reason})`);
+                        streamView.quit();
+                        return;
+                    }
+                    console.warn(
+                        `[MW] Guest: ${chain[at]} failed (${reason}) — trying ${chain[next]}`,
+                    );
+                    Toast.warning(
+                        t('transport.connectFailed', {
+                            from: this._transportLabel(chain[at]),
+                            to: this._transportLabel(chain[next]),
+                        }),
+                    );
+                    streamView.onQuit = null;
+                    this.streamView = null;
+                    await streamView.quit({ silent: true, retire: true });
+                    try {
+                        await view.onJoin({ height, gaming, touchScreen, padKey }, next, codec);
+                    } catch (err) {
+                        console.error('[MW] Guest relaunch failed:', err);
+                        view.refresh();
+                    }
                 };
             },
         );
@@ -1783,6 +1858,15 @@ const MoonlightApp = {
                     this._chroma444Declined = 'dropped with the codec';
                 streamingSettings.chroma_444_enabled = false;
             }
+            // The stream that asked for this fallback had frames arriving: its
+            // transport works. Started from the top, the chain would spend every
+            // rung above it on their deadlines again — on a UDP-blocked network,
+            // half a minute of failures before the same wss rung comes back.
+            // Pinned first instead; the backend keeps the rest behind it.
+            const chain = this._transportChain || [];
+            const provenRung = chain[this._transportIndex || 0];
+            if ((this._transportIndex || 0) > 0 && provenRung && !streamingSettings.transport_mode)
+                streamingSettings.transport_mode = provenRung;
         }
         // Explicit HDR override from the fallback chain (e.g. AV1 HDR → HEVC SDR
         // drops HDR). undefined means "leave the stored preference untouched".
@@ -3036,7 +3120,16 @@ const MoonlightApp = {
         // Always retry the FIRST transport once before moving down the chain — a
         // single transient ICE failure on the preferred transport shouldn't
         // immediately downgrade. The retry is silent (no warning toast).
-        if (cur === 0 && !this._firstTransportRetried && !decoderFail) {
+        //
+        // Not after an ICE timeout: that is the whole ICE deadline spent with no
+        // pair ever answering — a network that blocks this transport, not a
+        // blip — and a second deadline on the same rung only made a browser on
+        // a UDP-blocked network wait twice as long for the rung that works.
+        // The flag still records that a transport failed: the launch_failed
+        // branch above walks on rather than giving up once it is set.
+        const iceTimedOut = /ice timeout/i.test(String(reason));
+        if (cur === 0 && iceTimedOut) this._firstTransportRetried = true;
+        if (cur === 0 && !this._firstTransportRetried && !decoderFail && !iceTimedOut) {
             this._firstTransportRetried = true;
             console.warn(`[MW] Transport ${chain[0]} failed (${reason}) — retrying once (silent)`);
             this._relaunchTransport(0);

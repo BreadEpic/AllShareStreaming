@@ -1214,6 +1214,31 @@ static QStringList filterTransportsByCodec(const QStringList& transports, VideoC
     return result;
 }
 
+// Where a stream's browser is, for the ICE plan. The socket peer answers it for
+// a browser that reaches us itself. Behind a reverse proxy — Tailscale Funnel,
+// cloudflared, nginx, on this machine or elsewhere on the LAN — the peer is the
+// proxy, and a phone on 4G would read as loopback or LAN: no STUN, no ICE-TCP,
+// and a UDP rung that can only reach it by luck. Two signs of a proxy: a
+// loopback peer under a name that is not ours (a local proxy passes the
+// visitor's Host along), and the forwarding headers proxies add. Either one
+// can only move a browser to "public", never grant anything, so a forged
+// header costs its sender nothing but the LAN shortcut. A bare-hostname LAN
+// browser sends neither and keeps its LAN plan.
+static NetClassify::Kind streamClientKind(const HttpRequest& req)
+{
+    const NetClassify::Kind kind = NetClassify::classify(req.clientAddress);
+    if (kind != NetClassify::Kind::Loopback && kind != NetClassify::Kind::Private) return kind;
+    const bool localProxy = kind == NetClassify::Kind::Loopback && !req.hostTrusted;
+    const bool forwarded = req.headers.contains(QStringLiteral("x-forwarded-for")) ||
+                           req.headers.contains(QStringLiteral("forwarded")) ||
+                           req.headers.contains(QStringLiteral("cf-connecting-ip")) ||
+                           req.headers.contains(QStringLiteral("tailscale-funnel-request"));
+    if (!localProxy && !forwarded) return kind;
+    qInfo() << "[Session] Browser behind a reverse proxy (peer" << req.clientAddress << ", Host"
+            << req.headers.value(QStringLiteral("host")) << ") — planning ICE for the internet";
+    return NetClassify::Kind::Public;
+}
+
 // Default ports of a DEV identity (the DEV build, or --dev): see Edition.h.
 using mw::edition::kDevHttpPort;
 using mw::edition::kDevHttpsPort;
@@ -2895,8 +2920,9 @@ int main(int argc, char* argv[])
         // it — which is what silently denied internet sessions their STUN
         // server. Hand the verdict down instead of a derived bool, so the two
         // questions it answers (need STUN? may we show the LAN candidate?)
-        // cannot drift apart again.
-        const NetClassify::Kind clientKind = NetClassify::classify(req.clientAddress);
+        // cannot drift apart again. A reverse proxy is seen through here too
+        // (streamClientKind).
+        const NetClassify::Kind clientKind = streamClientKind(req);
 
         // ── Session census ─────────────────────────────────────────────────────
         // The shape of this session, for the aggregate counts (SessionMetrics.h:
@@ -4221,11 +4247,45 @@ int main(int argc, char* argv[])
         return entry + QStringLiteral("#t=") + QString::fromLatin1(QUrl::toPercentEncoding(token));
     };
     shareDeps.remoteReachable = [&rendezvous]() { return rendezvous.isOnline(); };
-    shareDeps.stopPlayerStream = [&g_Pool, &detachWorkerSlot, &shareManager](int slot,
-                                                                             bool notifyEnded) {
+    // The Sunshine identity of each player slot's latest join. A join on a later
+    // rung of the transport chain is the same browser coming back after the
+    // previous rung failed, and reuses it — the app session that rung left
+    // behind is /resumed, not launched a second time over itself.
+    QHash<int, QString> g_PlayerUids;
+    // An invited player's router hole lasts as long as the guest does, not as
+    // long as the process (an owner's slot keeps its hole until exit). Taken
+    // off the router once the slot has had no worker for the same grace a
+    // chain relaunch gets; a new start on the slot calls it off.
+    QHash<int, QPointer<QTimer>> g_GuestHoleRelease;
+    auto releaseGuestHoleSoon = [&g_GuestHoleRelease, &routerPorts, &g_Pool](int slot) {
+        if (QTimer* pending = g_GuestHoleRelease.value(slot)) pending->deleteLater();
+        auto* timer = new QTimer(qApp);
+        timer->setSingleShot(true);
+        g_GuestHoleRelease.insert(slot, timer);
+        QObject::connect(timer, &QTimer::timeout, qApp,
+                         [timer, slot, &g_GuestHoleRelease, &routerPorts, &g_Pool]() {
+                             timer->deleteLater();
+                             if (g_GuestHoleRelease.value(slot) != timer) return;
+                             g_GuestHoleRelease.remove(slot);
+                             // Back on the slot since: the hole is in use.
+                             if (g_Pool.at(slot).worker) return;
+                             routerPorts.releaseMediaPort(slot);
+                         });
+        timer->start(kHostCancelGraceMs);
+    };
+    auto keepGuestHole = [&g_GuestHoleRelease](int slot) {
+        if (QTimer* pending = g_GuestHoleRelease.take(slot)) pending->deleteLater();
+    };
+    // A worker a guest left is out of the slot at once but still holds the
+    // slot's ports until its process is gone. A join that follows straight
+    // away — the codec fallback leaves, then rejoins — waits for it.
+    QHash<int, QPointer<StreamWorkerHost>> g_PlayerRetiring;
+
+    shareDeps.stopPlayerStream = [&g_Pool, &detachWorkerSlot, &shareManager,
+                                  &g_PlayerRetiring](int slot, bool notifyEnded) {
         if (slot < kOwnerSlots || slot >= kTotalSlots) return;
         if (!g_Pool.at(slot).worker) return;
-        detachWorkerSlot(slot, false, notifyEnded);
+        g_PlayerRetiring.insert(slot, detachWorkerSlot(slot, false, notifyEnded));
         // detachWorkerSlot severs the worker's ended() handlers, so the state
         // has to be settled here: without it a player who left would stay
         // "streaming" forever and never be able to rejoin their own slot.
@@ -4234,10 +4294,14 @@ int main(int argc, char* argv[])
     shareDeps.startPlayerStream = [&computerManager, &g_Pool, &g_LiveSunshineUids, &shareManager,
                                    &detachWorkerSlot, &anyOtherSlotLive, &reapCoopSession,
                                    &slotSignalingPort, &slotWsPath, &server, &appSettings,
-                                   &sessionMetrics, signalingPort, stunServer,
-                                   &g_HostAspect](int slot, int height, QString aspect,
-                                                  ShareManager::Permissions perms,
-                                                  QString serverHost, ResponseCallback respond) {
+                                   &sessionMetrics, signalingPort, stunServer, &g_HostAspect,
+                                   &routerPorts, &g_PlayerUids, &g_PendingHostCancels,
+                                   &dropPendingHostCancel, &releaseGuestHoleSoon, &keepGuestHole,
+                                   &g_PlayerRetiring](int slot, int height, QString aspect,
+                                                      ShareManager::Permissions perms,
+                                                      QString serverHost, int transportIndex,
+                                                      const HttpRequest& req,
+                                                      ResponseCallback respond) {
         // The share is bound to ONE host at activation (ShareManager::activate).
         // A player is routed there and nowhere else — never to "whichever owner
         // slot is up", which is what let a link minted on one host reach a
@@ -4302,6 +4366,9 @@ int main(int argc, char* argv[])
         // state is settled anyway since detaching severs ended().)
         StreamWorkerHost* previousWorker = detachWorkerSlot(slot, false);
         if (previousWorker) shareManager.setStreaming(slot, false);
+        // Or the one the guest just left, if its process is still going.
+        if (!previousWorker) previousWorker = g_PlayerRetiring.value(slot).data();
+        g_PlayerRetiring.remove(slot);
 
         // Fixed profile: 60 fps, SDR, 4:2:0, HEVC→H.264 (Auto never resolves
         // to AV1). The width follows the HOST's screen aspect ("W:H", 16:9
@@ -4321,32 +4388,60 @@ int main(int argc, char* argv[])
             qRound(20000.0 * (static_cast<double>(height) * height) / (1080.0 * 1080.0));
         const int bitrateKbps = qMax(1000, autoKbps / 2);
 
+        // H.264 when the guest's browser could not decode what Auto picked —
+        // their codec fallback, the only codec choice a guest has.
+        const bool h264 = QJsonDocument::fromJson(req.body).object().value(
+                              QStringLiteral("codec")) == QStringLiteral("h264");
+        const VideoCodec codec = h264 ? VideoCodec::H264 : VideoCodec::Auto;
+
         // Players always get the enhancement-aware ordering: their profile
-        // runs SGSR1 until it proves too expensive (frontend governor).
-        const QStringList chain = filterTransportsByCodec(
-            TransportPriorities::orderedTransports(true), VideoCodec::Auto, host);
+        // runs SGSR1 until it proves too expensive (frontend governor). The
+        // H.264 rungs are the same list with the MediaTrack ones appended, so
+        // an index into one names the same transport in the other.
+        QStringList chain =
+            filterTransportsByCodec(TransportPriorities::orderedTransports(true), codec, host);
+        // Same rule as the owner's chain: through the rendezvous there is no
+        // TLS connection of ours to carry the wss rung.
+        if (req.viaTunnel) chain.removeAll(QStringLiteral("wss"));
         if (chain.isEmpty()) {
             respond(HttpResponse::error(502, "No usable transport"));
             return;
         }
+        // Past the end: the guest's browser walked every rung.
+        if (transportIndex >= chain.size()) {
+            respond(
+                HttpResponse::json(QJsonObject{{"error", QStringLiteral("no_transport")}}, 502));
+            return;
+        }
+        const QString mode = chain.at(transportIndex);
+        qInfo() << "[Session] Player slot" << slot << "transport chain:" << chain << "attempt"
+                << transportIndex + 1 << "/" << chain.size() << ":" << mode;
 
         // Its own Sunshine identity: a distinct uniqueid is what makes
         // Sunshine build a separate session_t instead of reassigning the
-        // owner's stream. 32 hex chars, like the browser-side ids.
-        const QString uid = QUuid::createUuid().toString(QUuid::Id128);
+        // owner's stream. 32 hex chars, like the browser-side ids. A later
+        // rung — or the codec fallback — keeps the one the stream started
+        // with, and gets back the app session it left: its /cancel is held
+        // (see the ended handler) and dropped here.
+        QString uid = transportIndex > 0 || h264 ? g_PlayerUids.value(slot) : QString();
+        const bool chainRelaunch = !uid.isEmpty();
+        if (!chainRelaunch) uid = QUuid::createUuid().toString(QUuid::Id128);
+        g_PlayerUids.insert(slot, uid);
+        if (chainRelaunch && dropPendingHostCancel(uid, hostUuid))
+            qInfo() << "[Session] Player relaunch within the grace window — keeping the host "
+                       "session (no /cancel)";
 
         // Session census, guest leg. Same rules as the owner's (see the
         // /start route): shape only, and nothing at all unless the instance
-        // allows it. A player has no request of their own here — the share
-        // activation starts this — so there is no User-Agent to classify and
-        // the network is assumed public, exactly as the config below does.
+        // allows it. The network is the guest's, as the config below reads it.
+        const NetClassify::Kind clientKind = streamClientKind(req);
         auto sessionFacts = std::make_shared<SessionMetrics::Facts>();
         sessionFacts->height = height;
         sessionFacts->fps = 60;
         sessionFacts->bitrateKbps = bitrateKbps;
         sessionFacts->backend =
             host->backendType.isEmpty() ? QStringLiteral("gamestream") : host->backendType;
-        sessionFacts->net = QStringLiteral("public");
+        sessionFacts->net = QString::fromLatin1(NetClassify::toString(clientKind));
         sessionFacts->kind = QStringLiteral("player");
         auto sessionStartedAt = std::make_shared<qint64>(0);
 
@@ -4375,18 +4470,17 @@ int main(int argc, char* argv[])
         cfg["hostPairState"] = NvComputer::pairStateToString(host->pairState);
         cfg["hostServerCert"] = QString::fromUtf8(host->serverCertPem);
         cfg["appId"] = appId;
-        cfg["codec"] = static_cast<int>(VideoCodec::Auto);
+        cfg["codec"] = static_cast<int>(codec);
         cfg["codecOverridden"] = false;
         cfg["originalCodec"] = static_cast<int>(VideoCodec::Auto);
         cfg["gamingMode"] = true;
-        // No router hole for a guest: the owner's session owns the mapping,
-        // and a player joins on STUN. (A pool port for guests is a follow-up.)
-        cfg["internalTransport"] = chain.first().startsWith(QStringLiteral("webrtc-media"))
-                                       ? QStringLiteral("webrtc-media")
-                                   : chain.first().startsWith(QStringLiteral("webrtc-dc"))
-                                       ? QStringLiteral("webrtc")
-                                       : QStringLiteral("wss");
-        cfg["transportMode"] = chain.first();
+        // The router hole ("upnpPublicIp"/"upnpExternalPort") is added below,
+        // once the allocator has answered — the slot's own, as for the owner.
+        cfg["internalTransport"] =
+            mode.startsWith(QStringLiteral("webrtc-media")) ? QStringLiteral("webrtc-media")
+            : mode.startsWith(QStringLiteral("webrtc-dc"))  ? QStringLiteral("webrtc")
+                                                            : QStringLiteral("wss");
+        cfg["transportMode"] = mode;
         cfg["stunServer"] = stunServer;
         cfg["height"] = height;
         cfg["width"] = width;
@@ -4394,7 +4488,7 @@ int main(int argc, char* argv[])
         cfg["bitrateKbps"] = bitrateKbps;
         cfg["yuv444"] = false;
         cfg["hdr"] = false;
-        cfg["iceTcp"] = chain.first().endsWith(QStringLiteral("-tcp"));
+        cfg["iceTcp"] = mode.endsWith(QStringLiteral("-tcp"));
         cfg["lowAudio"] = false;
         cfg["muteHostAudio"] = false;
         // A guest's width already follows the host's shape (above), and a
@@ -4405,17 +4499,17 @@ int main(int argc, char* argv[])
         // macOS. Other engines ignore the flag.
         cfg["followDisplayShape"] = true;
         cfg["clientUniqueId"] = uid;
-        // No browser address reaches this path (a player is started from the
-        // share activation, not from their own request), so assume the most
-        // restrictive: no LAN candidate, and STUN available.
-        cfg["clientKind"] = NetClassify::toString(NetClassify::Kind::Public);
+        // Where the guest is, read off their join request exactly as the
+        // owner's /start reads theirs — a proxy in front included.
+        cfg["clientKind"] = NetClassify::toString(clientKind);
         cfg["autoMode"] = true;
         // Resume into whatever the owner has up — Sunshine refuses /launch
         // while an app runs, and a guest joining a live session has no
         // business starting another. On a cold start there is nothing to
         // resume into, so this one guest does launch the app their
-        // invitation names, and only that one.
-        cfg["preferResume"] = !coldStart;
+        // invitation names, and only that one — once: a later rung of their
+        // chain resumes what the first one launched.
+        cfg["preferResume"] = !coldStart || (chainRelaunch && g_LiveSunshineUids.contains(uid));
         // The host the player typed, so the signaling URL they get back
         // points at the same place — an empty one made the browser fall
         // back to /ws and land on the owner's signaling server.
@@ -4442,7 +4536,7 @@ int main(int argc, char* argv[])
         for (const QString& m : chain)
             chainArr.append(m);
         cfg["transportChain"] = chainArr;
-        cfg["transportIndex"] = 0;
+        cfg["transportIndex"] = transportIndex;
 
         auto* worker = new StreamWorkerHost(qApp);
         QObject::connect(worker, &StreamWorkerHost::exited, worker, &QObject::deleteLater);
@@ -4496,8 +4590,9 @@ int main(int argc, char* argv[])
         QObject::connect(
             worker, &StreamWorkerHost::ended, qApp,
             [worker, &g_Pool, &g_LiveSunshineUids, &shareManager, &anyOtherSlotLive,
-             &computerManager, &reapCoopSession, &sessionMetrics, sessionFacts, sessionStartedAt,
-             slot, host, uid, coopSessionId]() {
+             &computerManager, &reapCoopSession, &sessionMetrics, &g_PendingHostCancels,
+             &dropPendingHostCancel, sessionFacts, sessionStartedAt, slot, host, uid,
+             coopSessionId]() {
                 qInfo() << "[main] Player worker ended (slot" << slot << ")";
                 if (*sessionStartedAt > 0) {
                     const qint64 ms = QDateTime::currentMSecsSinceEpoch() - *sessionStartedAt;
@@ -4512,16 +4607,41 @@ int main(int argc, char* argv[])
                 // it cannot disturb whoever else is on the lobby.
                 reapCoopSession(host->uuid, *coopSessionId);
                 // Same rule as the owner slots — the Sunshine app is shared,
-                // so /cancel only once nothing else is streaming.
+                // so /cancel only once nothing else is streaming — and held
+                // back for the same grace: a worker that ended on its own is
+                // usually one rung of the guest's transport chain, and the
+                // next rung /resumes this uid (startPlayerStream drops it).
                 if (!anyOtherSlotLive(slot, host->uuid)) {
-                    auto* identity = IdentityManager::get();
-                    auto* quitReply = computerManager.http()->quitAppAsync(
-                        host->activeAddress, host->activeHttpsPort, identity->getCertificate(),
-                        identity->getPrivateKey(), uid);
-                    QObject::connect(quitReply, &QNetworkReply::finished, quitReply,
-                                     &QNetworkReply::deleteLater);
+                    const QString boundHost = host->uuid;
+                    const int graceMs =
+                        host->backendType == NativeHostBackend::typeName() ? 0 : kHostCancelGraceMs;
+                    dropPendingHostCancel(uid, boundHost);
+                    auto* timer = new QTimer(qApp);
+                    timer->setSingleShot(true);
+                    g_PendingHostCancels.insert(uid, {timer, boundHost});
+                    QObject::connect(timer, &QTimer::timeout, qApp,
+                                     [timer, &g_PendingHostCancels, &g_LiveSunshineUids,
+                                      &computerManager, &anyOtherSlotLive, slot, boundHost, uid]() {
+                                         timer->deleteLater();
+                                         auto it = g_PendingHostCancels.find(uid);
+                                         if (it == g_PendingHostCancels.end() || it->timer != timer)
+                                             return;
+                                         g_PendingHostCancels.erase(it);
+                                         g_LiveSunshineUids.remove(uid);
+                                         NvComputer* h = computerManager.getHost(boundHost);
+                                         if (!h || anyOtherSlotLive(slot, boundHost)) return;
+                                         auto* identity = IdentityManager::get();
+                                         auto* quitReply = computerManager.http()->quitAppAsync(
+                                             h->activeAddress, h->activeHttpsPort,
+                                             identity->getCertificate(), identity->getPrivateKey(),
+                                             uid);
+                                         QObject::connect(quitReply, &QNetworkReply::finished,
+                                                          quitReply, &QNetworkReply::deleteLater);
+                                     });
+                    timer->start(graceMs);
+                } else {
+                    g_LiveSunshineUids.remove(uid);
                 }
-                g_LiveSunshineUids.remove(uid);
                 SessionPool::Slot& sl = g_Pool.at(slot);
                 const bool onVirtualDisplay = host->backendType == NativeHostBackend::typeName() &&
                                               sl.appId == NativeHostBackend::virtualDisplayAppId();
@@ -4537,9 +4657,15 @@ int main(int argc, char* argv[])
                     VirtualDisplayJob::instance().releaseSoon();
             });
 
+        // However this worker goes — ended, left, ended by the owner — its
+        // slot's router hole follows it off the router after the grace.
+        QObject::connect(worker, &QObject::destroyed, qApp,
+                         [slot, &releaseGuestHoleSoon]() { releaseGuestHoleSoon(slot); });
+
         const QString hostUuidCopy = host->uuid;
-        auto startWorker = [worker, cfg, respond, slot, appId, &g_Pool, hostUuidCopy, uid]() {
-            if (!worker->start(cfg)) {
+        auto startWorker = [worker, respond, slot, appId, &g_Pool, hostUuidCopy,
+                            uid](const QJsonObject& withHole) {
+            if (!worker->start(withHole)) {
                 worker->deleteLater();
                 respond(HttpResponse::error(500, "Failed to spawn stream worker"));
                 return;
@@ -4551,11 +4677,41 @@ int main(int argc, char* argv[])
             sl.appId = appId;
         };
 
+        // The slot's router hole, claimed before the child exists so it can be
+        // told which external port the browser will aim at — the owner path's
+        // sequence, generation guard included: a newer join on the slot while
+        // the router is being asked stands this one down.
+        const quint64 generation = ++g_SlotLaunchGeneration[slot];
+        auto claimThenStart = [&routerPorts, &keepGuestHole, startWorker, cfg, slot, generation,
+                               worker, respond]() {
+            keepGuestHole(slot);
+            routerPorts.claimMediaPort(
+                slot, static_cast<uint16_t>(kMediaBasePort + slot), qApp,
+                [&routerPorts, startWorker, cfg, slot, generation, worker,
+                 respond](const RouterPortAllocator::Claim& claim, const QString& why) {
+                    if (g_SlotLaunchGeneration.value(slot) != generation) {
+                        qInfo() << "[Session] Player join on slot" << slot
+                                << "superseded while its router hole was claimed — not spawning";
+                        worker->deleteLater();
+                        respond(HttpResponse::error(409, "Superseded by a newer join"));
+                        return;
+                    }
+                    QJsonObject withHole = cfg;
+                    if (claim.external != 0) {
+                        withHole["upnpPublicIp"] = routerPorts.publicIp();
+                        withHole["upnpExternalPort"] = static_cast<int>(claim.external);
+                    } else {
+                        qInfo() << "[Session] No router hole for this player stream —" << why;
+                    }
+                    startWorker(withHole);
+                });
+        };
+
         // Wait for this slot's previous child to release its ports.
         if (previousWorker)
-            QObject::connect(previousWorker, &QObject::destroyed, qApp, startWorker);
+            QObject::connect(previousWorker, &QObject::destroyed, qApp, claimThenStart);
         else
-            startWorker();
+            claimThenStart();
     };
 
     registerShareRoutes(server, shareManager, shareDeps);

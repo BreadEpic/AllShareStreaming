@@ -409,62 +409,69 @@ void registerShareRoutes(HttpServer& server, ShareManager& share, const ShareRou
     });
 
     // POST /api/share/player/join — {token, height} → start this player's stream.
-    router->postAsync(QStringLiteral("/api/share/player/join"), [&share, &deps, &server](
-                                                                    const HttpRequest& req,
-                                                                    ResponseCallback respond) {
-        const QJsonObject body = QJsonDocument::fromJson(req.body).object();
-        const QString token = body.value(QStringLiteral("token")).toString();
+    router->postAsync(
+        QStringLiteral("/api/share/player/join"),
+        [&share, &deps, &server](const HttpRequest& req, ResponseCallback respond) {
+            const QJsonObject body = QJsonDocument::fromJson(req.body).object();
+            const QString token = body.value(QStringLiteral("token")).toString();
 
-        // Both factors, every time, and they must name the *same* slot: the
-        // link says which player this is, the cookie proves that link's PIN
-        // was entered on this device.
-        const int slot = share.slotForToken(token);
-        if (slot < 0 ||
-            share.slotForCookie(HttpServer::cookieFromRequest(req, kPlayerCookie)) != slot ||
-            share.state(slot) == ShareManager::State::Off) {
-            server.reportAuthFailure(req.clientAddress);
-            QJsonObject obj;
-            obj[QStringLiteral("error")] = QStringLiteral("dead_link");
-            respond(HttpResponse::json(obj, 403));
-            return;
-        }
+            // Both factors, every time, and they must name the *same* slot: the
+            // link says which player this is, the cookie proves that link's PIN
+            // was entered on this device.
+            const int slot = share.slotForToken(token);
+            if (slot < 0 ||
+                share.slotForCookie(HttpServer::cookieFromRequest(req, kPlayerCookie)) != slot ||
+                share.state(slot) == ShareManager::State::Off) {
+                server.reportAuthFailure(req.clientAddress);
+                QJsonObject obj;
+                obj[QStringLiteral("error")] = QStringLiteral("dead_link");
+                respond(HttpResponse::json(obj, 403));
+                return;
+            }
 
-        if (share.isStreaming(slot)) {
-            // Never steal a running stream: the other device has to leave.
-            QJsonObject obj;
-            obj[QStringLiteral("error")] = QStringLiteral("stream_in_progress");
-            respond(HttpResponse::json(obj, 409));
-            return;
-        }
+            // A rung past the first is this same browser walking its transport
+            // chain: the rung it just gave up on may still count as streaming
+            // until its worker notices, and the relaunch replaces it (the slot is
+            // this invitation's alone, and the cookie above proves the device).
+            const int transportIndex =
+                qMax(0, body.value(QStringLiteral("transport_index")).toInt(0));
+            if (share.isStreaming(slot) && transportIndex == 0) {
+                // Never steal a running stream: the other device has to leave.
+                QJsonObject obj;
+                obj[QStringLiteral("error")] = QStringLiteral("stream_in_progress");
+                respond(HttpResponse::json(obj, 409));
+                return;
+            }
 
-        // Nothing running is no longer a dead end: an invitation opened cold
-        // carries the app it was opened on, and the guest's arrival is what
-        // starts it. startPlayerStream decides between resuming into a live
-        // session and launching that app — including telling the guest when
-        // the app has since been removed from the host.
+            // Nothing running is no longer a dead end: an invitation opened cold
+            // carries the app it was opened on, and the guest's arrival is what
+            // starts it. startPlayerStream decides between resuming into a live
+            // session and launching that app — including telling the guest when
+            // the app has since been removed from the host.
 
-        // Only the resolution comes from the player: the height from a fixed
-        // set, plus their screen aspect ("W:H") so the stream fills their
-        // display. Everything else — fps, codec, bitrate — is decided here.
-        const int requested = body.value(QStringLiteral("height")).toInt(1080);
-        const int height = (requested == 720 || requested == 1440) ? requested : 1080;
-        const QString aspect = body.value(QStringLiteral("aspect")).toString();
+            // Only the resolution comes from the player: the height from a fixed
+            // set, plus their screen aspect ("W:H") so the stream fills their
+            // display. Everything else — fps, codec, bitrate — is decided here.
+            const int requested = body.value(QStringLiteral("height")).toInt(1080);
+            const int height = (requested == 720 || requested == 1440) ? requested : 1080;
+            const QString aspect = body.value(QStringLiteral("aspect")).toString();
 
-        if (!deps.startPlayerStream) {
-            respond(HttpResponse::error(503, "Streaming unavailable"));
-            return;
-        }
+            if (!deps.startPlayerStream) {
+                respond(HttpResponse::error(503, "Streaming unavailable"));
+                return;
+            }
 
-        // The signaling URL the worker hands back has to name the host this
-        // player actually reached — the public domain, the LAN IP, whatever
-        // is in their address bar. Leaving it empty produced an unparseable
-        // URL, and the browser fell back to /ws: the owner's slot.
-        QString serverHost = req.headers.value(QStringLiteral("host"));
-        const int colon = serverHost.indexOf(QLatin1Char(':'));
-        if (colon >= 0) serverHost = serverHost.left(colon);
+            // The signaling URL the worker hands back has to name the host this
+            // player actually reached — the public domain, the LAN IP, whatever
+            // is in their address bar. Leaving it empty produced an unparseable
+            // URL, and the browser fell back to /ws: the owner's slot.
+            QString serverHost = req.headers.value(QStringLiteral("host"));
+            const int colon = serverHost.indexOf(QLatin1Char(':'));
+            if (colon >= 0) serverHost = serverHost.left(colon);
 
-        deps.startPlayerStream(slot, height, aspect, share.permissions(slot), serverHost, respond);
-    });
+            deps.startPlayerStream(slot, height, aspect, share.permissions(slot), serverHost,
+                                   transportIndex, req, respond);
+        });
 
     // POST /api/share/player/leave — the player pressed Leave.
     router->post(

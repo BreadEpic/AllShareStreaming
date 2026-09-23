@@ -162,6 +162,11 @@ public:
             m_Owner, [o = m_Owner, lost]() { o->onRenewed(lost); }, Qt::QueuedConnection);
     }
 
+    void release(const RouterPortCore::Claim& claim)
+    {
+        if (m_Core) m_Core->release(claim);
+    }
+
     void releaseAll()
     {
         if (m_Core) m_Core->releaseAll();
@@ -330,6 +335,19 @@ void RouterPortAllocator::claimMediaPort(int slot, uint16_t internalPort, QObjec
     request.description = QStringLiteral("MoonlightWeb media slot %1").arg(slot);
 
     submit(std::move(request), context, std::move(callback));
+}
+
+void RouterPortAllocator::releaseMediaPort(int slot)
+{
+    const auto held = heldMediaPort(slot);
+    if (!held) return;
+    const Claim claim = *held;
+    m_Held.removeAll(claim);
+    QMetaObject::invokeMethod(
+        m_Worker, [w = m_Worker, claim]() { w->release(claim); }, Qt::QueuedConnection);
+    Logger::info(QStringLiteral("[UPNP] %1: released %2")
+                     .arg(purposeName(Purpose::Media, slot))
+                     .arg(claim.external));
 }
 
 void RouterPortAllocator::onClaimed(quint64 token, const RouterPortCore::Result& result)

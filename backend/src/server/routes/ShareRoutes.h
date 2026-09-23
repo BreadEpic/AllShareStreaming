@@ -38,8 +38,12 @@ struct ShareRoutesDeps
     /// ratio (width is derived from it) — everything else (fps, codec, bitrate)
     /// is decided server-side. @p serverHost is the hostname the player reached
     /// us on, needed to build the signaling URL they must come back to.
+    /// @p transportIndex is the rung of the transport chain to try, walked by the
+    /// guest's browser exactly as the owner's walks theirs; @p req is the join
+    /// request itself, for where the guest is and how they arrived.
     std::function<void(int slot, int height, QString aspect, ShareManager::Permissions perms,
-                       QString serverHost, ResponseCallback respond)>
+                       QString serverHost, int transportIndex, const HttpRequest& req,
+                       ResponseCallback respond)>
         startPlayerStream;
 
     /// Tear a player's worker down without touching Sunshine or other slots.
