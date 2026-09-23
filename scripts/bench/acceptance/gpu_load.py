@@ -11,9 +11,10 @@ The GPU is the one MoonlightWeb names for the target display in
 itself refuses to run hotter than its limit and never runs longer than 60 s,
 so the pass fits inside one run: ~9 s of calibration, then the stream.
 
-Only the machine this runs on (DualRTX) for now. The tool is built with
+On this desk (DualRTX) the tool is built with
 `cmake -S backend/native-host/tools/gpu-load -B build-gpuload`; MW_GPU_LOAD
-points at another binary.
+points at another binary. A Windows host of the fleet gets a packaged copy
+(deploy_windows), a Mac builds its own from HEAD's sources (deploy_macos).
 """
 import json
 import os
@@ -250,3 +251,139 @@ Get-Process -Name 'mw-gpu-load' -ErrorAction SilentlyContinue | Stop-Process -Fo
 Start-Sleep -Seconds 1
 Unregister-ScheduledTask -TaskName '%s' -Confirm:$false -ErrorAction SilentlyContinue
 """ % TASK, timeout=60)
+
+
+# ── a macOS host of the fleet ───────────────────────────────────────────────
+#
+# The Mac builds its own copy, from the tool's committed sources at this
+# desk's HEAD, with the Qt it already has (qtshadertools, and qtmultimedia for
+# the music). The build is redone only when the tool's tree changed, and is
+# incremental then. The run goes through a launchd agent in the GUI session:
+# a program started by ssh has no window server, and `launchctl asuser` is
+# refused from ssh. Everything lives under ~/mw-gpu-load, never in /tmp, which
+# other sessions share on that machine.
+
+MAC_DIR = "$HOME/mw-gpu-load"
+MAC_TOOL = MAC_DIR + "/build/mw-gpu-load"
+MAC_JSON = MAC_DIR + "/run.jsonl"
+MAC_LABEL = "com.moonlightweb.bench.gpuload"
+_mac_ready = set()
+
+
+def _tool_tree():
+    """The git tree id of the tool's sources: what a remote build is keyed on."""
+    p = subprocess.run(["git", "-C", REPO, "rev-parse", "HEAD:backend/native-host/tools/gpu-load"],
+                       capture_output=True, text=True)
+    if p.returncode != 0:
+        raise Unavailable("cannot read the tool's sources from git")
+    return p.stdout.strip()
+
+
+def deploy_macos(mid):
+    """Build the tool on a Mac from HEAD's sources, unless it already has them."""
+    if mid in _mac_ready:
+        return
+    import tempfile
+    import uuid
+    f = _fleet()
+    tree = _tool_tree()
+    rc, out, err = f.run_script(mid, 'cat "%s/src.tree" 2>/dev/null; test -x "%s" && echo BUILT'
+                                % (MAC_DIR, MAC_TOOL), timeout=60)
+    if tree in (out or "") and "BUILT" in (out or ""):
+        _mac_ready.add(mid)
+        return
+    name = "mwgl-src-%s.tgz" % uuid.uuid4().hex[:8]
+    local = os.path.join(tempfile.gettempdir(), name)
+    subprocess.run(["git", "-C", REPO, "archive", "--format=tar.gz", "-o", local, tree], check=True)
+    try:
+        f.push_file(mid, local, name)  # lands in the remote home directory
+    finally:
+        os.unlink(local)
+    rc, out, err = f.run_script(mid, r"""
+D="%(dir)s"
+mkdir -p "$D"; rm -rf "$D/src"; mkdir "$D/src"
+tar -xzf "$HOME/%(name)s" -C "$D/src" && rm -f "$HOME/%(name)s"
+# The Qt of this machine: the newest one under ~/Qt that has the shader tools.
+QT=$(ls -d "$HOME"/Qt/6.*/macos 2>/dev/null | sort -V | tail -1)
+CMAKE=$(command -v cmake || ls "$HOME"/tools/cmake-*/CMake.app/Contents/bin/cmake 2>/dev/null | tail -1)
+export PATH="$HOME/tools/bin:$PATH"
+GEN=""; command -v ninja >/dev/null && GEN="-G Ninja"
+[ -f "$D/build/CMakeCache.txt" ] || "$CMAKE" -S "$D/src" -B "$D/build" $GEN \
+    -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$QT" >"$D/build.log" 2>&1
+"$CMAKE" --build "$D/build" >>"$D/build.log" 2>&1 && echo "%(tree)s" >"$D/src.tree"
+test -x "%(tool)s" && echo BUILT
+otool -L "%(tool)s" 2>/dev/null | grep -q QtMultimedia && echo MUSIC
+""" % {"dir": MAC_DIR, "name": name, "tree": tree, "tool": MAC_TOOL}, timeout=900)
+    if "BUILT" not in (out or ""):
+        raise Unavailable("mw-gpu-load did not build on %s (see ~/mw-gpu-load/build.log)" % mid)
+    if "MUSIC" not in (out or ""):
+        # Still a valid load, only a silent one: say it rather than refuse.
+        print("  [%s] mw-gpu-load built without Qt Multimedia: no music" % mid, flush=True)
+    _mac_ready.add(mid)
+
+
+def remote_encoder_gpu_macos(mid, target, port=48080):
+    if target != "display":
+        raise Unavailable("the load needs a physical display target, not %r" % target)
+    rc, out, err = _fleet().run_script(
+        mid, "curl -s -m 5 http://127.0.0.1:%d/api/native/status" % port, timeout=60)
+    try:
+        return json.loads((out or "").strip().splitlines()[-1])["displays"][0]["gpu"]
+    except (ValueError, KeyError, IndexError):
+        raise Unavailable("%s names no GPU for its first display" % mid)
+
+
+class MacLoad(RemoteLoad):
+    def __init__(self, mid, gpu, level=None, allow_no_sensor=False):
+        self.mid = mid
+        self.gpu = gpu
+        # --topmost as on Windows: the stream must capture the tool, not
+        # whatever the Mac's user left in front.
+        args = [MAC_TOOL, "--gpu", gpu, "--autostart", "--topmost", "--json", MAC_JSON]
+        if level:
+            args += ["--level", str(level)]
+        if allow_no_sensor:
+            args.append("--allow-no-sensor")
+        xml = "".join("<string>%s</string>" % a.replace("&", "&amp;").replace("<", "&lt;")
+                      for a in args)
+        rc, out, err = _fleet().run_script(mid, r"""
+# Not in ~/Library/LaunchAgents: a plist written there makes macOS show
+# "Background Items Added" on the user's screen, twice (23/09/2026).
+P="%(dir)s/agent.plist"
+launchctl bootout gui/$(id -u)/%(label)s 2>/dev/null
+pkill -x mw-gpu-load 2>/dev/null
+rm -f "%(json)s"
+cat >"$P" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>%(label)s</string>
+<key>ProgramArguments</key><array>%(args)s</array>
+<key>RunAtLoad</key><true/>
+<key>StandardErrorPath</key><string>%(dir)s/run.err</string>
+</dict></plist>
+PLIST
+launchctl bootstrap gui/$(id -u) "$P" && echo STARTED
+""" % {"label": MAC_LABEL, "json": MAC_JSON, "args": xml, "dir": MAC_DIR}, timeout=60)
+        if "STARTED" not in (out or ""):
+            raise Unavailable("mw-gpu-load could not be started on %s" % mid)
+        self.started = time.time()
+
+    def _lines(self):
+        rc, out, err = _fleet().run_script(self.mid, 'cat "%s" 2>/dev/null' % MAC_JSON, timeout=60)
+        lines = []
+        for raw in (out or "").splitlines():
+            raw = raw.strip()
+            if raw.startswith("{"):
+                try:
+                    lines.append(json.loads(raw))
+                except ValueError:
+                    pass
+        return lines
+
+    def stop(self):
+        _fleet().run_script(self.mid, r"""
+launchctl bootout gui/$(id -u)/%(label)s 2>/dev/null
+pkill -x mw-gpu-load 2>/dev/null
+rm -f "%(dir)s/agent.plist"
+""" % {"label": MAC_LABEL, "dir": MAC_DIR}, timeout=60)

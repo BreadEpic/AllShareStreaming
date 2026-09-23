@@ -359,8 +359,14 @@ def run_pass(d, chapter, machine, spec, base, seconds, settle, access):
                     gpu = gpu_load.remote_encoder_gpu(machine, rec["target"])
                     load = gpu_load.RemoteLoad(machine, gpu, level=spec.get("loadLevel"),
                                                allow_no_sensor=spec.get("loadAllowNoSensor", False))
+                elif fleet.MACHINES[machine]["os"] == "macos":
+                    # Built on the Mac itself, from HEAD's sources, when they changed.
+                    gpu_load.deploy_macos(machine)
+                    gpu = gpu_load.remote_encoder_gpu_macos(machine, rec["target"])
+                    load = gpu_load.MacLoad(machine, gpu, level=spec.get("loadLevel"),
+                                            allow_no_sensor=spec.get("loadAllowNoSensor", False))
                 else:
-                    raise gpu_load.Unavailable("the GPU load runs on Windows hosts only for now")
+                    raise gpu_load.Unavailable("the GPU load runs on Windows and macOS hosts for now")
                 load.wait_calibrated()
             except gpu_load.Unavailable as e:
                 raise drive.NotApplicable(str(e))
