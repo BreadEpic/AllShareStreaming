@@ -319,11 +319,23 @@ class Driver:
             self.call("Input.dispatchMouseEvent", type=kind, x=pos["x"], y=pos["y"],
                         button="left", clickCount=1)
             time.sleep(0.05)
-        time.sleep(1.5)
         # Streaming your own PC puts a confirmation in the way and leaves the
-        # tile stuck on "Launching…" until it is answered.
-        self.eval("(() => { const g = document.querySelector('.self-stream-go');"
-                  " if (g) { g.click(); return 'confirmed'; } return 'no overlay'; })()")
+        # tile stuck on "Launching…" until it is answered. The dialog only
+        # appears once the app has read the internet status, and right after
+        # the instance starts that takes several seconds: one look at 1.5 s
+        # missed it, and the first pass after every restart sat on
+        # "Launching…" until "no picture after 60s" (23/09/2026).
+        end = time.time() + 20
+        while time.time() < end:
+            time.sleep(0.5)
+            got = self.eval("(() => { const g = document.querySelector('.self-stream-go');"
+                            " if (g) { g.click(); return 'confirmed'; }"
+                            " return document.querySelector('canvas') ? 'streaming' : 'waiting'; })()")
+            if "waiting" not in got:
+                return
+            if "true" in self.eval(
+                    "JSON.stringify(!!document.querySelector('.app-card--launch-failed'))"):
+                return
 
     def wait_picture(self, timeout=45):
         """True once a canvas is on screen — the first frame has been drawn."""
