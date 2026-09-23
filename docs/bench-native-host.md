@@ -1009,6 +1009,95 @@ demandée par défaut quand le jeton du worker le permet (worker SYSTEM par le
 service, ou élevé), HIGH sinon ou en cas de refus.
 `MW_GPU_PRIORITY=high` garde l'ancien comportement pour un « avant ».
 
+## 8m. Deux horloges : images répétées ou sautées à fréquence égale (23/09/2026)
+
+Question : quand le stream tourne à la fréquence de l'écran du client, la
+dérive entre l'horloge de l'hôte et celle du client fait-elle répéter ou
+sauter des images ? Aujourd'hui rien ne cale la phase : `CadenceAlign` ne
+cale que le débit.
+
+**Montage.**
+- DualRTX, instance `--dev` ; écran virtuel rendu par la RTX (NVENC), 1080p
+  HEVC ; `scroll.html` sur l'écran capturé, une image neuve par
+  rafraîchissement.
+- Client Chrome sur un autre GPU : à 120 Hz sur l'écran de l'Arc, à 60 Hz sur
+  celui de l'iGPU AMD. Aucun changement de mode d'écran.
+- Mesure par `scripts/bench/cadence` : sonde injectée par CDP, rien dans
+  l'app. Elle horodate chaque rafraîchissement (rAF), chaque image remise au
+  décodeur et chaque image dessinée.
+- Passes de 150 s. Une répétition = un rafraîchissement sans image neuve ; un
+  saut = une image jamais montrée. Chaque événement est attribué à l'hôte
+  (image jamais envoyée), au client (rafraîchissement sauté par Chrome) ou à
+  la phase (image tombée de l'autre côté d'une frontière).
+
+| cas | client / hôte (Hz) | battement | répétées + sautées / min (phase) | trous de l'hôte / min | latence |
+|---|---|---|---|---|---|
+| 120, tearing, dérive (20 s) | 120,000 / 119,976 | 42 s | 234 + 234 | 12 | 3,6 ms |
+| 120, tearing, calé | 120,000 / 120,000 | — | 46 + 46 | 1 | 3,0 ms |
+| 120, vsync, calé ×2 | 120,000 / 120,000 | — | 3 + 2 ; 0,4 + 0,4 | 3-4 | 15,5-15,9 ms |
+| 60, tearing, dérive ×2 | 60,000 / 59,988-59,990 | 82-99 s | 70 + 70 ; 38 + 38 | 77-89 | 4,9-5,1 ms |
+| 60, vsync, dérive ×2 | 60,000 / 59,989-59,991 | 94-114 s | **0 + 0** ; **0 + 0** | 32-51 | **26-29 ms** |
+
+Lecture :
+
+- **La dérive existe et se voit.** L'écran virtuel tourne à 59,988-59,991 Hz
+  pour 60 demandés, et à 119,976 Hz à 120 quand il ne se cale pas.
+  - Le glissement mesuré sur les arrivées vaut celui que prédisent les deux
+    fréquences (0,0097 cycle/s pour 0,010-0,012 Hz d'écart).
+  - En tearing, c'est-à-dire le défaut de Chrome sur ordinateur, les couples
+    « répétée + sautée » se regroupent dans une fenêtre de chaque battement :
+    3 à 10 par seconde pendant 20 à 40 % du temps, rien ailleurs. Les
+    arrivées sont alors près de la frontière : 0,8-0,9 de la période à
+    120 Hz, 0,4-0,9 à 60 Hz, où le décodage étale le dessin.
+- **Même calé, le tearing en garde une partie** (46/min). Ce n'est pas la
+  dérive : la durée de décodage varie (p99 ~10 ms à 120 Hz) et fait passer le
+  dessin de part et d'autre d'une frontière.
+- **Le mode vsync ne répète rien, même en dérive.** Il ne peut sauter qu'en
+  gardant une image de réserve (Chromium, tearing off), et cette réserve
+  absorbe le passage de la frontière. Le prix est la latence : 15,5 ms au
+  lieu de 3 à 120 Hz, 26-29 ms au lieu de 5 à 60 Hz. L'image attend le
+  rafraîchissement suivant, puis un de plus.
+  - Safari, Firefox et les mobiles affichent sans cette réserve (freshest au
+    rAF). Ils doivent donc subir la dérive comme le tearing. Non mesuré.
+- Les « trous de l'hôte » à 60 Hz sont un artefact de ce banc.
+  - Toutes les ~40 s, la phase saute en arrière de ~0,4 période ; l'hôte perd
+    6 à 8 images en quelques secondes et le Chrome client saute autant de
+    rafraîchissements au même moment.
+  - C'est le même DWM des deux côtés.
+- **Limite du banc.**
+  - Sous Windows, le rAF de Chrome suit l'horloge de composition, celle de
+    l'écran principal, et pas celle de son écran : un client sur l'écran AMD
+    à 60 Hz battait à 119,98 Hz.
+  - Sur un seul PC, l'hôte et le client ne sont donc jamais deux horloges
+    tout à fait indépendantes : à 120 Hz, l'écran virtuel s'est calé sur le
+    client dans 3 passes sur 4.
+  - Une passe tearing 120 est écartée : la page de contenu n'a produit que
+    ~104 images/s.
+  - La dérive entre deux vrais écrans reste à mesurer avec un second PC comme
+    client.
+
+**Verdict.**
+
+Un calage de phase par l'hôte ne vaut pas le chantier.
+- L'hôte ne peut pas déplacer les présentations d'un jeu ni l'horloge d'un
+  écran physique, seulement retarder la capture, ce qui ajoute de la latence.
+- Pour l'écran virtuel, régler son mode sur la fréquence mesurée du client
+  (fréquence fractionnaire) allongerait le battement. À vérifier : il tourne
+  déjà à 59,988 pour « 60 ».
+
+Le levier est côté client : **une réserve décidée par la phase**. Le client
+connaît sa grille de rafraîchissement et la phase d'arrivée de chaque image.
+- Chemins vsync :
+  - garder l'image de réserve seulement quand les arrivées approchent la
+    frontière ;
+  - sinon présenter au rafraîchissement suivant ;
+  - gain attendu ~1 période de latence la plupart du temps (−8 ms à 120 Hz,
+    −16 ms à 60 Hz), à fluidité égale ;
+  - Safari et iOS gagneraient une réserve quand il en faut une.
+- Tearing : retarder de quelques ms une image qui tomberait juste avant la
+  frontière, seulement dans la fenêtre de dérive. Cela suppose de connaître
+  le décalage du compositeur. Plus incertain.
+
 ## 9. Pour l'A/B
 
 Le banc encode vers un puits ; l'A/B se fait sur un vrai flux. Une session
