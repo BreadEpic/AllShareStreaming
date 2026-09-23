@@ -200,6 +200,17 @@
           "target": "vdisplay"
         },
         {
+          "id": "rtx-vdd-1080p60-native-load",
+          "content": "still.html?anim=1",
+          "contentAfter": true,
+          "factor": "native Virtual Display rendered by the RTX (NVENC), 1080p60 fixed + a fixed GPU load on the RTX — MW_VDD_GPU as above; the load's window has no RTX screen to sit on before the stream, so it presents through the primary display",
+          "settings": { "stream_resolution": "fixed", "stream_height": 1080, "stream_fps": 60 },
+          "target": "vdisplay",
+          "load": "gpu",
+          "loadGpu": "RTX",
+          "loadLevel": 500
+        },
+        {
           "id": "rtx-vdd-1080p60-native-scroll",
           "content": "scroll.html",
           "contentAfter": true,

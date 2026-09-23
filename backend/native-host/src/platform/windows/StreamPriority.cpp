@@ -74,28 +74,109 @@ void leaveEcoQos()
                   std::to_string(::GetLastError()) + ")");
 }
 
-// d3dkmthk.h is a WDK header; the one entry point needed is exported by
-// gdi32, so it is looked up rather than linked.
+// d3dkmthk.h is a WDK header; the few entry points needed are exported by
+// gdi32, so they are looked up rather than linked, and the structures they
+// take are restated here as the header lays them out.
 enum KmtSchedulingClass : int
 {
     KmtIdle,
     KmtBelowNormal,
     KmtNormal,
     KmtAboveNormal,
-    KmtHigh
+    KmtHigh,
+    KmtRealtime
 };
 using SetSchedulingClassFn = LONG(APIENTRY*)(HANDLE, int);
 
-void raiseGpuScheduling()
+struct KmtOpenAdapterFromLuid
+{
+    LUID luid;
+    UINT adapter;
+};
+struct KmtQueryAdapterInfo
+{
+    UINT adapter;
+    int type;
+    void* data;
+    UINT size;
+};
+struct KmtCloseAdapter
+{
+    UINT adapter;
+};
+constexpr int KmtQaiWddm27Caps = 70; // KMTQAITYPE_WDDM_2_7_CAPS
+using OpenAdapterFromLuidFn = LONG(APIENTRY*)(KmtOpenAdapterFromLuid*);
+using QueryAdapterInfoFn = LONG(APIENTRY*)(const KmtQueryAdapterInfo*);
+using CloseAdapterFn = LONG(APIENTRY*)(const KmtCloseAdapter*);
+
+HMODULE gdi32()
 {
     HMODULE gdi = ::GetModuleHandleW(L"gdi32.dll");
-    if (!gdi) gdi = ::LoadLibraryW(L"gdi32.dll");
-    const auto set = gdi ? reinterpret_cast<SetSchedulingClassFn>(
-                               ::GetProcAddress(gdi, "D3DKMTSetProcessSchedulingPriorityClass"))
-                         : nullptr;
+    return gdi ? gdi : ::LoadLibraryW(L"gdi32.dll");
+}
+
+/// Who this process runs as, in the terms the REALTIME class cares about: it
+/// takes SeIncreaseBasePriorityPrivilege, which SYSTEM and an elevated
+/// administrator hold and a filtered token does not.
+std::string tokenKind()
+{
+    HANDLE token = nullptr;
+    if (!::OpenProcessToken(::GetCurrentProcess(), TOKEN_QUERY, &token)) return "unknown";
+    std::string kind = "limited";
+    BYTE user[SECURITY_MAX_SID_SIZE + sizeof(TOKEN_USER)] = {};
+    DWORD len = 0;
+    if (::GetTokenInformation(token, TokenUser, user, sizeof(user), &len) &&
+        ::IsWellKnownSid(reinterpret_cast<TOKEN_USER*>(user)->User.Sid, WinLocalSystemSid)) {
+        kind = "SYSTEM";
+    } else {
+        TOKEN_ELEVATION elevation = {};
+        if (::GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &len) &&
+            elevation.TokenIsElevated)
+            kind = "elevated";
+    }
+    ::CloseHandle(token);
+    return kind;
+}
+
+/// Turns SeIncreaseBasePriorityPrivilege on for this process. Held is not
+/// enabled: an elevated token carries it switched off.
+bool enableBasePriorityPrivilege()
+{
+    HANDLE token = nullptr;
+    if (!::OpenProcessToken(::GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token))
+        return false;
+    TOKEN_PRIVILEGES tp = {};
+    tp.PrivilegeCount = 1;
+    tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+    const bool ok = ::LookupPrivilegeValueW(nullptr, L"SeIncreaseBasePriorityPrivilege",
+                                            &tp.Privileges[0].Luid) &&
+                    ::AdjustTokenPrivileges(token, FALSE, &tp, sizeof(tp), nullptr, nullptr) &&
+                    ::GetLastError() != ERROR_NOT_ALL_ASSIGNED;
+    ::CloseHandle(token);
+    return ok;
+}
+
+void raiseGpuScheduling()
+{
+    const auto set = reinterpret_cast<SetSchedulingClassFn>(
+        ::GetProcAddress(gdi32(), "D3DKMTSetProcessSchedulingPriorityClass"));
     if (!set) {
         log::info("[native] priority: no GPU scheduling class on this Windows");
         return;
+    }
+    // Bench switch, off by default: REALTIME puts this process's GPU work in
+    // front of everything, the desktop's included (docs/bench-native-host.md).
+    if (envIs("MW_GPU_PRIORITY", "realtime")) {
+        const std::string who = tokenKind();
+        const bool privilege = enableBasePriorityPrivilege();
+        const LONG realtime = set(::GetCurrentProcess(), KmtRealtime);
+        if (realtime == 0) {
+            log::info("[native] priority: GPU scheduling class REALTIME (token " + who + ")");
+            return;
+        }
+        log::info("[native] priority: GPU scheduling class REALTIME refused (" + hex(realtime) +
+                  ", token " + who + (privilege ? "" : ", no base-priority privilege") +
+                  "), asking HIGH");
     }
     const LONG high = set(::GetCurrentProcess(), KmtHigh);
     if (high == 0) {
@@ -119,6 +200,15 @@ void StreamPriority::engage()
             raiseGpuScheduling();
         else
             log::info("[native] priority: MW_GPU_PRIORITY=normal — GPU scheduling left as is");
+        // Bench switch, off by default: the whole process one class up on the
+        // CPU. Never REALTIME, which can starve the input stack itself.
+        if (envIs("MW_CPU_PRIORITY", "high")) {
+            if (::SetPriorityClass(::GetCurrentProcess(), HIGH_PRIORITY_CLASS))
+                log::info("[native] priority: CPU priority class HIGH");
+            else
+                log::info("[native] priority: CPU priority class HIGH refused (error " +
+                          std::to_string(::GetLastError()) + ")");
+        }
     }
 
     if (m_PowerRequest) return;
@@ -145,11 +235,51 @@ void StreamPriority::release()
     m_PowerRequest = nullptr;
 }
 
+namespace {
+
+/// Whether the GPU schedules itself (hardware-accelerated GPU scheduling):
+/// under it the classes above are carried out by the GPU's own firmware, so a
+/// priority measured with it on says little about it off.
+void logHardwareScheduling(IDXGIDevice* dxgi, const char* role)
+{
+    Microsoft::WRL::ComPtr<IDXGIAdapter> adapter;
+    DXGI_ADAPTER_DESC desc = {};
+    if (FAILED(dxgi->GetAdapter(&adapter)) || FAILED(adapter->GetDesc(&desc))) return;
+    const HMODULE gdi = gdi32();
+    const auto open =
+        reinterpret_cast<OpenAdapterFromLuidFn>(::GetProcAddress(gdi, "D3DKMTOpenAdapterFromLuid"));
+    const auto query =
+        reinterpret_cast<QueryAdapterInfoFn>(::GetProcAddress(gdi, "D3DKMTQueryAdapterInfo"));
+    const auto close =
+        reinterpret_cast<CloseAdapterFn>(::GetProcAddress(gdi, "D3DKMTCloseAdapter"));
+    if (!open || !query || !close) return;
+    KmtOpenAdapterFromLuid opened = {desc.AdapterLuid, 0};
+    if (open(&opened) != 0) return;
+    UINT caps = 0;
+    const KmtQueryAdapterInfo info = {opened.adapter, KmtQaiWddm27Caps, &caps, sizeof(caps)};
+    const LONG status = query(&info);
+    const KmtCloseAdapter closing = {opened.adapter};
+    close(&closing);
+    std::string state;
+    if (status != 0)
+        state = "unknown (" + hex(status) + ")";
+    else if (!(caps & 0x1))
+        state = "not supported";
+    else
+        state = (caps & 0x2) ? "on" : "off";
+    log::info(std::string("[native] priority: hardware GPU scheduling (HAGS) ") + state +
+              ", for the " + role + " device's GPU");
+}
+
+} // namespace
+
 void StreamPriority::raiseDevice(ID3D11Device* device, const char* role)
 {
-    if (!device || envIs("MW_GPU_PRIORITY", "normal")) return;
+    if (!device) return;
     Microsoft::WRL::ComPtr<IDXGIDevice> dxgi;
     if (FAILED(device->QueryInterface(IID_PPV_ARGS(&dxgi)))) return;
+    logHardwareScheduling(dxgi.Get(), role);
+    if (envIs("MW_GPU_PRIORITY", "normal")) return;
     const HRESULT hr = dxgi->SetGPUThreadPriority(7);
     if (SUCCEEDED(hr))
         log::info(std::string("[native] priority: GPU thread priority 7 on the ") + role +

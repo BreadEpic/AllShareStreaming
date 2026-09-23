@@ -44,7 +44,12 @@ namespace mw::native {
 /// needs SeIncreaseBasePriorityPrivilege, which a non-elevated token does not
 /// carry, and under hardware-accelerated scheduling it can starve the desktop
 /// itself. The encoder is fixed-function and has its own engine; this is
-/// about the shaders in front of it. MW_GPU_PRIORITY=normal skips it.
+/// about the shaders in front of it. MW_GPU_PRIORITY=normal skips it;
+/// MW_GPU_PRIORITY=realtime (a bench switch) enables the privilege where the
+/// token holds it — the SYSTEM or elevated worker — and asks REALTIME, HIGH
+/// when refused. Whether the GPU schedules itself (HAGS) is logged per device,
+/// since it decides what a class means. MW_CPU_PRIORITY=high (a bench switch
+/// too) raises the process's CPU class.
 ///
 /// Staying awake. A viewer watching without touching anything sends no input,
 /// and the machine would sleep or blank its screen under the stream — which

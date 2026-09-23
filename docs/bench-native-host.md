@@ -868,6 +868,71 @@ AMD plus flou. Sur le 780M (UM790Pro, Mesa), la passe intégrée — séparable 
 coûte 0,57 ms par image à 1080p → 720p contre 0,45 ms en bilinéaire. Décision
 et intégration : §28.3 du design.
 
+## 8k. Priorités sous charge 3D : GPU REALTIME, CPU HIGH (23/09/2026)
+
+Question : sous un jeu qui sature le GPU de l'encodeur, que rapporte de monter
+la priorité du worker, maintenant qu'il peut tourner en SYSTEM (ou élevé) et
+tenir `SeIncreaseBasePriorityPrivilege` ? Interrupteurs de banc, défaut
+inchangé (classe GPU HIGH depuis `92f6b122`) : `MW_GPU_PRIORITY=realtime`
+(active le privilège, demande la classe REALTIME, repli HIGH loggé) et
+`MW_CPU_PRIORITY=high` (classe CPU HIGH, jamais REALTIME). Le worker loggue
+aussi l'état HAGS de chaque GPU qu'il utilise.
+
+Montage : DualRTX, instance `--dev` lancée **élevée** (jeton `elevated`, pas
+de service SYSTEM installé sur ce banc ; le privilège est le même), harnais
+`scripts/bench/acceptance`, 1080p60 HEVC figé, client Chrome sur l'iGPU AMD
+(jamais le GPU de l'encodeur), `mw-gpu-load --topmost` à niveau **figé** sur
+le GPU de l'encodeur. 4 passes par configuration sous charge (mesure 10 s
+chacune, 6 s d'installation), moyennes des passes ; p99 = celui de l'overlay.
+HAGS : **activé** dans Windows ; le pilote de la RTX le gère (`Enabled:True`),
+ceux de l'Arc et de l'iGPU AMD ne le gèrent pas (`AlwaysOff`, dxdiag).
+
+**NVENC, RTX 5060 Ti (HAGS activé)** — écran virtuel rendu par la RTX
+(`MW_VDD_GPU`), page animée, charge niveau 500 (21,4 ms GPU/image, ~47 fps) :
+
+| | latence | hôte | encodage moy. / p99 | récupération p99 | images/s | fps de la charge |
+|---|---|---|---|---|---|---|
+| sans charge (HIGH) | 5,2 | 2,9 | 2,8 / 5,3 | 0,1 | 60 | — |
+| sans charge, REALTIME | 3,8 | 2,4 | 2,2 / 9,8 | 0,2 | 60 | — |
+| base (HIGH) | 32,5 | 31,3 | 29,5 / 51,7 | 19,9 | 31,5 | 46,7 |
+| A — GPU REALTIME | **20,2** | **18,6** | **18,2 / 21,3** | 0,5 | **43,8** | 46,5 |
+| B — CPU HIGH | 32,1 | 31,1 | 27,7 / 48,4 | 25,3 | 32,5 | 46,8 |
+| A + B | **19,5** | **18,5** | **17,8 / 21,0** | 0,4 | **44,0** | 46,6 |
+
+**oneVPL, Arc A380 (pilote sans HAGS)** — écran 1, charge niveau 90
+(16,5 ms GPU/image, ~58 fps) :
+
+| | latence | hôte | encodage moy. / p99 | récupération p99 | images/s | fps de la charge |
+|---|---|---|---|---|---|---|
+| sans charge (HIGH) | 6,9 | 5,9 | 5,4 / 15,9 | 25,0 | 59 | — |
+| base (HIGH) | 21,5 | 19,2 | 16,7 / 32,5 | 20,7 | 44,2 | 58,7 |
+| A — GPU REALTIME | 21,7 | 18,3 | 16,0 / 25,1 | 29,2 | 43,0 | 58,4 |
+| B — CPU HIGH | 22,3 | 19,8 | 16,7 / 32,4 | 21,3 | 44,8 | 58,6 |
+| A + B | 21,4 | 18,4 | 15,6 / 21,6 | 16,8 | 43,0 | 58,3 |
+
+Lecture :
+
+- **REALTIME est le levier, sur NVENC** : l'encodage attendait derrière le
+  jeu (29,5 ms, p99 52) ; en REALTIME il passe devant — 12 ms de latence de
+  moins, 12 images/s de plus, p99 d'encodage divisé par 2,4 — et le jeu
+  garde sa cadence (46,7 → 46,5 fps, même temps GPU). Sans charge, rien ne
+  se dégrade.
+- **Sur l'Arc, presque rien** : ~1 ms d'hôte et le p99 d'encodage de 32 à
+  ~19-25 ms (une passe sur quatre garde un pic), latence moyenne inchangée.
+  Le pilote de l'Arc ne fait pas d'ordonnancement matériel ; pourquoi la
+  classe y compte moins n'est pas établi.
+- **CPU HIGH ne change rien** (charge GPU seule ; un jeu gourmand en CPU
+  pourrait différer, non mesuré).
+- Les ~18 ms d'encodage qui restent sur NVENC en REALTIME (2,8 sans
+  charge) ne sont pas expliqués : hypothèse, le temps de rendre la main à
+  une image du jeu déjà lancée, puisqu'elle est proche de son temps GPU.
+- Au banc, la première passe après chaque redémarrage de l'instance échoue
+  (« no picture after 60s ») : écartée, relancée.
+
+Pas encore de défaut changé : REALTIME ne se demande qu'avec
+`MW_GPU_PRIORITY=realtime`, et seulement là où le jeton tient le privilège
+(worker SYSTEM ou élevé).
+
 ## 9. Pour l'A/B
 
 Le banc encode vers un puits ; l'A/B se fait sur un vrai flux. Une session
