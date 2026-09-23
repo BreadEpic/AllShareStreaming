@@ -39,15 +39,15 @@ namespace mw::native {
 /// GPU scheduling. The converter's shaders share the GPU's queue with the
 /// game being streamed; a game that keeps it full makes every capture wait
 /// its turn, and that is a frame late or a frame dropped. The process is put
-/// in the HIGH scheduling class and each of its devices at the top thread
-/// priority, which is what Sunshine does too. REALTIME is never asked for: it
-/// needs SeIncreaseBasePriorityPrivilege, which a non-elevated token does not
-/// carry, and under hardware-accelerated scheduling it can starve the desktop
-/// itself. The encoder is fixed-function and has its own engine; this is
-/// about the shaders in front of it. MW_GPU_PRIORITY=normal skips it;
-/// MW_GPU_PRIORITY=realtime (a bench switch) enables the privilege where the
-/// token holds it — the SYSTEM or elevated worker — and asks REALTIME, HIGH
-/// when refused. Whether the GPU schedules itself (HAGS) is logged per device,
+/// in the REALTIME scheduling class where the token can have it — the SYSTEM
+/// or elevated worker, whose SeIncreaseBasePriorityPrivilege is switched on
+/// for it — and HIGH otherwise or when refused, which is what Sunshine asks;
+/// each of its devices goes to the top thread priority. Under a real game on
+/// the encoder's GPU, REALTIME took the encode p99 from 10-16 ms to 3 ms and
+/// no desktop stall was seen. The encoder is fixed-function and has its own
+/// engine; this is about the shaders in front of it. MW_GPU_PRIORITY=normal
+/// skips all of it; MW_GPU_PRIORITY=high (a bench switch) stops at HIGH.
+/// Whether the GPU schedules itself (HAGS) is logged per device,
 /// since it decides what a class means. MW_CPU_PRIORITY=high (a bench switch
 /// too) raises the process's CPU class.
 ///

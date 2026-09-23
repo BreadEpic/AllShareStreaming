@@ -1004,6 +1004,11 @@ Pièges rencontrés :
   n'a que 6 connexions par origine. Harnais corrigé (`5d77fb46`) : 10
   redémarrages, 10 premiers lancements réussis.
 
+**Défaut changé (23/09/2026)** : la classe GPU REALTIME est désormais
+demandée par défaut quand le jeton du worker le permet (worker SYSTEM par le
+service, ou élevé), HIGH sinon ou en cas de refus.
+`MW_GPU_PRIORITY=high` garde l'ancien comportement pour un « avant ».
+
 ## 9. Pour l'A/B
 
 Le banc encode vers un puits ; l'A/B se fait sur un vrai flux. Une session

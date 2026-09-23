@@ -164,10 +164,18 @@ void raiseGpuScheduling()
         log::info("[native] priority: no GPU scheduling class on this Windows");
         return;
     }
-    // Bench switch, off by default: REALTIME puts this process's GPU work in
-    // front of everything, the desktop's included (docs/bench-native-host.md).
-    if (envIs("MW_GPU_PRIORITY", "realtime")) {
-        const std::string who = tokenKind();
+    // REALTIME puts this process's GPU work in front of the game's, which
+    // under a real game takes the encode p99 from 10-16 ms to 3 ms with no
+    // desktop stall seen (docs/bench-native-host.md §8l). Only a privileged
+    // token can have it; MW_GPU_PRIORITY=high keeps the older class, for a
+    // bench's before.
+    const std::string who = tokenKind();
+    if (envIs("MW_GPU_PRIORITY", "high")) {
+        log::info("[native] priority: MW_GPU_PRIORITY=high — REALTIME not asked");
+    } else if (who == "limited") {
+        log::info("[native] priority: GPU scheduling class REALTIME needs the SYSTEM or elevated "
+                  "worker (token limited)");
+    } else {
         const bool privilege = enableBasePriorityPrivilege();
         const LONG realtime = set(::GetCurrentProcess(), KmtRealtime);
         if (realtime == 0) {
