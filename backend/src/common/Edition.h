@@ -116,14 +116,4 @@ bool lanOnly();
 /// The error every refused Internet Access request answers with.
 QString lanOnlyRefusal();
 
-/// Whether this process may log more than a production install should: a DEV
-/// build, a --dev instance, or a staging build (PROD edition stamped -stg).
-///
-/// The switch behind the temporary diagnostics a bug report is answered with —
-/// lines a user on the pre-release channel produces by reproducing, then pastes
-/// into the issue, in place of commands they would have to run. A production
-/// install never writes them. Everything gated on it is meant to be removed
-/// once the report is closed.
-bool extraDiagnostics();
-
 } // namespace mw::edition

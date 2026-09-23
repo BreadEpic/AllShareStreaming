@@ -1154,42 +1154,8 @@ void Win32Input::bringCursorOntoDisplay()
               std::to_string(x) + "," + std::to_string(y));
 }
 
-void Win32Input::diagAbsolute(const InputEvent& event)
-{
-    const capture::DesktopRect& r = m_DisplayRect;
-    const std::string client =
-        std::to_string(event.positionX) + "," + std::to_string(event.positionY) + " of " +
-        std::to_string(event.referenceWidth) + "x" + std::to_string(event.referenceHeight);
-    if (event.referenceWidth <= 0 || event.referenceHeight <= 0 || !r.valid()) {
-        log::info("[PTR] absolute refused: client " + client + ", display rect " +
-                  (r.valid() ? "valid" : "invalid"));
-        return;
-    }
-    // The same clamp the injection applies, kept in desktop pixels for the line.
-    int64_t x = 0;
-    int64_t y = 0;
-    clampToDisplay(r, event.positionX, event.positionY, event.referenceWidth, event.referenceHeight,
-                   x, y);
-    const int64_t jump = std::max<int64_t>(1, r.width() / 4);
-    const bool jumped = m_DiagHaveLast && (std::llabs(x - m_DiagLastX) >= jump ||
-                                           std::llabs(y - m_DiagLastY) >= jump);
-    if (m_DiagAbsolute < 5 || jumped) {
-        std::string line = std::string("[PTR] absolute") + (jumped ? " JUMP" : "") + ": client " +
-                           client + " -> desktop " + std::to_string(x) + "," + std::to_string(y);
-        if (m_DiagHaveLast)
-            line += " (previous " + std::to_string(m_DiagLastX) + "," +
-                    std::to_string(m_DiagLastY) + ")";
-        log::info(line);
-    }
-    ++m_DiagAbsolute;
-    m_DiagHaveLast = true;
-    m_DiagLastX = x;
-    m_DiagLastY = y;
-}
-
 void Win32Input::injectMousePosition(const InputEvent& event)
 {
-    if (pointerDiagnostics()) diagAbsolute(event);
     int64_t x = 0;
     int64_t y = 0;
     if (!clampToDisplay(m_DisplayRect, event.positionX, event.positionY, event.referenceWidth,
@@ -1255,15 +1221,7 @@ void Win32Input::injectMouseButton(int button, bool down)
     // Filtered unconditionally, not just on the resync path: whatever the
     // source — a duplicated event, two overlapping sessions — pressing an
     // already-pressed button is wrong.
-    const bool already = down == (m_HeldButtons.count(button) != 0);
-    if (pointerDiagnostics()) {
-        // [PTR] every button, since a drag is two of them and a release the
-        // client never sent is the whole story. Temporary (issue #18).
-        log::info(std::string("[PTR] button ") + std::to_string(button) + (down ? " down" : " up") +
-                  (already ? " (ignored: already in that state)" : "") +
-                  ", held now: " + std::to_string(m_HeldButtons.size()));
-    }
-    if (already) return;
+    if (down == (m_HeldButtons.count(button) != 0)) return;
 
     if (down)
         m_HeldButtons.insert(button);

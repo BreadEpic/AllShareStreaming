@@ -727,21 +727,14 @@ private:
 
     InputRects readInputRects() const
     {
-        const bool diag = input::pointerDiagnostics();
         InputRects rects;
         rects.display = m_Capture->desktopRect();
         rects.desktop = rects.display;
 
         std::string listError;
         bool any = false;
-        std::string kmsLine;
         for (const capture::KmsOutput& out :
              capture::KmsCapture::listOutputs(m_CardPath, listError)) {
-            if (diag)
-                kmsLine += (kmsLine.empty() ? "" : "; ") + out.name +
-                           (out.active ? " active " : " inactive ") + std::to_string(out.x) + "," +
-                           std::to_string(out.y) + " " + std::to_string(out.width) + "x" +
-                           std::to_string(out.height);
             if (!out.active || out.width <= 0 || out.height <= 0) continue;
             const capture::DesktopRect r{out.x, out.y, out.x + out.width, out.y + out.height};
             if (!any) {
@@ -754,11 +747,6 @@ private:
             rects.desktop.right = std::max(rects.desktop.right, r.right);
             rects.desktop.bottom = std::max(rects.desktop.bottom, r.bottom);
         }
-        if (diag)
-            log::info("[PTR] KMS outputs on " + m_CardPath + ": " +
-                      (kmsLine.empty() ? "none (" + listError + ")" : kmsLine) +
-                      " | captured connector " + m_ConnectorName + " at " +
-                      rectText(rects.display));
 
         // A Wayland compositor scans every output out of its own buffer, so
         // the CRTC positions above are all (0, 0) there and the union is the
@@ -773,12 +761,6 @@ private:
         std::string socketUsed;
         std::string why;
         if (input::WaylandLayout::read(outputs, socketUsed, why)) {
-            std::string layoutLine;
-            for (const input::WaylandOutput& out : outputs)
-                layoutLine += (layoutLine.empty() ? "" : "; ") +
-                              (out.name.empty() ? std::string("(unnamed)") : out.name) + " " +
-                              std::to_string(out.x) + "," + std::to_string(out.y) + " " +
-                              std::to_string(out.width) + "x" + std::to_string(out.height);
             InputRects wl = rects;
             if (m_Target.capture == CaptureApi::PipeWire) {
                 // The portal route: no connector to name, but the portal said
@@ -813,7 +795,6 @@ private:
                               (placed ? " = " + name : std::string(" (no output matches it)")) +
                               ", desktop " + rectText(rects.desktop));
                 }
-                if (diag) log::info("[PTR] Wayland outputs: " + layoutLine);
             } else if (input::pickWaylandRects(outputs, m_ConnectorName, wl.display.left,
                                                wl.display.top, wl.display.right, wl.display.bottom,
                                                wl.desktop.left, wl.desktop.top, wl.desktop.right,
@@ -822,16 +803,14 @@ private:
                 log::info("[native] input: pointer mapped on the Wayland layout (" + socketUsed +
                           "): display " + rectText(rects.display) + ", desktop " +
                           rectText(rects.desktop));
-                if (diag) log::info("[PTR] Wayland outputs: " + layoutLine);
             } else {
                 log::info("[native] input: Wayland layout read (" + socketUsed +
                           ") but no output is named " + m_ConnectorName +
                           " — pointer mapped on the KMS layout");
-                if (diag) log::info("[PTR] Wayland outputs: " + layoutLine);
             }
         } else {
-            (diag ? log::info : log::debug)("[PTR] no Wayland layout: " + why +
-                                            " — pointer mapped on the KMS layout");
+            log::debug("[native] input: no Wayland layout: " + why +
+                       " — pointer mapped on the KMS layout");
         }
         return rects;
     }

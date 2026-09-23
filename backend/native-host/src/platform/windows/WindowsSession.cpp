@@ -2262,7 +2262,6 @@ private:
         const float fy = static_cast<float>(cursor.y + m_Capture->cursorHotspotY()) * scale;
         if (!m_PositionGate.due(visible, static_cast<int>(fx), static_cast<int>(fy), steadyNowUs()))
             return;
-        if (input::pointerDiagnostics()) diagPointerReport(cursor, fx, fy, scale);
         CursorUpdate update;
         update.positionOnly = true;
         update.visible = visible;
@@ -2341,39 +2340,6 @@ private:
             log::info("[native] cursor: the pointer had left this display while we draw it into "
                       "the picture — put back in the middle (once per session)");
         }
-    }
-
-    /// [PTR] diagnostics: the first position reports, then only a change of
-    /// visibility or a jump — the two words that could send a client-drawn
-    /// pointer somewhere else. Temporary (issue #18, iPhone drag of 16/09/2026).
-    void diagPointerReport(const capture::CursorState& cursor, float fx, float fy, float scale)
-    {
-        const int ix = static_cast<int>(fx);
-        const int iy = static_cast<int>(fy);
-        const int framed = m_Converter ? m_Converter->outputWidth() : 0;
-        const int jump = (std::max)(1, framed / 4);
-        const bool flip = m_DiagReports > 0 && cursor.visible != m_DiagReportVisible;
-        const bool jumped = m_DiagReports > 0 && ((std::abs)(ix - m_DiagReportX) >= jump ||
-                                                  (std::abs)(iy - m_DiagReportY) >= jump);
-        if (m_DiagReports < 5 || flip || jumped) {
-            std::string line = std::string("[PTR] pointer report") + (flip ? " VISIBILITY" : "") +
-                               (jumped ? " JUMP" : "") + ": " +
-                               (cursor.visible ? "visible" : "hidden") + " at frame " +
-                               std::to_string(ix) + "," + std::to_string(iy) + " (image corner " +
-                               std::to_string(cursor.x) + "," + std::to_string(cursor.y) +
-                               ", hotspot " + std::to_string(m_Capture->cursorHotspotX()) + "," +
-                               std::to_string(m_Capture->cursorHotspotY()) + ", scale " +
-                               std::to_string(scale) + ")";
-            if (m_DiagReports > 0)
-                line += " previous " + std::string(m_DiagReportVisible ? "visible" : "hidden") +
-                        " at " + std::to_string(m_DiagReportX) + "," +
-                        std::to_string(m_DiagReportY);
-            log::info(line);
-        }
-        ++m_DiagReports;
-        m_DiagReportVisible = cursor.visible;
-        m_DiagReportX = ix;
-        m_DiagReportY = iy;
     }
 
     /// How much the converter shrinks (or stretches) the desktop on its way into
@@ -2815,11 +2781,6 @@ private:
     float m_ReportedScale = 0.0f;
     /// When the pointer's position last went out to a self-drawing client.
     CursorPositionGate m_PositionGate;
-    // [PTR] diagnostics, see diagPointerReport(). Capture-thread only.
-    int m_DiagReports = 0;
-    bool m_DiagReportVisible = false;
-    int m_DiagReportX = 0;
-    int m_DiagReportY = 0;
     bool m_LoggedFirstKeyframe = false;
     /// Bytes the last emit() produced. The refinement loop reads it to know
     /// when a still picture has stopped improving.

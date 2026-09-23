@@ -165,16 +165,6 @@ private:
     /// worth an info line; the rest are not, and a display rectangle that does
     /// not match the X root would otherwise log on every single movement.
     bool m_WarpLogged = false;
-
-    /// Pointer diagnostics (issue #18, temporary): how many moves of each kind
-    /// have been reported this session. The first few are logged in full, then
-    /// one in every few hundred — enough to see the mapping and its drift,
-    /// never one line per motion event.
-    unsigned m_DiagAbsolute = 0;
-    unsigned m_DiagRelative = 0;
-    unsigned m_DiagButtons = 0;
-    /// Whether a refused uinput write has already been reported this session.
-    bool m_WriteFailLogged = false;
 };
 
 } // namespace mw::native::input

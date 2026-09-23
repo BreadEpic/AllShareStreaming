@@ -129,15 +129,6 @@ bool lanOnlyFrom(const QByteArray& value)
     return v == "1" || v == "true" || v == "yes" || v == "on";
 }
 
-bool extraDiagnostics()
-{
-    if (isDev()) return true;
-    // A staging build is the PROD edition with CI's own stamp; the Linux build
-    // dots it (rpm refuses dashes), like the dev suffix in versionFor.
-    const QString v = QStringLiteral(MW_VERSION);
-    return v.endsWith(QLatin1String("-stg")) || v.endsWith(QLatin1String(".stg"));
-}
-
 bool lanOnly()
 {
     QByteArray value = qgetenv("MW_LAN_ONLY");

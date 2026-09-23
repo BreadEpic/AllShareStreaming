@@ -285,15 +285,6 @@ bool UinputInput::start(std::string& error)
     m_Recentre.reset();
 
     log::info("[native] input: uinput keyboard and pointer created");
-    if (pointerDiagnostics())
-        log::info(std::string("[PTR] devices: \"MoonlightWeb Keyboard\" (keys, REL_X/REL_Y, "
-                              "wheel) and \"MoonlightWeb Pointer\" (ABS_X/ABS_Y 0..") +
-                  std::to_string(kAbsMax) + ", buttons); X11 pointer " +
-                  (m_X11.isOpen() ? "reachable" : "not reachable (Wayland or headless)"));
-    m_DiagAbsolute = 0;
-    m_DiagRelative = 0;
-    m_DiagButtons = 0;
-    m_WriteFailLogged = false;
     return true;
 }
 
@@ -333,17 +324,7 @@ void UinputInput::emit(int fd, uint16_t type, uint16_t code, int32_t value)
     event.value = value;
     // Timestamps are the kernel's to fill; writing our own is ignored.
     const ssize_t written = ::write(fd, &event, sizeof(event));
-    // A full pipe drops the event, which is not worth a log line — except once,
-    // under the pointer diagnostics: a device the kernel refuses to write to
-    // is exactly the kind of silence a "the mouse does not move" report hides.
-    if (written != static_cast<ssize_t>(sizeof(event)) && pointerDiagnostics() &&
-        !m_WriteFailLogged) {
-        m_WriteFailLogged = true;
-        log::warning("[PTR] uinput write refused on " +
-                     std::string(fd == m_Absolute ? "the absolute pointer" : "the keyboard") +
-                     " (" + errnoText() + ") type=" + std::to_string(type) +
-                     " code=" + std::to_string(code));
-    }
+    (void)written; // a full pipe drops the event, which is not worth a log line
 }
 
 void UinputInput::emitSyn(int fd)
@@ -388,9 +369,6 @@ void UinputInput::injectButton(const InputEvent& event, bool down)
         m_HeldButtons.insert(code);
     else
         m_HeldButtons.erase(code);
-    if (down && pointerDiagnostics() && ++m_DiagButtons <= 3)
-        log::info("[PTR] button " + std::to_string(event.button) + " down -> BTN code " +
-                  std::to_string(code) + " on the keyboard device");
 }
 
 bool UinputInput::ensureTextMap()
@@ -572,9 +550,6 @@ void UinputInput::setDisplayRect(int left, int top, int right, int bottom)
     // on the new one, and only a spot on this one (in desktop coordinates,
     // which is what the X pointer reports) can be learnt from now on.
     m_Recentre.setDisplay(left, top, right, bottom);
-    if (pointerDiagnostics())
-        log::info("[PTR] display rect " + std::to_string(left) + "," + std::to_string(top) + " " +
-                  std::to_string(right - left) + "x" + std::to_string(bottom - top));
 }
 
 void UinputInput::setDesktopRect(int left, int top, int right, int bottom)
@@ -584,9 +559,6 @@ void UinputInput::setDesktopRect(int left, int top, int right, int bottom)
     m_DeskTop = top;
     m_DeskWidth = right - left;
     m_DeskHeight = bottom - top;
-    if (pointerDiagnostics())
-        log::info("[PTR] desktop rect " + std::to_string(left) + "," + std::to_string(top) + " " +
-                  std::to_string(right - left) + "x" + std::to_string(bottom - top));
 }
 
 void UinputInput::bringPointerOntoDisplay()
@@ -649,13 +621,6 @@ void UinputInput::inject(const InputEvent& event)
         if (event.deltaX != 0) emit(m_Keyboard, EV_REL, REL_X, event.deltaX);
         if (event.deltaY != 0) emit(m_Keyboard, EV_REL, REL_Y, event.deltaY);
         if (event.deltaX != 0 || event.deltaY != 0) emitSyn(m_Keyboard);
-        if (pointerDiagnostics() && (event.deltaX != 0 || event.deltaY != 0)) {
-            ++m_DiagRelative;
-            if (m_DiagRelative <= 3 || m_DiagRelative % 500 == 0)
-                log::info("[PTR] relative #" + std::to_string(m_DiagRelative) + " delta " +
-                          std::to_string(event.deltaX) + "," + std::to_string(event.deltaY) +
-                          " -> REL_X/REL_Y on the keyboard device");
-        }
         break;
 
     case Type::MouseMoveAbsolute: {
@@ -734,21 +699,6 @@ void UinputInput::inject(const InputEvent& event)
         emit(m_Absolute, EV_ABS, ABS_X, static_cast<int32_t>(x));
         emit(m_Absolute, EV_ABS, ABS_Y, static_cast<int32_t>(y));
         emitSyn(m_Absolute);
-        if (pointerDiagnostics()) {
-            ++m_DiagAbsolute;
-            if (m_DiagAbsolute <= 5 || m_DiagAbsolute % 500 == 0)
-                log::info("[PTR] absolute #" + std::to_string(m_DiagAbsolute) + " client " +
-                          std::to_string(event.positionX) + "," + std::to_string(event.positionY) +
-                          " of " + std::to_string(refW) + "x" + std::to_string(refH) +
-                          (mapped ? " -> desktop " + std::to_string(onDeskX) + "," +
-                                        std::to_string(onDeskY) + " in " +
-                                        std::to_string(deskLeft) + "," + std::to_string(deskTop) +
-                                        " " + std::to_string(deskRight - deskLeft) + "x" +
-                                        std::to_string(deskBottom - deskTop)
-                                  : " -> no display rect, raw fraction") +
-                          " -> ABS " + std::to_string(x) + "," + std::to_string(y) + " of " +
-                          std::to_string(kAbsMax));
-        }
         break;
     }
 

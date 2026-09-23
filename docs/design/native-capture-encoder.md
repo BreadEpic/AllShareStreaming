@@ -4290,6 +4290,11 @@ point bureau → valeur ABS), les 3 premiers deltas et boutons, et une seule foi
 une écriture uinput refusée. Une install PROD n'écrit rien de tout ça. **À
 retirer à la fermeture de #18** : tout est derrière `pointerDiagnostics()`.
 
+**Retirés le 23/09/2026**, avec leur plomberie (`Edition::extraDiagnostics()`,
+`NativeHost::setPointerDiagnostics()`, le drapeau d'`IInputSink.h`) et les
+lignes Windows du §27. Les lignes `[native] input: pointer mapped on …` restent :
+elles ne dépendaient d'aucun drapeau.
+
 Vérifié : 3775/3775 checks Windows (dont la section Wayland, arithmétique
 seule) ; UM790Pro GNOME 42 Wayland, build complet propre, tests verts, la session
 loggue « pointer mapped on the Wayland layout » par les deux chemins de socket
