@@ -933,6 +933,77 @@ Pas encore de défaut changé : REALTIME ne se demande qu'avec
 `MW_GPU_PRIORITY=realtime`, et seulement là où le jeton tient le privilège
 (worker SYSTEM ou élevé).
 
+## 8l. Les ~18 ms qui restent, et le vrai jeu (23/09/2026)
+
+Même montage que §8k (DualRTX, instance `--dev` élevée, écran virtuel rendu
+par la RTX, NVENC, 1080p60 HEVC, client sur l'iGPU AMD, HAGS activé).
+
+**Balayage de la charge** — `mw-gpu-load` à trois niveaux figés, 3 passes
+par case :
+
+| niveau | GPU/image de la charge | classe | latence | hôte | encodage moy. / p99 | images/s |
+|---|---|---|---|---|---|---|
+| 230 | 10,6 ms | HIGH | 18,5 | 17,6 | 15,4 / 26,9 | 49,7 |
+| 230 | 10,6 ms | REALTIME | 9,3 | 8,5 | **8,1** / 10,9 | 54,7 |
+| 500 | 21,4 ms | HIGH | 32,0 | 30,7 | 27,6 / 41,8 | 34,0 |
+| 500 | 21,4 ms | REALTIME | 19,8 | 18,6 | **18,1** / 21,2 | 43,7 |
+| 900 | 36 ms | HIGH | 35,6 | 34,7 | 34,5 / 48,2 | 27,0 |
+| 900 | 36 ms | REALTIME | 35,2 | 34,3 | **33,9** / 35,6 | 27,0 |
+
+En REALTIME, l'encodage vaut 0,76, 0,85 puis 0,95 fois le temps GPU d'une
+image de la charge : le travail du stream passe devant la file du jeu, mais
+attend la fin de l'image en cours. L'outil dessine chaque image en un seul
+appel plein écran de 10 à 36 ms que le GPU ne coupe pas, et la capture est
+calée sur ses fins d'image (DWM compose derrière elle) : on arrive juste
+après le début d'une image et on l'attend presque entière. À 36 ms, la
+cadence du stream se cale même sur celle de la charge (27 = 27).
+
+**Vrai jeu : Resident Evil Requiem**, réglages au maximum (ray tracing
+Haut, textures, maillages, ombres, SSS et AO hauts, brouillard volumétrique
+maximal, DLSS Qualité max ; génération d'images et Reflex coupés, SDR,
+fenêtré 1920×1080 sur l'écran virtuel). Scène d'ouverture (rue sous la
+pluie), rejouée par « Continuer » à chaque configuration. **RTX à 99-100 %
+de 3D** (re9 seul : 95-96 %). Alterné base, REALTIME, base, REALTIME ;
+4 lectures de l'overlay à 10 s d'écart par tour (8 par classe) :
+
+| | latence | hôte | acquisition | conversion | encodage moy. / p99 | images/s |
+|---|---|---|---|---|---|---|
+| HIGH (défaut) | 4,3 | 3,2 | 0,11 | 0,14 | 2,65 / 10,3-16,4 | 61 |
+| REALTIME | 3,8 | 2,4 | 0,10 | 0,13 | **1,94 / 2,9-3,3** | 61 |
+
+Lecture :
+
+- **Les ~18 ms de §8k sont un artefact de l'outil de charge**, pas une
+  limite de l'encodeur : un jeu découpe son image en centaines d'appels
+  courts, et le GPU donne la main entre deux. Sous RE9 à 100 %, la classe
+  HIGH tient déjà 3,2 ms d'hôte et 61 images/s.
+- **REALTIME reste utile en vrai jeu** : −0,8 ms d'hôte et surtout un p99
+  d'encodage divisé par 4 (10-16 → 3 ms), c'est-à-dire moins d'à-coups.
+- Rien de visible côté bureau pendant les tours REALTIME (DWM stable à 3 %
+  de la RTX, stream à 61 images/s) ; pas de mesure de fluidité du jeu
+  lui-même (pas de PresentMon sur le banc).
+- `mw-gpu-load` exagère donc l'attente : ses chiffres absolus sous charge
+  sont un pire cas, pas ce qu'un joueur verra.
+
+Pièges rencontrés :
+
+- RE9 choisit son GPU seul, et prenait l'Arc (l'écran M27Q y est branché
+  depuis le 22/09) malgré `[Render/Adapter]` et `TargetDisplay`. Seule la
+  préférence graphique Windows par application, au format
+  `SpecificAdapter=10DE&2D04&53511462;GpuPreference=1073741824;` (hexa :
+  vendeur, appareil, sous-système), le met sur la RTX. Posée pour le banc,
+  retirée après.
+- RE9 **plante** (0xc0000409) quand l'écran virtuel sur lequel il tourne
+  disparaît, ici à chaque redémarrage de l'instance. Le jeu est donc relancé
+  à chaque configuration, stream déjà ouvert.
+- La « première passe après redémarrage » de §8k ne venait pas de l'hôte :
+  aucun lancement ne lui arrivait. Le harnais cherchait la fenêtre « streamer
+  ce PC » une seule fois, 1,5 s après le clic ; elle met parfois bien plus
+  (10,5 s mesurées une fois), les requêtes de la page restant bloquées
+  derrière les listes d'apps des hôtes éteints (504 à 5 s) tant que Chrome
+  n'a que 6 connexions par origine. Harnais corrigé (`5d77fb46`) : 10
+  redémarrages, 10 premiers lancements réussis.
+
 ## 9. Pour l'A/B
 
 Le banc encode vers un puits ; l'A/B se fait sur un vrai flux. Une session
