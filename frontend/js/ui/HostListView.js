@@ -59,6 +59,23 @@ import { noteHostUse, forgetHostUse, hostUsageRanker } from '../util/hostUsage.j
 const SUNSHINE_DOWNLOAD_URL = 'https://github.com/LizardByte/Sunshine/releases/latest';
 
 /**
+ * The order a host card shows its apps in: alphabetical, with "MoonlightWeb
+ * Virtual Display" always last.
+ *
+ * Not the host's order: that one moves under the user — the native host lists
+ * the primary display first, and the display just streamed becomes primary —
+ * so the card they clicked would jump to the front. A fixed order keeps every
+ * app where the hand expects it.
+ */
+function sortApps(apps) {
+    return apps.sort(
+        (a, b) =>
+            (a.isVirtualDisplay ? 1 : 0) - (b.isVirtualDisplay ? 1 : 0) ||
+            a.name.localeCompare(b.name, undefined, { sensitivity: 'base', numeric: true }),
+    );
+}
+
+/**
  * Update progress is driven by a local animation, not by the poll samples.
  *
  * The host reports a figure every ~900 ms at best, and stops reporting at all
@@ -1145,7 +1162,10 @@ export class HostListView {
         if (!entry) {
             const remembered = loadCachedApps(uuid);
             if (remembered) {
-                entry = { apps: remembered.map((a) => new App(a, uuid)), fromCache: true };
+                entry = {
+                    apps: sortApps(remembered.map((a) => new App(a, uuid))),
+                    fromCache: true,
+                };
                 this.appsByHost[uuid] = entry;
             }
         }
@@ -1198,7 +1218,9 @@ export class HostListView {
                     // The host answered: the next failure starts the ladder over.
                     delete this._appRetryDelay[uuid];
                     delete this._appRetryAt[uuid];
-                    return /** @type {AppsEntry} */ ({ apps: raw.map((a) => new App(a, uuid)) });
+                    return /** @type {AppsEntry} */ ({
+                        apps: sortApps(raw.map((a) => new App(a, uuid))),
+                    });
                 }
                 // The backend answered with a definitive rejection (host not
                 // paired / not found) — retrying won't change the outcome.
