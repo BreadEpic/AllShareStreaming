@@ -2109,28 +2109,16 @@ const MoonlightApp = {
         // Guard against a double-open (e.g. a replayed click).
         if (document.querySelector('.self-stream-overlay')) return;
 
-        // Fetch the "reach me from elsewhere" URL up front (best-effort).
-        const info = await this._computeRemoteAccessUrls();
-        if (document.querySelector('.self-stream-overlay')) return;
-        const url = info && info.url ? info.url : '';
-
         const overlay = document.createElement('div');
         overlay.className = 'pairing-overlay self-stream-overlay';
-        // Plain (non-clickable) text so the user can select and copy the URL to
-        // paste into a browser on another device.
-        const offlineHtml =
-            info && url && url === info.rendezvousUrl && !info.rendezvousOnline
-                ? `<p class="setting-desc">${escapeHtml(t('admin.rendezvousOffline'))}</p>`
-                : '';
-        const urlHtml = url
-            ? `<p class="self-stream-url">${escapeHtml(t('selfStream.useUrl'))}
-                   <span class="self-stream-url-value">${escapeHtml(url)}</span></p>${offlineHtml}`
-            : '';
+        // The dialog opens on the click, the address joins it when known: right
+        // after the instance starts, the status request can queue behind other
+        // slow ones for seconds, and the choice never depended on it.
         overlay.innerHTML = `
             <div class="pairing-dialog">
                 <h3>${escapeHtml(t('selfStream.title'))}</h3>
                 <p class="pairing-instruction">${escapeHtml(t('selfStream.body'))}</p>
-                ${urlHtml}
+                <div class="self-stream-url-slot"></div>
                 <div class="pairing-actions">
                     <button class="btn btn-secondary self-stream-cancel">${escapeHtml(
                         t('common.cancel'),
@@ -2171,6 +2159,20 @@ const MoonlightApp = {
         });
         document.addEventListener('keydown', onKey);
         document.body.appendChild(overlay);
+
+        // The "reach me from elsewhere" URL, best-effort. Plain (non-clickable)
+        // text so the user can select and copy it into a browser on another
+        // device.
+        const info = await this._computeRemoteAccessUrls();
+        const url = info && info.url ? info.url : '';
+        const slot = overlay.querySelector('.self-stream-url-slot');
+        if (!url || !slot || !overlay.isConnected) return;
+        const offlineHtml =
+            url === info.rendezvousUrl && !info.rendezvousOnline
+                ? `<p class="setting-desc">${escapeHtml(t('admin.rendezvousOffline'))}</p>`
+                : '';
+        slot.innerHTML = `<p class="self-stream-url">${escapeHtml(t('selfStream.useUrl'))}
+                   <span class="self-stream-url-value">${escapeHtml(url)}</span></p>${offlineHtml}`;
     },
 
     /**
