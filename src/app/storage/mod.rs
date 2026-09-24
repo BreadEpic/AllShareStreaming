@@ -127,6 +127,8 @@ pub struct StorageHost {
     pub http_port: u16,
     pub pair_info: Option<StorageHostPairInfo>,
     pub cache: StorageHostCache,
+    /// Set by the user, takes priority over the mac reported by the host
+    pub wake_mac: Option<MacAddress>,
 }
 #[derive(Clone)]
 pub struct StorageHostAdd {
@@ -155,6 +157,7 @@ pub struct StorageHostModify {
     pub pair_info: Option<Option<StorageHostPairInfo>>,
     pub cache_name: Option<String>,
     pub cache_mac: Option<Option<MacAddress>>,
+    pub wake_mac: Option<Option<MacAddress>>,
 }
 
 #[derive(Clone)]

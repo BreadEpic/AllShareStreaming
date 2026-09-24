@@ -1,23 +1,23 @@
 FROM debian:bookworm-slim
 
-ENV MOONLIGHT_WEB_PATH=/moonlight-web
+ENV ALLSHARE_PATH=/allshare
 
 # Create a non-root user
-RUN groupadd -r moonlight && useradd -r -g moonlight -d ${MOONLIGHT_WEB_PATH} -s /sbin/nologin moonlight
+RUN groupadd -r allshare && useradd -r -g allshare -d ${ALLSHARE_PATH} -s /sbin/nologin allshare
 
 # Create / Go to app directory
-WORKDIR ${MOONLIGHT_WEB_PATH}
+WORKDIR ${ALLSHARE_PATH}
 
 # Copy prebuilt artifacts
-COPY moonlight-web/ ${MOONLIGHT_WEB_PATH}/
+COPY allshare/ ${ALLSHARE_PATH}/
 
 # Mark executables as executable, create server directory, and change ownership
-RUN chmod +x ${MOONLIGHT_WEB_PATH}/web-server && \
-    mkdir -p ${MOONLIGHT_WEB_PATH}/server && \
-    chown -R moonlight:moonlight ${MOONLIGHT_WEB_PATH}
+RUN chmod +x ${ALLSHARE_PATH}/allshare && \
+    mkdir -p ${ALLSHARE_PATH}/server && \
+    chown -R allshare:allshare ${ALLSHARE_PATH}
 
 # Create a volume with the config.json and data.json
-VOLUME ${MOONLIGHT_WEB_PATH}/server
+VOLUME ${ALLSHARE_PATH}/server
 
 # Expose the port (adjust if you changed it)
 ENV WEBRTC_PORT_RANGE=40000:40100
@@ -28,7 +28,7 @@ COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 # Switch to the non-root user
-USER moonlight
+USER allshare
 
 # Run the binary
 ENTRYPOINT ["/entrypoint.sh"]

@@ -2,7 +2,8 @@ import type { Translations } from "./en"
 
 export const frFr: Translations = {
     index: {
-        appTitle: "Moonlight Web",
+        appTitle: "AllShare",
+        appTagline: "Powered by MMC",
         back: "Retour",
         reload: "Recharger",
         addHostUnreachable: (address: string) => `L'hôte "${address}" est injoignable`,
@@ -23,6 +24,11 @@ export const frFr: Translations = {
         serverMessage: (message: string) => `Serveur: ${message}`,
         sendKeycode: "Envoiyer le code clé",
         lockMouse: "Verrouillage de la souris",
+        clickToLockMouse: "Cliquez pour verrouiller la souris · Échap la libère",
+        scalingFit: "Échelle : Ajuster",
+        scalingStretch: "Échelle : Étirer",
+        scalingZoom: "Échelle : Zoom",
+        scalingTitle: "Comment la diffusion remplit la fenêtre hors plein écran",
         keyboard: "Clavier",
         hideKeyboard: "Masquer le clavier",
         fullscreen: "Plein écran",
@@ -61,6 +67,10 @@ export const frFr: Translations = {
         forceVideoElementRenderer: "Forcer le rendu Video Element (uniquement WebRTC)",
         useCanvasRenderer: "Utiliser le rendu Canvas",
         canvasVsync: "VSync Canvas (réduit le déchirement)",
+        videoScaling: "Mise à l'échelle vidéo (quand la fenêtre ne correspond pas à la diffusion)",
+        videoScalingFit: "Ajuster (bandes noires)",
+        videoScalingStretch: "Étirer pour remplir la fenêtre",
+        videoScalingZoom: "Zoomer pour remplir la fenêtre (rogne les bords)",
         enableHdr: "Activer HDR",
         audio: "Audio",
         playAudioLocal: "Jouer l'auudio localement",
@@ -70,6 +80,7 @@ export const frFr: Translations = {
         startupMouseMode: "Mode de la souris au démarrage",
         startupTouchMode: "Mode tactile au démarrage",
         localCursorSensitivity: "Sensibilité du curseur local",
+        lockMouseOnClick: "Reverrouiller la souris en cliquant sur la diffusion (mode relatif)",
         highRes: "Haute résolution",
         normal: "Normal",
         controller: "Contrôleur",
@@ -83,6 +94,7 @@ export const frFr: Translations = {
         auto: "Auto",
         webSocket: "Web Socket",
         enterFullscreenOnStreamStart: "Passer en plein écran à la première interaction avec la diffusion",
+        stayWindowedAfterFullscreenExit: "Rester hors du plein écran après l'avoir quitté",
         saveRoleDefaults: "Enregistrer par défaut pour le rôle",
         saveRoleDefaultsSuccess: "Enregistré par défaut pour le rôle",
         saveRoleDefaultsFailed: "Echec de l'enregistrement des paramètres par défaut pour le rôle",
@@ -139,14 +151,24 @@ export const frFr: Translations = {
     host: {
         showDetails: "Afficher les détails",
         open: "Ouvrir",
-        sendWakeUpPacket: "Envoyer le signal de réveil",
+        wakeUp: "Réveiller",
+        setWakeMac: "Définir l'adresse MAC Wake-on-LAN",
         reload: "Recharger",
         pair: "Appairer",
         makePrivate: "Rendre prvivé",
         makeGlobal: "Rendre global",
         removeHost: "Retirer l'hôte",
         failedToGetDetails: (id: number) => `échec de la récupération des détails de l'hôte ${id}`,
-        wakeUpSent: "Signal de réveil envoyé. Le PC peut prendre un peu de temps pour démarrer.",
+        wakingUp: (name: string) => `Réveil de ${name}… cela peut prendre jusqu'à une minute.`,
+        wakeUpSuccess: (name: string) => `${name} est réveillé !`,
+        wakeUpTimeout: (name: string) => `${name} ne s'est pas réveillé. Vérifiez que le Wake-on-LAN est activé dans le BIOS et dans les paramètres de la carte réseau, puis réessayez.`,
+        alreadyWaking: (name: string) => `Réveil de ${name} déjà en cours…`,
+        wakeMacUnknown: "L'adresse MAC de ce PC est inconnue, il ne peut donc pas encore être réveillé. Allumez-le une fois pendant qu'il est appairé, ou définissez son adresse MAC avec clic droit → \"Définir l'adresse MAC Wake-on-LAN\".",
+        wakeMacHeader: "Wake-on-LAN",
+        wakeMacDescription: (reportedMac: string | null) => `Nécessaire uniquement si le réveil ne fonctionne pas. Laissez vide pour utiliser l'adresse MAC signalée par le PC${reportedMac ? ` (${reportedMac})` : ""}.\nSous Windows, vous la trouverez avec "ipconfig /all" sous "Adresse physique".`,
+        wakeMacLabel: "Adresse MAC",
+        wakeMacInvalid: "Cette adresse MAC n'est pas valide. Utilisez un format comme AA:BB:CC:DD:EE:FF.",
+        wakeMacSaved: "Adresse MAC Wake-on-LAN enregistrée.",
         alreadyPaired: "Hôte déjà appairé !",
         pairPrompt: (name: string, pin: string) => `Veuillez appairer votre hôte ${name} avec ce NIP :\nNIP: ${pin}`,
         overwriteMismatch: (currentId: number, incomingId: number) => `tentative d'écrasement de l'hôte ${currentId} avec les données de ${incomingId}`,
@@ -163,6 +185,7 @@ export const frFr: Translations = {
             `Version GFE : ${host.gfe_version}\n` +
             `Identifiant unique : ${host.unique_id}\n` +
             `MAC: ${host.mac}\n` +
+            `MAC de réveil : ${host.wake_mac ?? "(signalée)"}\n` +
             `IP locale : ${host.local_ip}\n` +
             `Jeu actuel : ${host.current_game}\n` +
             `Max des Pixels Luma HEVC : ${host.max_luma_pixels_hevc}\n` +

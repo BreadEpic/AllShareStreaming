@@ -115,7 +115,14 @@ class MainApp implements Component {
         // Top Line
         this.topLine.classList.add("top-line")
 
-        this.moonlightTextElement.innerHTML = I.index.appTitle
+        this.moonlightTextElement.classList.add("app-title")
+        this.moonlightTextElement.innerText = I.index.appTitle
+
+        const taglineElement = document.createElement("span")
+        taglineElement.classList.add("app-tagline")
+        taglineElement.innerText = I.index.appTagline
+        this.moonlightTextElement.appendChild(taglineElement)
+
         this.topLine.appendChild(this.moonlightTextElement)
 
         this.topLine.appendChild(this.topLineActions)

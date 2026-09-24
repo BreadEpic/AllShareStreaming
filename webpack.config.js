@@ -52,21 +52,21 @@ export default {
             template: './web/index.html',
             chunks: ['index'],
             scriptLoading: 'blocking',
-            favicon: "./web/resources/moonlight.svg"
+            favicon: "./web/resources/allshare.svg"
         }),
         new HtmlWebpackPlugin({
             filename: 'stream.html',
             template: './web/stream.html',
             chunks: ['stream'],
             scriptLoading: 'blocking',
-            favicon: "./web/resources/moonlight.svg"
+            favicon: "./web/resources/allshare.svg"
         }),
         new HtmlWebpackPlugin({
             filename: 'admin.html',
             template: './web/admin.html',
             chunks: ['admin'],
             scriptLoading: 'blocking',
-            favicon: "./web/resources/moonlight.svg"
+            favicon: "./web/resources/allshare.svg"
         }),
         new CopyPlugin({
             patterns: [

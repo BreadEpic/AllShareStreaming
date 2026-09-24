@@ -7,21 +7,21 @@ use crate::api::bindings::{self, DetailedHost, HostOwner, HostState, PairStatus,
 use actix_web::web::Bytes;
 use moonlight_common::{
     crypto::rustcrypto::RustCryptoBackend,
-    high::{
-        MoonlightClientError,
-        tokio::{MoonlightHost, broadcast_magic_packet},
-    },
+    high::{MoonlightClientError, tokio::MoonlightHost},
     http::{
         ClientIdentifier, ClientSecret, ServerIdentifier,
         pair::{PairPin, PairingCryptoBackend, client::ClientPairingError},
         server_info::ServerInfoResponse,
     },
+    mac::MacAddress,
 };
+use tracing::warn;
 
 use crate::app::{
     AppError, AppInner, AppRef, RequestClient,
     storage::{StorageHost, StorageHostModify, StorageHostPairInfo},
     user::{AuthenticatedUser, RoleType, UserId},
+    wake::{self, usable_mac},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -73,6 +73,11 @@ impl From<App> for bindings::App {
             is_hdr_supported: value.is_hdr_supported,
         }
     }
+}
+
+/// The manually set mac has priority over the one reported by the host
+fn wake_mac_of(storage: &StorageHost) -> Option<MacAddress> {
+    storage.wake_mac.or(usable_mac(storage.cache.mac))
 }
 
 impl Host {
@@ -141,6 +146,7 @@ impl Host {
 
         Ok(UndetailedHost {
             host_id: storage.id.0,
+            can_wake: wake_mac_of(&storage).is_some(),
             name: storage.cache.name,
             owner,
             paired: if storage.pair_info.is_some() {
@@ -226,17 +232,50 @@ impl Host {
             return Ok(Some(cache.clone()));
         }
 
-        self.use_request_client(app, user, async |this, host| {
-            let info = match this.is_offline(host.server_info().await) {
-                Ok(Some(value)) => value,
-                err => return err,
-            };
+        let info = self
+            .use_request_client(app, user, async |this, host| {
+                this.is_offline(host.server_info().await)
+            })
+            .await??;
 
-            this.cache_host_info = Some((user_id, info.clone()));
+        if let Some(info) = &info {
+            self.cache_host_info = Some((user_id, info.clone()));
 
-            Ok(Some(info))
-        })
-        .await?
+            self.update_storage_cache(app, info).await;
+        }
+
+        Ok(info)
+    }
+
+    /// Remember the name and mac while the host is online, so it can be shown and woken up when it's offline
+    async fn update_storage_cache(&mut self, app: &AppInner, info: &ServerInfoResponse) {
+        let storage = match self.storage_host(app).await {
+            Ok(storage) => storage,
+            Err(err) => {
+                warn!("Failed to get storage of host {:?}: {err}", self.id);
+                return;
+            }
+        };
+
+        let mut modify = StorageHostModify::default();
+
+        if storage.cache.name != info.host_name {
+            modify.cache_name = Some(info.host_name.clone());
+        }
+        if let Some(mac) = usable_mac(info.mac)
+            && storage.cache.mac != Some(mac)
+        {
+            modify.cache_mac = Some(Some(mac));
+        }
+
+        if modify.cache_name.is_none() && modify.cache_mac.is_none() {
+            return;
+        }
+
+        self.cache_storage = None;
+        if let Err(err) = app.storage.modify_host(self.id, modify).await {
+            warn!("Failed to update cached info of host {:?}: {err}", self.id);
+        }
     }
 
     pub async fn undetailed_host(
@@ -257,6 +296,7 @@ impl Host {
                 owner,
                 paired: PairStatus::from_paired(info.paired),
                 server_state: Some(HostState::from(info.state)),
+                can_wake: wake_mac_of(&storage).is_some() || usable_mac(info.mac).is_some(),
             }),
             Ok(None) => {
                 let host = self.storage_host(&app).await?;
@@ -269,6 +309,7 @@ impl Host {
 
                 Ok(UndetailedHost {
                     host_id: self.id.0,
+                    can_wake: wake_mac_of(&host).is_some(),
                     name: host.cache.name,
                     owner,
                     paired,
@@ -290,6 +331,9 @@ impl Host {
 
         let owner = self.owner_info(user, &storage).await?;
 
+        let stored_wake_mac = wake_mac_of(&storage);
+        let wake_mac = storage.wake_mac.map(|mac| mac.to_string());
+
         match self.host_info(&app, user).await {
             Ok(Some(info)) => Ok(DetailedHost {
                 host_id: self.id.0,
@@ -309,6 +353,8 @@ impl Host {
                 current_game: info.current_game,
                 max_luma_pixels_hevc: info.max_luma_pixels_hevc,
                 server_codec_mode_support: info.server_codec_mode_support.bits(),
+                can_wake: stored_wake_mac.is_some() || usable_mac(info.mac).is_some(),
+                wake_mac,
             }),
             Ok(None) => {
                 let paired = if storage.pair_info.is_some() {
@@ -335,6 +381,8 @@ impl Host {
                     current_game: 0,
                     max_luma_pixels_hevc: 0,
                     server_codec_mode_support: 0,
+                    can_wake: stored_wake_mac.is_some(),
+                    wake_mac,
                 })
             }
             Err(err) => Err(err),
@@ -412,7 +460,7 @@ impl Host {
                         server_certificate: server_identifier.to_pem(),
                     })),
                     cache_name: Some(host_name),
-                    cache_mac: Some(mac),
+                    cache_mac: Some(usable_mac(mac)),
                     ..Default::default()
                 })
             })
@@ -428,12 +476,18 @@ impl Host {
 
         let storage = self.storage_host(&app).await?;
 
-        if let Some(mac) = storage.cache.mac {
-            broadcast_magic_packet(mac).await?;
-            Ok(())
-        } else {
-            Err(AppError::HostNotFound)
-        }
+        let mac = wake_mac_of(&storage).ok_or(AppError::HostMacUnknown)?;
+
+        let targets = wake::wake_targets(
+            &storage.address,
+            storage.http_port,
+            &app.config.moonlight.wake_on_lan_addresses,
+        )
+        .await;
+
+        wake::send_magic_packets(mac, &targets).await?;
+
+        Ok(())
     }
 
     pub async fn list_apps(&mut self, user: &mut AuthenticatedUser) -> Result<Vec<App>, AppError> {

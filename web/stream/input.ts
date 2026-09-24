@@ -277,6 +277,11 @@ export class StreamInput {
         }))
     }
     sendMouseMoveClientCoordinates(movementX: number, movementY: number, rect: DOMRect) {
+        if (rect.width <= 0 || rect.height <= 0) {
+            // The video isn't shown yet: scaling would divide by zero and throw the cursor to the edge of the screen
+            return
+        }
+
         const scaledMovementX = movementX / rect.width * this.streamSize[0];
         const scaledMovementY = movementY / rect.height * this.streamSize[1];
 

@@ -127,7 +127,7 @@ class AdminApp implements Component {
         this.topLine.classList.add("top-line")
 
         this.moonlightTextElement.innerHTML =
-            'Moonlight Web <span style="color:red; text-shadow: -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000; -webkit-text-stroke: 2px #000">Admin</span>'
+            'AllShare <span style="color:red; text-shadow: -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000; -webkit-text-stroke: 2px #000">Admin</span>'
 
         this.topLine.appendChild(this.moonlightTextElement)
 

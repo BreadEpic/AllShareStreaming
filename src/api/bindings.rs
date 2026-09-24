@@ -75,6 +75,8 @@ pub struct UndetailedHost {
     pub paired: PairStatus,
     /// None if offline else the state
     pub server_state: Option<HostState>,
+    /// If a mac address is known to send a Wake-on-LAN packet to
+    pub can_wake: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, TS)]
@@ -97,6 +99,10 @@ pub struct DetailedHost {
     pub current_game: u32,
     pub max_luma_pixels_hevc: u32,
     pub server_codec_mode_support: u32,
+    /// If a mac address is known to send a Wake-on-LAN packet to
+    pub can_wake: bool,
+    /// The mac address manually set for Wake-on-LAN, overrides the one reported by the host
+    pub wake_mac: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, TS)]
@@ -156,6 +162,10 @@ pub struct PatchHostRequest {
     /// Option<Option<u32>> are not supported
     pub change_owner: bool,
     pub owner: Option<u32>,
+    /// Manually set the mac address used for Wake-on-LAN, an empty string removes it
+    #[serde(default)]
+    #[ts(optional)]
+    pub wake_mac: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, TS)]
@@ -182,7 +192,7 @@ pub enum PostPairResponse1 {
 #[ts(export, export_to = EXPORT_PATH)]
 pub enum PostPairResponse2 {
     PairError,
-    Paired(DetailedHost),
+    Paired(Box<DetailedHost>),
 }
 
 #[derive(Serialize, Deserialize, Debug, TS)]

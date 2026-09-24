@@ -102,15 +102,15 @@ jobs:
         npm run build
         mv dist static
   
-        rm -rf web-server
-        mv target/${{ matrix.target }}/release/web-server${{ matrix.app-suffix }} web-server${{ matrix.app-suffix }}
+        rm -rf allshare
+        mv target/${{ matrix.target }}/release/allshare${{ matrix.app-suffix }} allshare${{ matrix.app-suffix }}
   
     - name: Upload build artifact
       uses: actions/upload-artifact@v7
       with:
-        name: moonlight-web-${{ matrix.target }}
+        name: allshare-${{ matrix.target }}
         path: |
-          web-server${{ matrix.app-suffix }}
+          allshare${{ matrix.app-suffix }}
           static
 
   create-release:
@@ -159,16 +159,16 @@ jobs:
       - name: Download artifact
         uses: actions/download-artifact@v4
         with:
-          name: moonlight-web-${{ matrix.target }}
+          name: allshare-${{ matrix.target }}
           path: dist
 
       - name: Create archive
         run: |
           mkdir package
-          mv dist/web-server${{ matrix.suffix }} package/
+          mv dist/allshare${{ matrix.suffix }} package/
           mv dist/static package/
 
-          ARCHIVE="moonlight-web-${{ matrix.target }}"
+          ARCHIVE="allshare-${{ matrix.target }}"
 
           if [[ "${{ matrix.suffix }}" == ".exe" ]]; then
             zip -r "$ARCHIVE.zip" package
@@ -209,8 +209,8 @@ jobs:
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
-          name: moonlight-web-${{ matrix.arch }}-unknown-linux-musl
-          path: ./docker/moonlight-web
+          name: allshare-${{ matrix.arch }}-unknown-linux-musl
+          path: ./docker/allshare
 
       - name: Log in to Docker Hub
         uses: docker/login-action@v2
@@ -223,7 +223,7 @@ jobs:
         with:
           context: ./docker/
           file: ./docker/Dockerfile.action
-          tags: mrcreativ3001/moonlight-web-stream:${{ github.ref_name }}-${{ matrix.platform }}
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/allshare:${{ github.ref_name }}-${{ matrix.platform }}
           push: true
 
   docker-manifest:
@@ -242,11 +242,11 @@ jobs:
 
       - name: Create and push manifest
         run: |
-          docker manifest create mrcreativ3001/moonlight-web-stream:${{ github.ref_name }} \
-            --amend mrcreativ3001/moonlight-web-stream:${{ github.ref_name }}-amd64 \
-            --amend mrcreativ3001/moonlight-web-stream:${{ github.ref_name }}-arm64
+          docker manifest create ${{ secrets.DOCKERHUB_USERNAME }}/allshare:${{ github.ref_name }} \
+            --amend ${{ secrets.DOCKERHUB_USERNAME }}/allshare:${{ github.ref_name }}-amd64 \
+            --amend ${{ secrets.DOCKERHUB_USERNAME }}/allshare:${{ github.ref_name }}-arm64
 
-          docker manifest push mrcreativ3001/moonlight-web-stream:${{ github.ref_name }}
+          docker manifest push ${{ secrets.DOCKERHUB_USERNAME }}/allshare:${{ github.ref_name }}
 
   docker-manifest-latest:
     name: Docker point latest image to versioned image
@@ -264,8 +264,8 @@ jobs:
 
       - name: Create and push manifest
         run: |
-          docker manifest create mrcreativ3001/moonlight-web-stream:latest \
-            --amend mrcreativ3001/moonlight-web-stream:${{ github.ref_name }}-amd64 \
-            --amend mrcreativ3001/moonlight-web-stream:${{ github.ref_name }}-arm64
+          docker manifest create ${{ secrets.DOCKERHUB_USERNAME }}/allshare:latest \
+            --amend ${{ secrets.DOCKERHUB_USERNAME }}/allshare:${{ github.ref_name }}-amd64 \
+            --amend ${{ secrets.DOCKERHUB_USERNAME }}/allshare:${{ github.ref_name }}-arm64
 
-          docker manifest push mrcreativ3001/moonlight-web-stream:latest
+          docker manifest push ${{ secrets.DOCKERHUB_USERNAME }}/allshare:latest

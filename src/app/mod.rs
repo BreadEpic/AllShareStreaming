@@ -44,6 +44,7 @@ pub mod role;
 pub mod storage;
 pub mod stream;
 pub mod user;
+pub mod wake;
 
 #[derive(Debug, Error)]
 pub enum AppError {
@@ -70,6 +71,10 @@ pub enum AppError {
     HostPaired,
     #[error("the host must be paired for this action")]
     HostNotPaired,
+    #[error("the mac address of the host is unknown, it's required for Wake-on-LAN")]
+    HostMacUnknown,
+    #[error("the mac address is invalid")]
+    MacAddressInvalid,
     #[error("the client doesn't support the required codecs")]
     WebRtcClientCodecNotSupported,
     #[error("the stream was already closed")]
@@ -134,6 +139,10 @@ impl ResponseError for AppError {
                 HttpResponse::new(StatusCode::NOT_FOUND).set_body(BoxBody::new("host not found"))
             }
             Self::HostNotPaired => HttpResponse::new(StatusCode::FORBIDDEN),
+            Self::HostMacUnknown => HttpResponse::new(StatusCode::CONFLICT)
+                .set_body(BoxBody::new("the mac address of the host is unknown")),
+            Self::MacAddressInvalid => HttpResponse::new(StatusCode::BAD_REQUEST)
+                .set_body(BoxBody::new("the mac address is invalid")),
             Self::HostPaired => HttpResponse::new(StatusCode::NOT_MODIFIED)
                 .set_body(BoxBody::new("host not paired")),
             Self::WebRtcClientCodecNotSupported => HttpResponse::new(StatusCode::BAD_REQUEST),

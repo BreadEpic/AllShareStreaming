@@ -1,15 +1,29 @@
 
-# Moonlight Web
-An unofficial [Moonlight Client](https://moonlight-stream.org/) allowing you to stream your pc to the Web.
-It hosts a Web Server which will forward [Sunshine](https://docs.lizardbyte.dev/projects/sunshine/latest/) traffic to a Browser using the [WebRTC Api](https://webrtc.org/).
+# AllShare (Powered by MMC)
+Stream your pc to any browser.
+AllShare hosts a Web Server which forwards [Sunshine](https://docs.lizardbyte.dev/projects/sunshine/latest/) traffic to a Browser using the [WebRTC Api](https://webrtc.org/).
 
-![An image displaying: PC with sunshine and moonlight web installed, a browser making requests to it](/readme/structure.png)
+AllShare is based on [Moonlight Web](https://github.com/MrCreativ3001/moonlight-web-stream) by MrCreativ3001 and its contributors, an unofficial [Moonlight Client](https://moonlight-stream.org/) for the web. It is licensed under the [GPL-3.0](LICENSE) like the original.
 
-> **Note**
-> Documentation for the current latest release is available on the [`v2.10.0`](https://github.com/MrCreativ3001/moonlight-web-stream/tree/v2.10.0) branch. The `master` branch contains the latest development version and may not match the published documentation.
+![An image displaying: PC with sunshine and AllShare installed, a browser making requests to it](/readme/structure.png)
+
+## What's new in AllShare
+
+- **Wake up a sleeping pc**: click a pc that's offline and AllShare sends Wake-on-LAN packets, waits until it's online and opens it.
+  - The packets go to every network the server is in, the pc's address and the Sunshine ports, and are repeated, so they get through much more often.
+  - The pc's MAC address is remembered every time it's seen online. If Sunshine reports the wrong one (e.g. of a VPN adapter), set it yourself: right click the pc -> "Set Wake-on-LAN MAC Address".
+  - See [Wake-on-LAN](#wake-on-lan) for what has to be enabled on the pc.
+- **Mouse lock fixes** (relative mouse mode):
+  - When the browser releases the mouse (Esc, alt-tab, ...), clicking the stream locks it again instead of leaving the cursor stuck at the side of the screen. This click isn't sent to the pc.
+  - Movement spikes some browsers report while the mouse is locked are filtered, so the pc's cursor doesn't jump to the edge of the screen anymore.
+  - Setting: "Lock Mouse Again When Clicking The Stream".
+- **Leave fullscreen and still fill the window**:
+  - Setting "Video Scaling": *Fit* (black bars), *Stretch to fill the window* or *Zoom to fill the window*. It can also be switched while streaming with the "Scale" button in the sidebar.
+  - Setting "Stay Out Of Fullscreen After Leaving It": with "Enter Fullscreen On First Stream Interaction" on, leaving fullscreen doesn't force you back into it on the next click.
 
 ## Overview
 
+- [What's new in AllShare](#whats-new-in-allshare)
 - [Limitations](#limitations)
 - [Installation](#installation)
   - [Manual Installation](#install-manually)
@@ -20,6 +34,7 @@ It hosts a Web Server which will forward [Sunshine](https://docs.lizardbyte.dev/
   - [Proxying via Apache 2](#proxying-via-apache-2)
   - [Authentication with a Reverse Proxy](#authentication-using-a-reverse-proxy)
   - [Using Web Socket Transport](#using-websocket-transport)
+  - [Wake-on-LAN](#wake-on-lan)
 - [Config](#config)
 - [Migrating to v2](#migrating-to-v2)
 - [Migrating to v3](#migrating-to-v3)
@@ -40,15 +55,15 @@ You can install it [manually](#install-manually) or with [docker](docker/README.
 
 1. Install [Sunshine](https://github.com/LizardByte/Sunshine/blob/v2025.628.4510/docs/getting_started.md)
 
-2. Download the [compressed archive](https://github.com/MrCreativ3001/moonlight-web-stream/releases/latest) for your platform and uncompress it or [build it yourself](#building)
+2. Download the [compressed archive](https://github.com/BreadEpic/AllShareStreaming/releases/latest) for your platform and uncompress it or [build it yourself](#building)
 
-3. Run the "web-server" executable
+3. Run the "allshare" executable
 
 4. Go to `localhost:8080` and view the web interface. You can also the change [bind address](#bind-address).
 
 > **NOTE**
 > A `config.json` file is **not generated automatically on first startup**.
-> If you plan to follow the configuration guides below, you will need to create a config.json with `./web-server config generate`
+> If you plan to follow the configuration guides below, you will need to create a config.json with `./allshare config generate`
 
 ## Setup
 
@@ -146,7 +161,7 @@ It might be helpful to look what kind of nat your pc is behind:
 - [Nat Checker](https://www.checkmynat.com/)
 
 ### Configuring https
-You can configure https directly with the Moonlight Web Server.
+You can configure https directly with the AllShare Web Server.
 
 1. You'll need a private key and a certificate.
 
@@ -172,10 +187,10 @@ python ./generate_certificate.py
 ```
 
 ### Proxying via Apache 2
-It's possible to proxy the Moonlight Website using [Apache 2](https://httpd.apache.org/).
+It's possible to proxy the AllShare Website using [Apache 2](https://httpd.apache.org/).
 
 Note:
-When you want to use https, the Moonlight Website should use http so that Apache 2 will handle all the https encryption.
+When you want to use https, the AllShare Website should use http so that Apache 2 will handle all the https encryption.
 
 1. Enable the modules `mod_proxy`, `mod_proxy_wstunnel`
 
@@ -183,35 +198,35 @@ When you want to use https, the Moonlight Website should use http so that Apache
 sudo a2enmod mod_proxy mod_proxy_wstunnel
 ```
 
-2. Create a new file under `/etc/apache2/conf-available/moonlight-web.conf` with the content:
+2. Create a new file under `/etc/apache2/conf-available/allshare.conf` with the content:
 ```
-# Example subpath "/moonlight" -> To connect you'd go to "http://yourip.com/moonlight/"
-Define MOONLIGHT_SUBPATH /moonlight
-# The address and port of your Moonlight Web server
-Define MOONLIGHT_STREAMER YOUR_LOCAL_IP:YOUR_PORT
+# Example subpath "/allshare" -> To connect you'd go to "http://yourip.com/allshare/"
+Define ALLSHARE_SUBPATH /allshare
+# The address and port of your AllShare server
+Define ALLSHARE_SERVER YOUR_LOCAL_IP:YOUR_PORT
 
 ProxyPreserveHost on
         
 # Important: This WebSocket will help negotiate the WebRTC Peers
-<Location ${MOONLIGHT_SUBPATH}/api/host/stream/web_socket>
-        ProxyPass ws://${MOONLIGHT_STREAMER}${MOONLIGHT_SUBPATH}/api/host/stream/web_socket
-        ProxyPassReverse ws://${MOONLIGHT_STREAMER}${MOONLIGHT_SUBPATH}/api/host/stream/web_socket
+<Location ${ALLSHARE_SUBPATH}/api/host/stream/web_socket>
+        ProxyPass ws://${ALLSHARE_SERVER}${ALLSHARE_SUBPATH}/api/host/stream/web_socket
+        ProxyPassReverse ws://${ALLSHARE_SERVER}${ALLSHARE_SUBPATH}/api/host/stream/web_socket
 </Location>
 
-ProxyPass ${MOONLIGHT_SUBPATH}/ http://${MOONLIGHT_STREAMER}${MOONLIGHT_SUBPATH}/
-ProxyPassReverse ${MOONLIGHT_SUBPATH}/ http://${MOONLIGHT_STREAMER}${MOONLIGHT_SUBPATH}/
+ProxyPass ${ALLSHARE_SUBPATH}/ http://${ALLSHARE_SERVER}${ALLSHARE_SUBPATH}/
+ProxyPassReverse ${ALLSHARE_SUBPATH}/ http://${ALLSHARE_SERVER}${ALLSHARE_SUBPATH}/
 ```
 
 3. Enable the created config file
 ```sh
-sudo a2enconf moonlight-web
+sudo a2enconf allshare
 ```
 
 4. Change [config](#config) to include the [prefixed path](#url-path-prefix)
 ```json
 {
     "web_server": {
-        "url_path_prefix": "/moonlight"
+        "url_path_prefix": "/allshare"
     }
 }
 ```
@@ -260,18 +275,39 @@ There are a few important things to be aware of when using WebSockets for stream
     ```
   - The decoder will be detected and used automatically.
 
+### Wake-on-LAN
+To wake up a pc from sleep it has to support Wake-on-LAN:
+1. Enable Wake-on-LAN (sometimes called "Power On By PCI-E" or "Resume by LAN") in the BIOS / UEFI.
+2. On Windows: Device Manager -> your network adapter -> Properties
+   - "Power Management": enable "Allow this device to wake the computer" and "Only allow a magic packet to wake the computer"
+   - "Advanced": enable "Wake on Magic Packet"
+3. Use a wired connection if possible, most Wi-Fi adapters can't be woken up.
+4. Pair the pc and turn it on once while AllShare is running, so the MAC address gets saved. Or set it manually: right click the pc -> "Set Wake-on-LAN MAC Address" (on Windows `ipconfig /all` shows it as "Physical Address").
+
+Then click the offline pc (or right click -> "Wake Up"). AllShare waits up to two minutes for it and opens it when it's online.
+
+The AllShare server has to be in the same network as the pc. When running in docker, see [Docker Wake-on-LAN](docker/README.md#wake-on-lan-waking-up-a-sleeping-pc).
+Extra addresses to send the packets to (`"ip"` or `"ip:port"`) can be added to the config:
+```json
+{
+    "moonlight": {
+        "wake_on_lan_addresses": ["192.168.1.255"]
+    }
+}
+```
+
 ## Config
 The config file is under `server/config.json` relative to the executable.
-Here are the most important settings for configuring Moonlight Web.
+Here are the most important settings for configuring AllShare.
 
 Most options have command line arguments or environment variables associated with them.
 ```sh
-./web-server help
+./allshare help
 ```
 
 Generate the config with:
 ```sh
-./web-server config generate
+./allshare config generate
 ```
 
 For a full list of values look into the [Rust Config module](src/config.rs).
@@ -468,12 +504,12 @@ ENV WEBRTC_NAT_1TO1_HOST=74.125.224.72
 This is useful when rerouting the web page using services like [Apache 2](#proxying-via-apache-2).
 Will always append the prefix to all requests made by the website.
 
-Environment Variable: `PATH_PREFIX=/moonlight`
+Environment Variable: `PATH_PREFIX=/allshare`
 
 ```json
 {
     "web_server": {
-        "url_path_prefix": "/moonlight"
+        "url_path_prefix": "/allshare"
     }
 }
 ```
@@ -529,7 +565,7 @@ If multiple users match the given name, the request will fail.
 
 Other changes:
 - Proxy path changed:
-  - change all instances of `ProxyPass ${MOONLIGHT_SUBPATH}/ http://${MOONLIGHT_STREAMER}/`<br> to `ProxyPass ${MOONLIGHT_SUBPATH}/ http://${MOONLIGHT_STREAMER}${MOONLIGHT_SUBPATH}/`
+  - change all instances of `ProxyPass ${ALLSHARE_SUBPATH}/ http://${ALLSHARE_SERVER}/`<br> to `ProxyPass ${ALLSHARE_SUBPATH}/ http://${ALLSHARE_SERVER}${ALLSHARE_SUBPATH}/`
   - [Proxying via Apache 2](https://github.com/MrCreativ3001/moonlight-web-stream/tree/v2?tab=readme-ov-file#proxying-via-apache-2)
 
 ## Migrating to v3
@@ -542,14 +578,14 @@ Changes:
 - moved web socket endpoint from `/api/host/stream` to `/api/host/stream/web_socket`
   - Change the Web Socket Endpoint when using a Reserve Proxy: See [Proxying via Apache2](#proxying-via-apache-2)
 - `config.json` is not generated at first startup and can optionally be used for more granular control
-  - you can generate a config with `./web-server config generate`, if required
+  - you can generate a config with `./allshare config generate`, if required
 - moved `default_user_id` and `default_role_id` from the `config.json` into the `data.json` file
   - go into the admin panel and set the user or role you that you want to be the default to the default at the bottom of the page
 - removed old unused `default_settings` value in the config
 - removed `webrtc.network_types` setting in the config
 
 ## Contributors
-Thanks to everyone who contributed to make this software better :).
+AllShare is built on the work of everyone who contributed to [Moonlight Web](https://github.com/MrCreativ3001/moonlight-web-stream). Thank you :).
 
 <a href = "https://github.com/Tanu-N-Prabhu/Python/graphs/contributors">
   <img src = "https://contrib.rocks/image?repo=MrCreativ3001/moonlight-web-stream"/>
@@ -558,11 +594,11 @@ Thanks to everyone who contributed to make this software better :).
 ## Building
 Clone this repository:
 ```sh
-git clone https://github.com/MrCreativ3001/moonlight-web-stream.git
+git clone https://github.com/BreadEpic/AllShareStreaming.git
 ```
 A [Rust](https://www.rust-lang.org/tools/install) installation is required.
 
-Moonlight Web consists the [web server binary](#building-the-web-server) and a [web frontend](#building-the-frontend):
+AllShare consists of the [web server binary](#building-the-web-server) and a [web frontend](#building-the-frontend):
 
 ### Building the Web Server
 Run

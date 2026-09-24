@@ -331,6 +331,7 @@ fn host_from_json(host_id: HostId, host: &V2Host) -> StorageHost {
             name: host.cache.name.clone(),
             mac: host.cache.mac,
         },
+        wake_mac: host.wake_mac,
     }
 }
 
@@ -737,6 +738,7 @@ impl Storage for JsonStorage {
                 name: host.cache.name,
                 mac: host.cache.mac,
             },
+            wake_mac: None,
         };
 
         let mut hosts = self.hosts.write().await;
@@ -767,6 +769,7 @@ impl Storage for JsonStorage {
                 name: host.cache.name,
                 mac: host.cache.mac,
             },
+            wake_mac: host.wake_mac,
         })
     }
     async fn modify_host(
@@ -800,6 +803,9 @@ impl Storage for JsonStorage {
         }
         if let Some(new_cache_mac) = modify.cache_mac {
             host.cache.mac = new_cache_mac;
+        }
+        if let Some(new_wake_mac) = modify.wake_mac {
+            host.wake_mac = new_wake_mac;
         }
 
         self.force_write();

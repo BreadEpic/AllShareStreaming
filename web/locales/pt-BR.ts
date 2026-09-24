@@ -2,7 +2,8 @@ import type { Translations } from "./en"
 
 export const ptBR: Translations = {
     index: {
-        appTitle: "Moonlight Web",
+        appTitle: "AllShare",
+        appTagline: "Powered by MMC",
         back: "Voltar",
         reload: "Recarregar",
         addHostUnreachable: (address: string) => `Host "${address}" não está acessível`,
@@ -23,6 +24,11 @@ export const ptBR: Translations = {
         serverMessage: (message: string) => `Servidor: ${message}`,
         sendKeycode: "Enviar Código de Tecla",
         lockMouse: "Bloquear Mouse",
+        clickToLockMouse: "Clique para bloquear o mouse · Esc libera",
+        scalingFit: "Escala: Ajustar",
+        scalingStretch: "Escala: Esticar",
+        scalingZoom: "Escala: Zoom",
+        scalingTitle: "Como o stream preenche a janela fora da tela cheia",
         keyboard: "Teclado",
         hideKeyboard: "Ocultar Teclado",
         fullscreen: "Tela Cheia",
@@ -61,6 +67,10 @@ export const ptBR: Translations = {
         forceVideoElementRenderer: "Forçar Renderizador de Elemento de Vídeo (somente WebRTC)",
         useCanvasRenderer: "Usar Renderizador Canvas",
         canvasVsync: "VSync do Canvas (reduz tearing)",
+        videoScaling: "Escala do Vídeo (quando a janela não corresponde ao stream)",
+        videoScalingFit: "Ajustar (barras pretas)",
+        videoScalingStretch: "Esticar para preencher a janela",
+        videoScalingZoom: "Zoom para preencher a janela (corta as bordas)",
         enableHdr: "Ativar HDR",
         audio: "Áudio",
         playAudioLocal: "Reproduzir Áudio Localmente",
@@ -70,6 +80,7 @@ export const ptBR: Translations = {
         startupMouseMode: "Modo do Mouse ao Iniciar Stream",
         startupTouchMode: "Modo de Toque ao Iniciar Stream",
         localCursorSensitivity: "Sensibilidade do Cursor Local",
+        lockMouseOnClick: "Bloquear o Mouse Novamente ao Clicar no Stream (Modo Relativo)",
         highRes: "Alta Resolução",
         normal: "Normal",
         controller: "Controle",
@@ -83,6 +94,7 @@ export const ptBR: Translations = {
         auto: "Automático",
         webSocket: "WebSocket",
         enterFullscreenOnStreamStart: "Entrar em Tela Cheia na Primeira Interação com o Stream",
+        stayWindowedAfterFullscreenExit: "Continuar Fora da Tela Cheia Depois de Sair Dela",
         saveRoleDefaults: "Salvar como Padrão do Perfil",
         saveRoleDefaultsSuccess: "Configurações salvas como padrão do perfil",
         saveRoleDefaultsFailed: "Não foi possível salvar as configurações padrão do perfil",
@@ -139,14 +151,24 @@ export const ptBR: Translations = {
     host: {
         showDetails: "Mostrar Detalhes",
         open: "Abrir",
-        sendWakeUpPacket: "Enviar Pacote Wake-on-LAN",
+        wakeUp: "Acordar",
+        setWakeMac: "Definir Endereço MAC do Wake-on-LAN",
         reload: "Recarregar",
         pair: "Parear",
         makePrivate: "Tornar Privado",
         makeGlobal: "Tornar Global",
         removeHost: "Remover Host",
         failedToGetDetails: (id: number) => `falha ao obter detalhes do host ${id}`,
-        wakeUpSent: "Pacote Wake-on-LAN enviado. Pode levar um momento para o PC ligar.",
+        wakingUp: (name: string) => `Acordando ${name}… isso pode levar até um minuto.`,
+        wakeUpSuccess: (name: string) => `${name} está ligado!`,
+        wakeUpTimeout: (name: string) => `${name} não acordou. Verifique se o Wake-on-LAN está ativado na BIOS e nas configurações do adaptador de rede e tente novamente.`,
+        alreadyWaking: (name: string) => `Já está acordando ${name}…`,
+        wakeMacUnknown: "O endereço MAC deste PC é desconhecido, então ele ainda não pode ser acordado. Ligue-o uma vez enquanto estiver pareado ou defina o endereço MAC com clique direito → \"Definir Endereço MAC do Wake-on-LAN\".",
+        wakeMacHeader: "Wake-on-LAN",
+        wakeMacDescription: (reportedMac: string | null) => `Só é necessário se acordar não funcionar. Deixe vazio para usar o endereço MAC informado pelo PC${reportedMac ? ` (${reportedMac})` : ""}.\nNo Windows você encontra com "ipconfig /all" em "Endereço Físico".`,
+        wakeMacLabel: "Endereço MAC",
+        wakeMacInvalid: "Esse endereço MAC não é válido. Use um formato como AA:BB:CC:DD:EE:FF.",
+        wakeMacSaved: "Endereço MAC do Wake-on-LAN salvo.",
         alreadyPaired: "Este host já está pareado!",
         pairPrompt: (name: string, pin: string) => `Pareie o host ${name} com este PIN:\nPIN: ${pin}`,
         overwriteMismatch: (currentId: number, incomingId: number) => `tentativa de sobrescrever o host ${currentId} com dados do host ${incomingId}`,
@@ -163,6 +185,7 @@ export const ptBR: Translations = {
             `Versão GFE: ${host.gfe_version}\n` +
             `ID Único: ${host.unique_id}\n` +
             `MAC: ${host.mac}\n` +
+            `MAC para acordar: ${host.wake_mac ?? "(informado)"}\n` +
             `IP Local: ${host.local_ip}\n` +
             `Jogo Atual: ${host.current_game}\n` +
             `Máx. Pixels Luma HEVC: ${host.max_luma_pixels_hevc}\n` +

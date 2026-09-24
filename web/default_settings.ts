@@ -21,6 +21,9 @@ const trueDefaultSettings: Settings =
     "canvasRenderer": false,
     // Canvas only: when true, draw only on requestAnimationFrame (stable, may add ~0–17 ms). When false, draw on frame submit (low latency).
     "canvasVsync": false,
+    // How the stream fills the window when the aspect ratio doesn't match, e.g. when not in fullscreen
+    // possible values: "fit", "stretch", "zoom"
+    "videoScaling": "fit",
     "playAudioLocal": false,
     // possible values: "highres", "normal"
     "mouseScrollMode": "highres",
@@ -29,6 +32,8 @@ const trueDefaultSettings: Settings =
     // possible values: "touch", "mouseRelative", "localCursor", "pointAndDrag"
     "touchMode": "mouseRelative",
     "localCursorSensitivity": 1,
+    // Relative mouse mode: clicking the stream (re-)locks the mouse after it got unlocked, e.g. by pressing Esc
+    "lockMouseOnClick": true,
     "controllerConfig": {
         "invertAB": false,
         "invertXY": false,
@@ -39,6 +44,8 @@ const trueDefaultSettings: Settings =
     "dataTransport": "auto",
     "language": "en",
     "enterFullscreenOnStreamStart": false,
+    // Don't force fullscreen again on the next click after leaving it
+    "stayWindowedAfterFullscreenExit": true,
     "toggleFullscreenWithKeybind": false,
     // possible values: "standard", "old"
     "pageStyle": "standard",

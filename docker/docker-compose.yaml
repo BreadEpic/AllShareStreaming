@@ -1,10 +1,16 @@
 version: "3.9"
 
 services:
-  moonlight-web:
-    image: mrcreativ3001/moonlight-web-stream:latest
-    container_name: moonlight-web
+  allshare:
+    # Builds the image from the latest AllShare GitHub release (see Dockerfile)
+    build: .
+    image: allshare:latest
+    container_name: allshare
     restart: unless-stopped
+    # Wake-on-LAN: the default bridge network swallows broadcast packets, so waking up a sleeping pc
+    # may not work. On Linux use the host network instead of the port mappings below:
+    # network_mode: host
+    # or add your LAN broadcast address (e.g. 192.168.1.255) to "moonlight.wake_on_lan_addresses" in config.json.
     ports:
       - "8080:8080"
       - "40000-40100:40000-40100/udp"
@@ -12,8 +18,8 @@ services:
       - WEBRTC_NAT_1TO1_HOST=127.0.0.1
       - WEBRTC_PORT_RANGE=40000:40100
     volumes:
-      - moonlight-server:/moonlight-web/server
+      - allshare-server:/allshare/server
 
 volumes:
-  moonlight-server:
-    name: moonlight-server
+  allshare-server:
+    name: allshare-server

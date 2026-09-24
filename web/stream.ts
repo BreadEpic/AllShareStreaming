@@ -13,6 +13,7 @@ import "./polyfill/index"
 import { KeyboardModeEvent, KeyboardModeWillChangeEvent, ScreenKeyboard, TextEvent } from "./screen_keyboard"
 import { InfoEvent, Stream, StreamCapabilities } from "./stream/index"
 import { defaultStreamInputConfig, MouseMode, ScreenKeyboardSetVisibleEvent, StreamInputConfig } from "./stream/input"
+import { setVideoScaling as setRendererVideoScaling, VideoScaling } from "./stream/video/index"
 import { emptyKeyModifiers } from "./stream/keyboard"
 import { LogMessageType } from "./stream/log"
 import { streamStatsToText } from "./stream/stats"
@@ -167,6 +168,18 @@ class ViewerApp implements Component {
     private inputConfig: StreamInputConfig = defaultStreamInputConfig()
     private previousMouseMode: MouseMode
 
+    // -- Mouse Lock
+    // The user wants the mouse locked (relative mode). When the browser releases the lock
+    // (Esc, switching windows, ...) the next click on the stream locks it again.
+    private mouseLockWanted: boolean = false
+    private lockMouseOnClick: boolean = true
+    private pendingMouseLockGesture: boolean = false
+    // The first movement after locking can contain the jump of the cursor to where it got locked
+    private skipNextLockedMouseMove: boolean = false
+    private mouseLockHintDiv = document.createElement("div")
+
+    private videoScaling: VideoScaling = "fit"
+
     private autoEnterFullscreenOnStart: boolean = false
     private pendingAutoFullscreenPrompt: boolean = false
     private fullscreenPromptShown: boolean = false
@@ -174,6 +187,7 @@ class ViewerApp implements Component {
     private pendingAutoFullscreenTouchGesture: boolean = false
     private pendingAutoFullscreenMouseGesture: boolean = false
     private manualFullscreenExitRequested: boolean = false
+    private stayWindowedAfterFullscreenExit: boolean = true
 
     private toggleFullscreenWithKeybind: boolean = false
 
@@ -198,6 +212,10 @@ class ViewerApp implements Component {
             localCursorSensitivity: settings.localCursorSensitivity,
             controllerConfig: settings.controllerConfig
         })
+        this.lockMouseOnClick = settings.lockMouseOnClick
+        this.mouseLockWanted = settings.mouseMode == "relative"
+        this.stayWindowedAfterFullscreenExit = settings.stayWindowedAfterFullscreenExit
+        this.setVideoScaling(settings.videoScaling)
 
         // Configure sidebar
         this.sidebar = new ViewerSidebar(this)
@@ -223,6 +241,11 @@ class ViewerApp implements Component {
         }, 100)
         this.div.appendChild(this.statsDiv)
         this.div.appendChild(this.localTouchCursorDiv)
+
+        this.mouseLockHintDiv.classList.add("mouse-lock-hint")
+        this.mouseLockHintDiv.innerText = I.stream.clickToLockMouse
+        this.mouseLockHintDiv.hidden = true
+        this.div.appendChild(this.mouseLockHintDiv)
 
         // Configure stream
         this.previousMouseMode = this.inputConfig.mouseMode
@@ -256,6 +279,7 @@ class ViewerApp implements Component {
         })
 
         document.addEventListener("pointerlockchange", this.onPointerLockChange.bind(this))
+        this.updateMouseLockHint()
         document.addEventListener("fullscreenchange", this.onFullscreenChange.bind(this))
 
         window.addEventListener("gamepadconnected", this.onGamepadConnect.bind(this))
@@ -466,6 +490,17 @@ class ViewerApp implements Component {
             return
         }
 
+        if (this.shouldLockMouseOnClick()) {
+            // This click only locks the mouse again, don't send it to the host
+            this.pendingMouseLockGesture = true
+            this.onUserInteraction()
+            void this.requestPointerLock()
+
+            event.preventDefault()
+            event.stopPropagation()
+            return
+        }
+
         this.onUserInteraction()
 
         event.preventDefault()
@@ -476,6 +511,12 @@ class ViewerApp implements Component {
     onMouseButtonUp(event: MouseEvent) {
         if (this.pendingAutoFullscreenMouseGesture) {
             this.pendingAutoFullscreenMouseGesture = false
+            event.preventDefault()
+            event.stopPropagation()
+            return
+        }
+        if (this.pendingMouseLockGesture) {
+            this.pendingMouseLockGesture = false
             event.preventDefault()
             event.stopPropagation()
             return
@@ -496,7 +537,9 @@ class ViewerApp implements Component {
         }
 
         event.preventDefault()
-        this.stream.getInput().onMouseMove(event, this.getStreamRect())
+        if (!this.shouldDropMouseMove(event)) {
+            this.stream.getInput().onMouseMove(event, this.getStreamRect())
+        }
 
         event.stopPropagation()
     }
@@ -667,7 +710,8 @@ class ViewerApp implements Component {
             const manualExit = this.manualFullscreenExitRequested
             this.manualFullscreenExitRequested = false
 
-            if (this.autoEnterFullscreenOnStart && !manualExit) {
+            // Leaving fullscreen is allowed: the stream keeps filling the window (see video scaling)
+            if (this.autoEnterFullscreenOnStart && !manualExit && !this.stayWindowedAfterFullscreenExit) {
                 this.armFullscreenOnNextInteraction()
             }
         }
@@ -680,11 +724,15 @@ class ViewerApp implements Component {
 
     // Pointer Lock
     async requestPointerLock(errorIfNotFound: boolean = false) {
-        this.previousMouseMode = this.inputConfig.mouseMode
-
         const inputElement = document.getElementById("input") as HTMLDivElement
 
-        if (inputElement && "requestPointerLock" in inputElement && typeof inputElement.requestPointerLock == "function") {
+        if (inputElement && isPointerLockSupported()) {
+            if (this.inputConfig.mouseMode != "relative") {
+                // The mode to go back to when the lock is released on purpose
+                this.previousMouseMode = this.inputConfig.mouseMode
+            }
+            this.mouseLockWanted = true
+
             this.focusInput()
 
             this.inputConfig.mouseMode = "relative"
@@ -692,11 +740,18 @@ class ViewerApp implements Component {
 
             setSidebarExtended(false)
 
+            const lockWithoutOptions = () => {
+                const result: unknown = inputElement.requestPointerLock()
+                if (result instanceof Promise) {
+                    result.catch(error => console.warn("failed to lock the mouse", error))
+                }
+            }
+
             const onLockError = () => {
                 document.removeEventListener("pointerlockerror", onLockError)
 
                 // Fallback: try to request pointer lock without options
-                inputElement.requestPointerLock()
+                lockWithoutOptions()
             }
 
             document.addEventListener("pointerlockerror", onLockError, { once: true })
@@ -709,15 +764,16 @@ class ViewerApp implements Component {
                 if (promise) {
                     await promise
                 } else {
-                    inputElement.requestPointerLock()
+                    lockWithoutOptions()
                 }
             } catch (error) {
                 // Some platforms do not support unadjusted movement. If you
                 // would like PointerLock anyway, request again.
                 if (error instanceof Error && error.name == "NotSupportedError") {
-                    inputElement.requestPointerLock()
+                    lockWithoutOptions()
                 } else {
-                    throw error
+                    // e.g. the lock was released less than a second ago, the next click will try again
+                    console.warn("failed to lock the mouse", error)
                 }
             } finally {
                 document.removeEventListener("pointerlockerror", onLockError)
@@ -726,18 +782,100 @@ class ViewerApp implements Component {
         } else if (errorIfNotFound) {
             await showMessage(I.stream.pointerLockUnsupported)
         }
+
+        this.updateMouseLockHint()
     }
     async exitPointerLock() {
+        this.mouseLockWanted = false
+
         if ("exitPointerLock" in document && typeof document.exitPointerLock == "function") {
             document.exitPointerLock()
         }
+
+        this.updateMouseLockHint()
     }
     private onPointerLockChange() {
         this.checkFullyImmersed()
 
-        if (!document.pointerLockElement) {
+        if (document.pointerLockElement) {
+            this.skipNextLockedMouseMove = true
+        } else if (!(this.lockMouseOnClick && this.mouseLockWanted)) {
+            this.mouseLockWanted = false
+
             this.inputConfig.mouseMode = this.previousMouseMode
             this.setInputConfig(this.inputConfig)
+        }
+
+        this.updateMouseLockHint()
+    }
+    // Called when the user picks a mouse mode in the sidebar
+    onMouseModeSelected(mouseMode: MouseMode) {
+        this.previousMouseMode = mouseMode
+
+        if (mouseMode == "relative") {
+            this.mouseLockWanted = true
+        } else {
+            this.mouseLockWanted = false
+            if (document.pointerLockElement) {
+                document.exitPointerLock()
+            }
+        }
+
+        this.updateMouseLockHint()
+    }
+    private shouldLockMouseOnClick(): boolean {
+        return this.lockMouseOnClick
+            && this.mouseLockWanted
+            && this.inputConfig.mouseMode == "relative"
+            && isPointerLockSupported()
+            && !document.pointerLockElement
+    }
+    private shouldDropMouseMove(event: MouseEvent): boolean {
+        if (this.inputConfig.mouseMode != "relative") {
+            return false
+        }
+
+        if (!document.pointerLockElement) {
+            // Without the lock the cursor stops at the edges of the screen and drags the host cursor
+            // there -> wait for the click that locks the mouse again
+            return this.shouldLockMouseOnClick()
+        }
+
+        if (this.skipNextLockedMouseMove) {
+            this.skipNextLockedMouseMove = false
+            return true
+        }
+
+        // Some browsers (mostly Chrome on Windows) sometimes report huge movement spikes while
+        // the pointer is locked, which throw the host cursor to the side of the screen
+        const maxMovementX = Math.max(window.screen.width, window.innerWidth) / 2
+        const maxMovementY = Math.max(window.screen.height, window.innerHeight) / 2
+        if (Math.abs(event.movementX) > maxMovementX || Math.abs(event.movementY) > maxMovementY) {
+            console.debug("dropped mouse movement spike", event.movementX, event.movementY)
+            return true
+        }
+
+        return false
+    }
+    private updateMouseLockHint() {
+        this.mouseLockHintDiv.hidden = !(this.shouldLockMouseOnClick() && hasFinePointer())
+    }
+
+    // -- Video Scaling
+    getVideoScaling(): VideoScaling {
+        return this.videoScaling
+    }
+    setVideoScaling(scaling: VideoScaling, save: boolean = false) {
+        this.videoScaling = scaling
+
+        setRendererVideoScaling(scaling)
+
+        const root = document.documentElement
+        root.classList.toggle("video-scale-stretch", scaling == "stretch")
+        root.classList.toggle("video-scale-zoom", scaling == "zoom")
+
+        if (save) {
+            saveStoredSetting("videoScaling", scaling)
         }
     }
 
@@ -1015,6 +1153,7 @@ class ViewerSidebar implements Component, Sidebar {
 
     private lockMouseButton = document.createElement("button")
     private fullscreenButton = document.createElement("button")
+    private scalingButton = document.createElement("button")
 
     private statsButton = document.createElement("button")
     private exitStreamButton = document.createElement("button")
@@ -1090,6 +1229,14 @@ class ViewerSidebar implements Component, Sidebar {
         })
         this.buttonDiv.appendChild(this.fullscreenButton)
 
+        // Video Scaling: fill the window when not in fullscreen
+        this.updateScalingButton()
+        this.scalingButton.addEventListener("click", () => {
+            this.app.setVideoScaling(NEXT_VIDEO_SCALING[this.app.getVideoScaling()], true)
+            this.updateScalingButton()
+        })
+        this.buttonDiv.appendChild(this.scalingButton)
+
         // Stats
         this.statsButton.innerText = I.stream.stats
         this.statsButton.addEventListener("click", () => {
@@ -1147,6 +1294,17 @@ class ViewerSidebar implements Component, Sidebar {
         this.touchMode.mount(this.div)
     }
 
+    private updateScalingButton() {
+        const scaling = this.app.getVideoScaling()
+
+        this.scalingButton.innerText = {
+            fit: I.stream.scalingFit,
+            stretch: I.stream.scalingStretch,
+            zoom: I.stream.scalingZoom,
+        }[scaling]
+        this.scalingButton.title = I.stream.scalingTitle
+    }
+
     onCapabilitiesChange(capabilities: StreamCapabilities) {
         this.touchMode.setOptionEnabled("touch", capabilities.touch)
     }
@@ -1179,6 +1337,7 @@ class ViewerSidebar implements Component, Sidebar {
         const config = this.app.getInputConfig()
         config.mouseMode = this.mouseMode.getValue() as any
         this.app.setInputConfig(config)
+        this.app.onMouseModeSelected(config.mouseMode)
     }
 
     // -- Touch Mode
@@ -1255,6 +1414,32 @@ class SendKeycodeModal extends FormModal<number> {
         }
 
         return parseInt(keyString)
+    }
+}
+
+const NEXT_VIDEO_SCALING: Record<VideoScaling, VideoScaling> = {
+    fit: "stretch",
+    stretch: "zoom",
+    zoom: "fit",
+}
+
+function isPointerLockSupported(): boolean {
+    return "requestPointerLock" in Element.prototype && "pointerLockElement" in document
+}
+function hasFinePointer(): boolean {
+    return window.matchMedia?.("(any-pointer: fine)")?.matches ?? true
+}
+
+// Changes a single stored setting without copying the role defaults into the user settings
+function saveStoredSetting<K extends keyof Settings>(key: K, value: Settings[K]) {
+    try {
+        const json = localStorage.getItem("mlSettings")
+        const stored = json ? JSON.parse(json) : {}
+
+        stored[key] = value
+        localStorage.setItem("mlSettings", JSON.stringify(stored))
+    } catch (e) {
+        console.warn(`couldn't save the setting ${key}`, e)
     }
 }
 

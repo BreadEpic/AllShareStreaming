@@ -79,6 +79,7 @@ pub fn migrate_v1_to_v2(old: V1) -> V2 {
                 name: old_host.cache.name.unwrap_or_else(|| "Unknown".to_string()),
                 mac: old_host.cache.mac,
             },
+            wake_mac: None,
         };
 
         v2_hosts.insert(id as u32, v2_host);
@@ -134,6 +135,8 @@ pub struct V2Host {
     pub http_port: u16,
     pub pair_info: Option<V2HostPairInfo>,
     pub cache: V2HostCache,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wake_mac: Option<MacAddress>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

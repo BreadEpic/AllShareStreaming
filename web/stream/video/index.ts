@@ -33,7 +33,37 @@ export interface VideoRenderer extends Component, Pipe {
     setHdrMode?(enabled: boolean, sunshine?: SunshineHdrMetadata): void
 }
 
+// How the video is scaled into its element, must match the object-fit of the element (see the video-scale-* css classes)
+export type VideoScaling = "fit" | "stretch" | "zoom"
+
+let currentVideoScaling: VideoScaling = "fit"
+
+export function setVideoScaling(scaling: VideoScaling) {
+    currentVideoScaling = scaling
+}
+export function getVideoScaling(): VideoScaling {
+    return currentVideoScaling
+}
+
 export function getStreamRectCorrected(boundingRect: DOMRect, videoSize: [number, number]): DOMRect {
+    if (currentVideoScaling == "stretch") {
+        // object-fit: fill -> the video is exactly the element
+        return DOMRect.fromRect(boundingRect)
+    }
+    if (currentVideoScaling == "zoom") {
+        // object-fit: cover -> the video overflows the element on one axis
+        const videoMultiplier = Math.max(boundingRect.width / videoSize[0], boundingRect.height / videoSize[1])
+        const width = videoSize[0] * videoMultiplier
+        const height = videoSize[1] * videoMultiplier
+
+        return new DOMRect(
+            boundingRect.x + (boundingRect.width - width) / 2,
+            boundingRect.y + (boundingRect.height - height) / 2,
+            width,
+            height
+        )
+    }
+
     const videoAspect = videoSize[0] / videoSize[1]
 
     const boundingRectAspect = boundingRect.width / boundingRect.height

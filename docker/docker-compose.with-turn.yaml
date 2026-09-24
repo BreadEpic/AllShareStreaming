@@ -1,9 +1,11 @@
 version: "3.9"
 
 services:
-  moonlight-web:
-    image: mrcreativ3001/moonlight-web-stream:${ML_WEB_VERSION}
-    container_name: moonlight-web
+  allshare:
+    # Builds the image from the latest AllShare GitHub release (see Dockerfile)
+    build: .
+    image: allshare:latest
+    container_name: allshare
     restart: unless-stopped
     depends_on:
       - turn
@@ -30,7 +32,7 @@ services:
       - WEBRTC_ICE_SERVER_4_USERNAME=${TURN_USERNAME}
       - WEBRTC_ICE_SERVER_4_CREDENTIAL=${TURN_CREDENTIAL}
     volumes:
-      - moonlight-server:/moonlight-web/server
+      - allshare-server:/allshare/server
 
   turn:
     image: coturn/coturn:latest
@@ -47,5 +49,5 @@ services:
       - "55000-55100:55000-55100/tcp"
 
 volumes:
-  moonlight-server:
-    name: moonlight-server
+  allshare-server:
+    name: allshare-server

@@ -19,6 +19,7 @@ use crate::{
         host::HostId,
         storage::StorageHostModify,
         user::{AuthenticatedUser, RoleType, UserId},
+        wake::parse_mac,
     },
 };
 
@@ -128,6 +129,21 @@ async fn patch_host(
         }
     }
 
+    if let Some(wake_mac) = request.wake_mac {
+        // Only the owner of the host or an admin may change how it's woken up
+        let is_admin = matches!(role.ty().await?, RoleType::Admin);
+        if !is_admin && host.owner().await? != Some(user.id()) {
+            return Err(AppError::Forbidden);
+        }
+
+        let wake_mac = wake_mac.trim();
+        modify.wake_mac = Some(if wake_mac.is_empty() {
+            None
+        } else {
+            Some(parse_mac(wake_mac).ok_or(AppError::MacAddressInvalid)?)
+        });
+    }
+
     host.modify(&mut user, modify).await?;
 
     Ok(HttpResponse::Ok().finish())
@@ -170,7 +186,7 @@ async fn pair_host(
         match result {
             Ok(detailed_host) => {
                 if let Err(err) = stream_sender
-                    .send(PostPairResponse2::Paired(detailed_host))
+                    .send(PostPairResponse2::Paired(Box::new(detailed_host)))
                     .await
                 {
                     warn!("Failed to send pair success: {err}");

@@ -1,6 +1,7 @@
 export const en = {
     index: {
-        appTitle: "Moonlight Web",
+        appTitle: "AllShare",
+        appTagline: "Powered by MMC",
         back: "Back",
         reload: "Reload",
         addHostUnreachable: (address: string) => `Host "${address}" is not reachable`,
@@ -21,6 +22,11 @@ export const en = {
         serverMessage: (message: string) => `Server: ${message}`,
         sendKeycode: "Send Keycode",
         lockMouse: "Lock Mouse",
+        clickToLockMouse: "Click to lock the mouse · Esc releases it",
+        scalingFit: "Scale: Fit",
+        scalingStretch: "Scale: Stretch",
+        scalingZoom: "Scale: Zoom",
+        scalingTitle: "How the stream fills the window when not in fullscreen",
         keyboard: "Keyboard",
         hideKeyboard: "Hide Keyboard",
         fullscreen: "Fullscreen",
@@ -59,6 +65,10 @@ export const en = {
         forceVideoElementRenderer: "Force Video Element Renderer (WebRTC only)",
         useCanvasRenderer: "Use Canvas Renderer",
         canvasVsync: "Canvas VSync (reduce tearing)",
+        videoScaling: "Video Scaling (when the window doesn't match the stream)",
+        videoScalingFit: "Fit (black bars)",
+        videoScalingStretch: "Stretch to fill the window",
+        videoScalingZoom: "Zoom to fill the window (crops edges)",
         enableHdr: "Enable HDR",
         audio: "Audio",
         playAudioLocal: "Play Audio Local",
@@ -68,6 +78,7 @@ export const en = {
         startupMouseMode: "Mouse Mode On Stream Start",
         startupTouchMode: "Touch Mode On Stream Start",
         localCursorSensitivity: "Local Cursor Sensitivity",
+        lockMouseOnClick: "Lock Mouse Again When Clicking The Stream (Relative Mode)",
         highRes: "High Res",
         normal: "Normal",
         controller: "Controller",
@@ -81,6 +92,7 @@ export const en = {
         auto: "Auto",
         webSocket: "Web Socket",
         enterFullscreenOnStreamStart: "Enter Fullscreen On First Stream Interaction",
+        stayWindowedAfterFullscreenExit: "Stay Out Of Fullscreen After Leaving It",
         saveRoleDefaults: "Save As Role Defaults",
         saveRoleDefaultsSuccess: "Saved current settings as role defaults",
         saveRoleDefaultsFailed: "Couldn't save role default settings",
@@ -137,14 +149,24 @@ export const en = {
     host: {
         showDetails: "Show Details",
         open: "Open",
-        sendWakeUpPacket: "Send Wake Up Packet",
+        wakeUp: "Wake Up",
+        setWakeMac: "Set Wake-on-LAN MAC Address",
         reload: "Reload",
         pair: "Pair",
         makePrivate: "Make Private",
         makeGlobal: "Make Global",
         removeHost: "Remove Host",
         failedToGetDetails: (id: number) => `failed to get details for host ${id}`,
-        wakeUpSent: "Sent Wake Up packet. It might take a moment for your pc to start.",
+        wakingUp: (name: string) => `Waking up ${name}… this can take up to a minute.`,
+        wakeUpSuccess: (name: string) => `${name} is awake!`,
+        wakeUpTimeout: (name: string) => `${name} didn't wake up. Make sure Wake-on-LAN is enabled in its BIOS and network adapter settings, then try again.`,
+        alreadyWaking: (name: string) => `Already waking up ${name}…`,
+        wakeMacUnknown: "The MAC address of this PC is unknown, so it can't be woken up yet. Turn it on once while it's paired, or set its MAC address with right click → \"Set Wake-on-LAN MAC Address\".",
+        wakeMacHeader: "Wake-on-LAN",
+        wakeMacDescription: (reportedMac: string | null) => `Only needed if waking up doesn't work. Leave it empty to use the MAC address reported by the PC${reportedMac ? ` (${reportedMac})` : ""}.\nOn Windows you can find it with "ipconfig /all" under "Physical Address".`,
+        wakeMacLabel: "MAC Address",
+        wakeMacInvalid: "That MAC address is not valid. Use a format like AA:BB:CC:DD:EE:FF.",
+        wakeMacSaved: "Saved the Wake-on-LAN MAC address.",
         alreadyPaired: "This host is already paired!",
         pairPrompt: (name: string, pin: string) => `Please pair your host ${name} with this pin:\nPin: ${pin}`,
         overwriteMismatch: (currentId: number, incomingId: number) => `tried to overwrite host ${currentId} with data from ${incomingId}`,
@@ -161,6 +183,7 @@ export const en = {
             `Gfe Version: ${host.gfe_version}\n` +
             `Unique ID: ${host.unique_id}\n` +
             `MAC: ${host.mac}\n` +
+            `Wake MAC: ${host.wake_mac ?? "(reported)"}\n` +
             `Local IP: ${host.local_ip}\n` +
             `Current Game: ${host.current_game}\n` +
             `Max Luma Pixels Hevc: ${host.max_luma_pixels_hevc}\n` +

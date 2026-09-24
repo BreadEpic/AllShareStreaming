@@ -1,5 +1,6 @@
 import { ControllerConfig } from "../stream/gamepad"
 import { MouseMode, MouseScrollMode, TouchMode } from "../stream/input"
+import { VideoScaling } from "../stream/video/index"
 import { PageStyle } from "../styles/index"
 import { getLanguageOptions, getTranslations, Language, normalizeLanguage } from "../i18n"
 import { Component, ComponentEvent } from "./index"
@@ -21,15 +22,18 @@ export type Settings = {
     forceVideoElementRenderer: boolean
     canvasRenderer: boolean
     canvasVsync: boolean
+    videoScaling: VideoScaling
     playAudioLocal: boolean
     mouseScrollMode: MouseScrollMode
     mouseMode: MouseMode
     touchMode: TouchMode
     localCursorSensitivity: number
+    lockMouseOnClick: boolean
     controllerConfig: ControllerConfig
     dataTransport: TransportType
     language: Language
     enterFullscreenOnStreamStart: boolean
+    stayWindowedAfterFullscreenExit: boolean
     toggleFullscreenWithKeybind: boolean
     pageStyle: PageStyle
     hdr: boolean
@@ -155,6 +159,7 @@ export class StreamSettingsComponent implements Component {
     private forceVideoElementRenderer: InputComponent
     private canvasRenderer: InputComponent
     private canvasVsync: InputComponent
+    private videoScaling: SelectComponent
     private hdr: InputComponent
 
     private videoSize: SelectComponent
@@ -169,6 +174,7 @@ export class StreamSettingsComponent implements Component {
     private mouseMode: SelectComponent
     private touchMode: SelectComponent
     private localCursorSensitivity: InputComponent
+    private lockMouseOnClick: InputComponent
 
     private controllerHeader: HTMLHeadingElement = document.createElement("h3")
     private controllerInvertAB: InputComponent
@@ -179,6 +185,7 @@ export class StreamSettingsComponent implements Component {
     private dataTransport: SelectComponent
     private language: SelectComponent
     private enterFullscreenOnStreamStart: InputComponent
+    private stayWindowedAfterFullscreenExit: InputComponent
     private toggleFullscreenWithKeybind: InputComponent
 
     private pageStyle: SelectComponent
@@ -331,6 +338,18 @@ export class StreamSettingsComponent implements Component {
         this.canvasVsync.addChangeListener(this.onSettingsChange.bind(this))
         this.canvasVsync.mount(this.divElement)
 
+        // Video Scaling: how the stream fills the window when the aspect ratio doesn't match (e.g. not in fullscreen)
+        this.videoScaling = new SelectComponent("videoScaling", [
+            { value: "fit", name: i.videoScalingFit },
+            { value: "stretch", name: i.videoScalingStretch },
+            { value: "zoom", name: i.videoScalingZoom },
+        ], {
+            displayName: i.videoScaling,
+            preSelectedOption: settings?.videoScaling ?? defaultSettings_.videoScaling
+        })
+        this.videoScaling.addChangeListener(this.onSettingsChange.bind(this))
+        this.videoScaling.mount(this.divElement)
+
         // HDR
         this.hdr = new InputComponent("hdr", "checkbox", i.enableHdr, {
             checked: settings?.hdr ?? defaultSettings_.hdr
@@ -412,6 +431,12 @@ export class StreamSettingsComponent implements Component {
         this.localCursorSensitivity.addChangeListener(this.onSettingsChange.bind(this))
         this.localCursorSensitivity.mount(this.divElement)
 
+        this.lockMouseOnClick = new InputComponent("lockMouseOnClick", "checkbox", i.lockMouseOnClick, {
+            checked: settings?.lockMouseOnClick ?? defaultSettings_.lockMouseOnClick
+        })
+        this.lockMouseOnClick.addChangeListener(this.onSettingsChange.bind(this))
+        this.lockMouseOnClick.mount(this.divElement)
+
         // Controller
         if (window.isSecureContext) {
             this.controllerHeader.innerText = i.controller
@@ -490,6 +515,12 @@ export class StreamSettingsComponent implements Component {
         this.enterFullscreenOnStreamStart.addChangeListener(this.onSettingsChange.bind(this))
         this.enterFullscreenOnStreamStart.mount(this.divElement)
 
+        this.stayWindowedAfterFullscreenExit = new InputComponent("stayWindowedAfterFullscreenExit", "checkbox", i.stayWindowedAfterFullscreenExit, {
+            checked: settings?.stayWindowedAfterFullscreenExit ?? defaultSettings_.stayWindowedAfterFullscreenExit
+        })
+        this.stayWindowedAfterFullscreenExit.addChangeListener(this.onSettingsChange.bind(this))
+        this.stayWindowedAfterFullscreenExit.mount(this.divElement)
+
         // Fullscreen Keybind
         this.toggleFullscreenWithKeybind = new InputComponent("toggleFullscreenWithKeybind", "checkbox", i.toggleFullscreenWithKeybind, {
             checked: settings?.toggleFullscreenWithKeybind
@@ -500,7 +531,7 @@ export class StreamSettingsComponent implements Component {
         // Page Style
         this.pageStyle = new SelectComponent("pageStyle", [
             { value: "standard", name: "Standard" },
-            { value: "moonlight", name: "Moonlight" },
+            { value: "moonlight", name: "Classic" },
         ], {
             displayName: i.style,
             preSelectedOption: settings?.pageStyle ?? defaultSettings_.pageStyle
@@ -553,6 +584,7 @@ export class StreamSettingsComponent implements Component {
         settings.forceVideoElementRenderer = this.forceVideoElementRenderer.isChecked()
         settings.canvasRenderer = this.canvasRenderer.isChecked()
         settings.canvasVsync = this.canvasVsync.isChecked()
+        settings.videoScaling = this.videoScaling.getValue() as VideoScaling
 
         settings.playAudioLocal = this.playAudioLocal.isChecked()
 
@@ -560,6 +592,7 @@ export class StreamSettingsComponent implements Component {
         settings.mouseMode = this.mouseMode.getValue() as MouseMode
         settings.touchMode = this.touchMode.getValue() as TouchMode
         settings.localCursorSensitivity = parseFloat(this.localCursorSensitivity.getValue())
+        settings.lockMouseOnClick = this.lockMouseOnClick.isChecked()
 
         settings.controllerConfig.invertAB = this.controllerInvertAB.isChecked()
         settings.controllerConfig.invertXY = this.controllerInvertXY.isChecked()
@@ -573,6 +606,7 @@ export class StreamSettingsComponent implements Component {
         settings.language = this.language.getValue() as Language
 
         settings.enterFullscreenOnStreamStart = this.enterFullscreenOnStreamStart.isChecked()
+        settings.stayWindowedAfterFullscreenExit = this.stayWindowedAfterFullscreenExit.isChecked()
         settings.toggleFullscreenWithKeybind = this.toggleFullscreenWithKeybind.isChecked()
 
         settings.pageStyle = this.pageStyle.getValue() as any

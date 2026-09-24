@@ -2,7 +2,8 @@ import type { Translations } from "./en"
 
 export const zhCN: Translations = {
     index: {
-        appTitle: "Moonlight 网页版",
+        appTitle: "AllShare",
+        appTagline: "Powered by MMC",
         back: "返回",
         reload: "刷新",
         addHostUnreachable: (address: string) => `主机 "${address}" 无法访问`,
@@ -23,6 +24,11 @@ export const zhCN: Translations = {
         serverMessage: (message: string) => `服务器：${message}`,
         sendKeycode: "发送按键码",
         lockMouse: "锁定鼠标",
+        clickToLockMouse: "点击以锁定鼠标 · 按 Esc 释放",
+        scalingFit: "缩放：适应",
+        scalingStretch: "缩放：拉伸",
+        scalingZoom: "缩放：放大",
+        scalingTitle: "非全屏时串流画面如何填满窗口",
         keyboard: "键盘",
         hideKeyboard: "隐藏键盘",
         fullscreen: "全屏",
@@ -61,6 +67,10 @@ export const zhCN: Translations = {
         forceVideoElementRenderer: "强制使用 Video Element 渲染器（仅 WebRTC）",
         useCanvasRenderer: "使用 Canvas 渲染器",
         canvasVsync: "Canvas 垂直同步（减少撕裂）",
+        videoScaling: "视频缩放（窗口比例与串流不一致时）",
+        videoScalingFit: "适应（黑边）",
+        videoScalingStretch: "拉伸以填满窗口",
+        videoScalingZoom: "放大以填满窗口（裁剪边缘）",
         enableHdr: "启用 HDR",
         audio: "音频",
         playAudioLocal: "本地播放音频",
@@ -70,6 +80,7 @@ export const zhCN: Translations = {
         startupMouseMode: "串流启动后鼠标模式",
         startupTouchMode: "串流启动后触摸模式",
         localCursorSensitivity: "本地光标灵敏度",
+        lockMouseOnClick: "点击串流画面时重新锁定鼠标（相对模式）",
         highRes: "高精度",
         normal: "普通",
         controller: "手柄",
@@ -83,6 +94,7 @@ export const zhCN: Translations = {
         auto: "自动",
         webSocket: "WebSocket",
         enterFullscreenOnStreamStart: "首次操作串流时进入全屏",
+        stayWindowedAfterFullscreenExit: "退出全屏后保持窗口模式",
         saveRoleDefaults: "保存为当前角色默认设置",
         saveRoleDefaultsSuccess: "已将当前设置保存为当前角色默认",
         saveRoleDefaultsFailed: "保存角色默认设置失败",
@@ -139,14 +151,24 @@ export const zhCN: Translations = {
     host: {
         showDetails: "显示详情",
         open: "打开",
-        sendWakeUpPacket: "发送唤醒包",
+        wakeUp: "唤醒",
+        setWakeMac: "设置网络唤醒 MAC 地址",
         reload: "刷新",
         pair: "配对",
         makePrivate: "设为私有",
         makeGlobal: "设为全局",
         removeHost: "移除主机",
         failedToGetDetails: (id: number) => `无法获取主机 ${id} 的详情`,
-        wakeUpSent: "已发送唤醒包。你的电脑可能需要一点时间才能启动。",
+        wakingUp: (name: string) => `正在唤醒 ${name}…最多可能需要一分钟。`,
+        wakeUpSuccess: (name: string) => `${name} 已唤醒！`,
+        wakeUpTimeout: (name: string) => `${name} 没有被唤醒。请确认已在 BIOS 和网卡设置中启用网络唤醒（Wake-on-LAN），然后重试。`,
+        alreadyWaking: (name: string) => `正在唤醒 ${name}…`,
+        wakeMacUnknown: "此电脑的 MAC 地址未知，暂时无法唤醒。请在已配对的状态下开机一次，或通过右键 → “设置网络唤醒 MAC 地址”手动填写。",
+        wakeMacHeader: "网络唤醒",
+        wakeMacDescription: (reportedMac: string | null) => `仅在唤醒无效时需要填写。留空则使用电脑上报的 MAC 地址${reportedMac ? `（${reportedMac}）` : ""}。\n在 Windows 上可以通过 "ipconfig /all" 中的“物理地址”找到。`,
+        wakeMacLabel: "MAC 地址",
+        wakeMacInvalid: "MAC 地址无效。请使用 AA:BB:CC:DD:EE:FF 这样的格式。",
+        wakeMacSaved: "已保存网络唤醒 MAC 地址。",
         alreadyPaired: "该主机已经配对！",
         pairPrompt: (name: string, pin: string) => `请在主机 ${name} 上输入以下 PIN 完成配对：\nPIN: ${pin}`,
         overwriteMismatch: (currentId: number, incomingId: number) => `尝试用主机 ${incomingId} 的数据覆盖主机 ${currentId}`,
@@ -163,6 +185,7 @@ export const zhCN: Translations = {
             `GFE 版本: ${host.gfe_version}\n` +
             `唯一 ID: ${host.unique_id}\n` +
             `MAC: ${host.mac}\n` +
+            `唤醒 MAC: ${host.wake_mac ?? "（电脑上报）"}\n` +
             `本地 IP: ${host.local_ip}\n` +
             `当前游戏: ${host.current_game}\n` +
             `HEVC 最大亮度像素: ${host.max_luma_pixels_hevc}\n` +

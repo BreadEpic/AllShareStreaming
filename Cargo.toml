@@ -1,5 +1,6 @@
 [package]
-name = "web-server"
+name = "allshare"
+description = "AllShare (Powered by MMC): stream your PC to any browser"
 version = "3.0.0-prerelease.7"
 edition = "2024"
 license = "GPL-3.0-or-later"
@@ -63,6 +64,9 @@ pbkdf2 = { version = "0.13.0", features = ["sha2"] }
 # Other
 uuid = { version = "1.24.0" }
 hex = { version = "0.4.3" }
+
+# Wake-on-LAN
+if-addrs = "0.15.0"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_System_Console"] }

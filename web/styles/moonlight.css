@@ -1004,3 +1004,75 @@ canvas.video-stream {
 .role-info-delete {
     background-color: red;
 }
+/* Host waking up from sleep (Wake-on-LAN) */
+.host-waking .host-image {
+    animation: host-waking-pulse 1.6s ease-in-out infinite;
+}
+
+.host-waking .host-name::after {
+    content: " …";
+}
+
+@keyframes host-waking-pulse {
+
+    0%,
+    100% {
+        opacity: 1;
+        filter: none;
+    }
+
+    50% {
+        opacity: 0.5;
+        filter: drop-shadow(0 0 12px #ffc107);
+    }
+}
+
+/* Video scaling: fill the whole window even when it's not in fullscreen */
+html.video-scale-stretch .video-stream,
+html.video-scale-zoom .video-stream {
+    width: 100vw;
+    height: 100vh;
+    max-width: none;
+    max-height: none;
+    min-width: 0;
+    min-height: 0;
+}
+
+html.video-scale-stretch .video-stream {
+    object-fit: fill;
+}
+
+html.video-scale-zoom .video-stream {
+    object-fit: cover;
+}
+
+/* Shown in relative mouse mode while the mouse isn't locked */
+.mouse-lock-hint {
+    position: fixed;
+    left: 50%;
+    bottom: 24px;
+    transform: translateX(-50%);
+    z-index: 2;
+    padding: 8px 16px;
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.7);
+    color: #ffffff;
+    font-size: 0.9rem;
+    pointer-events: none;
+    white-space: nowrap;
+}
+
+.mouse-lock-hint[hidden] {
+    display: none;
+}
+
+/* AllShare title: "Powered by MMC" */
+.app-tagline {
+    margin-left: 0.6em;
+    font-size: 0.45em;
+    font-weight: 400;
+    letter-spacing: 0.5px;
+    opacity: 0.75;
+    vertical-align: middle;
+    white-space: nowrap;
+}

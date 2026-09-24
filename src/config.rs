@@ -245,6 +245,10 @@ pub struct MoonlightConfig {
     pub default_http_port: u16,
     #[serde(default = "default_pair_device_name")]
     pub pair_device_name: String,
+    /// Extra addresses ("ip" or "ip:port") that Wake-on-LAN packets are sent to,
+    /// e.g. the broadcast address of your LAN when running inside a docker bridge network.
+    #[serde(default)]
+    pub wake_on_lan_addresses: Vec<String>,
 }
 
 impl Default for MoonlightConfig {
@@ -252,6 +256,7 @@ impl Default for MoonlightConfig {
         Self {
             default_http_port: default_moonlight_http_port(),
             pair_device_name: default_pair_device_name(),
+            wake_on_lan_addresses: Vec::new(),
         }
     }
 }
@@ -261,5 +266,5 @@ fn default_moonlight_http_port() -> u16 {
 }
 
 fn default_pair_device_name() -> String {
-    "roth".to_string()
+    "AllShare".to_string()
 }

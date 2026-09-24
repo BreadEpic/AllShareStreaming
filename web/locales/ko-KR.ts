@@ -2,7 +2,8 @@ import type { Translations } from "./en"
 
 export const koKR: Translations = {
     index: {
-        appTitle: "Moonlight Web",
+        appTitle: "AllShare",
+        appTagline: "Powered by MMC",
         back: "뒤로",
         reload: "새로고침",
         addHostUnreachable: (address: string) => `호스트 "${address}"에 연결할 수 없습니다.`,
@@ -23,6 +24,11 @@ export const koKR: Translations = {
         serverMessage: (message: string) => `서버: ${message}`,
         sendKeycode: "키코드 전송",
         lockMouse: "마우스 가두기",
+        clickToLockMouse: "클릭하면 마우스를 가둡니다 · Esc로 해제",
+        scalingFit: "크기: 맞춤",
+        scalingStretch: "크기: 늘이기",
+        scalingZoom: "크기: 확대",
+        scalingTitle: "전체 화면이 아닐 때 스트림이 창을 채우는 방식",
         keyboard: "키보드",
         hideKeyboard: "키보드 숨기기",
         fullscreen: "전체 화면",
@@ -61,6 +67,10 @@ export const koKR: Translations = {
         forceVideoElementRenderer: "비디오 요소 렌더러 강제 사용 (WebRTC 전용)",
         useCanvasRenderer: "Canvas 렌더러 사용",
         canvasVsync: "Canvas 수직 동기화 (티어링 감소)",
+        videoScaling: "비디오 크기 조정 (창 비율이 스트림과 다를 때)",
+        videoScalingFit: "맞춤 (검은 여백)",
+        videoScalingStretch: "창에 맞게 늘이기",
+        videoScalingZoom: "창을 채우도록 확대 (가장자리 잘림)",
         enableHdr: "HDR 활성화",
         audio: "오디오",
         playAudioLocal: "로컬 오디오 재생",
@@ -70,6 +80,7 @@ export const koKR: Translations = {
         startupMouseMode: "스트리밍 시작 시 마우스 모드",
         startupTouchMode: "스트리밍 시작 시 터치 모드",
         localCursorSensitivity: "로컬 커서 감도",
+        lockMouseOnClick: "스트림을 클릭하면 마우스 다시 가두기 (상대 모드)",
         highRes: "고해상도",
         normal: "일반",
         controller: "컨트롤러",
@@ -83,6 +94,7 @@ export const koKR: Translations = {
         auto: "자동",
         webSocket: "웹 소켓 (Web Socket)",
         enterFullscreenOnStreamStart: "스트림 첫 상호작용 시 전체 화면으로 전환",
+        stayWindowedAfterFullscreenExit: "전체 화면을 나간 후 다시 전환하지 않기",
         saveRoleDefaults: "현재 설정을 역할 기본값으로 저장",
         saveRoleDefaultsSuccess: "현재 설정을 역할 기본값으로 저장했습니다.",
         saveRoleDefaultsFailed: "역할 기본 설정을 저장하지 못했습니다.",
@@ -139,14 +151,24 @@ export const koKR: Translations = {
     host: {
         showDetails: "상세 정보",
         open: "열기",
-        sendWakeUpPacket: "Wake on LAN 패킷 전송",
+        wakeUp: "깨우기",
+        setWakeMac: "Wake-on-LAN MAC 주소 설정",
         reload: "새로고침",
         pair: "페어링",
         makePrivate: "개인용으로 설정",
         makeGlobal: "공용으로 설정",
         removeHost: "호스트 제거",
         failedToGetDetails: (id: number) => `호스트 ${id}의 상세 정보를 가져오지 못했습니다.`,
-        wakeUpSent: "매직 패킷을 전송했습니다. PC가 켜질 때까지 잠시 기다려 주세요.",
+        wakingUp: (name: string) => `${name}을(를) 깨우는 중… 최대 1분 정도 걸릴 수 있습니다.`,
+        wakeUpSuccess: (name: string) => `${name}이(가) 켜졌습니다!`,
+        wakeUpTimeout: (name: string) => `${name}이(가) 깨어나지 않았습니다. BIOS와 네트워크 어댑터 설정에서 Wake-on-LAN이 켜져 있는지 확인한 뒤 다시 시도하세요.`,
+        alreadyWaking: (name: string) => `이미 ${name}을(를) 깨우는 중입니다…`,
+        wakeMacUnknown: "이 PC의 MAC 주소를 알 수 없어 아직 깨울 수 없습니다. 페어링된 상태에서 한 번 켜 두거나, 마우스 오른쪽 클릭 → \"Wake-on-LAN MAC 주소 설정\"에서 MAC 주소를 입력하세요.",
+        wakeMacHeader: "Wake-on-LAN",
+        wakeMacDescription: (reportedMac: string | null) => `깨우기가 동작하지 않을 때만 필요합니다. 비워 두면 PC가 알려준 MAC 주소를 사용합니다${reportedMac ? ` (${reportedMac})` : ""}.\nWindows에서는 "ipconfig /all"의 "물리적 주소"에서 확인할 수 있습니다.`,
+        wakeMacLabel: "MAC 주소",
+        wakeMacInvalid: "올바른 MAC 주소가 아닙니다. AA:BB:CC:DD:EE:FF 형식으로 입력하세요.",
+        wakeMacSaved: "Wake-on-LAN MAC 주소를 저장했습니다.",
         alreadyPaired: "이 호스트는 이미 페어링되어 있습니다!",
         pairPrompt: (name: string, pin: string) => `호스트 ${name}에서 아래 PIN 번호를 입력해 주세요:\nPIN: ${pin}`,
         overwriteMismatch: (currentId: number, incomingId: number) => `호스트 ${currentId}를 ${incomingId}의 데이터로 덮어쓰려 시도했습니다.`,
@@ -163,6 +185,7 @@ export const koKR: Translations = {
             `GFE 버전: ${host.gfe_version}\n` +
             `고유 ID: ${host.unique_id}\n` +
             `MAC 주소: ${host.mac}\n` +
+            `깨우기 MAC 주소: ${host.wake_mac ?? "(PC가 알려준 주소)"}\n` +
             `로컬 IP: ${host.local_ip}\n` +
             `실행 중인 게임: ${host.current_game}\n` +
             `최대 Luma 픽셀 (HEVC): ${host.max_luma_pixels_hevc}\n` +
