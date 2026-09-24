@@ -35,6 +35,17 @@
     text-shadow: 0 0 12px var(--accent-ring);
 }
 
+/* "Powered by MMC" next to the AllShare title */
+.app-header h1 .app-tagline {
+    font-size: 0.55em;
+    font-weight: 500;
+    letter-spacing: 1px;
+    text-transform: none;
+    text-shadow: none;
+    color: var(--text-2);
+    white-space: nowrap;
+}
+
 .version {
     font-size: var(--fs-xs);
     font-weight: 600;

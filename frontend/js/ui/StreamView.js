@@ -92,6 +92,13 @@ import { t } from '../i18n/i18n.js';
 
 /** @typedef {import('../types/transport.js').StreamTransport} StreamTransport */
 import { escapeHtml } from '../util/escapeHtml.js';
+import {
+    loadPictureFill,
+    nextPictureFill,
+    normalizePictureFill,
+    pictureRect,
+    savePictureFill,
+} from '../util/PictureFill.js';
 import { shortcutsGridHtml, shortcutsTitle } from '../util/shortcutsHelp.js';
 import { Icons } from './icons.js';
 import { ShareMenu } from './ShareMenu.js';
@@ -461,6 +468,12 @@ export class StreamView {
         // Mobile only: direct touch-screen input (absolute finger position) in
         // place of the relative trackpad model. Off by default.
         this._touchScreen = touchScreen === true;
+        // How the picture fills the area when the window's shape differs from
+        // the host screen's (a window that is not in fullscreen): fit, stretch
+        // or zoom — see util/PictureFill.js.
+        this._pictureFill = normalizePictureFill(
+            opts.pictureFill !== undefined ? opts.pictureFill : loadPictureFill(),
+        );
         // YUV 4:4:4 chroma negotiated by the backend (vs default 4:2:0). Used
         // only to annotate the codec in the stats overlay.
         this._yuv444 = yuv444 === true;
@@ -859,6 +872,9 @@ export class StreamView {
             /* storage unavailable */
         }
         this._rawPointer = false;
+        // Whether the current pointer lock reports the mouse's own counts
+        // (unadjustedMovement) — see _lockPointer / _isMovementSpike.
+        this._lockUnadjusted = false;
         this._lastRawPointerMs = 0; // last pointerrawupdate seen — see _rawPointerLive
         this._mediaRectWarned = false; // one line when the media rect fell back
         this.pointerLocked = false;
@@ -1730,6 +1746,7 @@ export class StreamView {
         // so a hidden standby view resolves its OWN children even while the
         // live view's identically-id'd elements are still in the document.
         this._rootEl = el;
+        this._applyPictureFillClass();
         if (this._standby) {
             // Hidden, not display:none — decode/render must keep presenting so
             // the promote can swap on an already-flowing surface.
@@ -1739,7 +1756,7 @@ export class StreamView {
         el.innerHTML = `
             <div class="stream-header">
                 <div class="stream-brand" aria-hidden="true">
-                    <span class="stream-brand-title">MoonlightWeb</span>
+                    <span class="stream-brand-title">AllShare</span>
                     ${
                         // The shell's own classes, and its own nesting: the name
                         // sits inside .instance-menu because that is where its
@@ -7053,19 +7070,10 @@ export class StreamView {
         this._mediaRectCache = null;
     }
 
-    /** Uncached measurement — the single layout read behind _mediaRect(). */
+    /** Uncached measurement — the single layout read behind _mediaRect().
+     *  Follows the picture fill mode, which decides the CSS object-fit. */
     _computeMediaRect(el, iw, ih) {
-        const r = el.getBoundingClientRect();
-        if (!iw || !ih) return r;
-        const scale = Math.min(r.width / iw, r.height / ih);
-        const w = iw * scale,
-            h = ih * scale;
-        return {
-            left: r.left + (r.width - w) / 2,
-            top: r.top + (r.height - h) / 2,
-            width: w,
-            height: h,
-        };
+        return pictureRect(el.getBoundingClientRect(), iw, ih, this._pictureFill);
     }
 
     _bindGamingEvents() {
@@ -7083,6 +7091,7 @@ export class StreamView {
                 // Raw mode: every report already went out from _onPointerRaw;
                 // this is the same motion summed up, a frame late.
                 if (this._rawPointerLive()) return;
+                if (this._isMovementSpike(e.movementX, e.movementY)) return;
                 this._sendRelativeMouse(e.movementX, e.movementY);
             } else {
                 this._lastMouseClientX = e.clientX;
@@ -7119,19 +7128,23 @@ export class StreamView {
             if (this._mouseFocused) return; // Already focused — click handled by mousedown/mouseup
             e.preventDefault();
 
-            // Send absolute position so the host cursor teleports to the clicked point
+            // Send absolute position so the host cursor teleports to the clicked
+            // point — only when the click is ON the picture. A click on the bars
+            // around it used to be clamped to the nearest edge, so the host
+            // pointer started the capture parked on the side of the screen.
             const rect = this._mediaRect();
-            const x = Math.round(Math.max(0, Math.min(e.clientX - rect.left, rect.width)));
-            const y = Math.round(Math.max(0, Math.min(e.clientY - rect.top, rect.height)));
-            const refW = Math.round(rect.width);
-            const refH = Math.round(rect.height);
-            this._sendToHost({
-                type: 'mousemove',
-                x,
-                y,
-                referenceWidth: refW,
-                referenceHeight: refH,
-            });
+            const rawX = e.clientX - rect.left;
+            const rawY = e.clientY - rect.top;
+            const inside = rawX >= 0 && rawY >= 0 && rawX <= rect.width && rawY <= rect.height;
+            if (inside) {
+                this._sendToHost({
+                    type: 'mousemove',
+                    x: Math.round(rawX),
+                    y: Math.round(rawY),
+                    referenceWidth: Math.round(rect.width),
+                    referenceHeight: Math.round(rect.height),
+                });
+            }
             const p = this._lockPointer();
             if (p && typeof p.catch === 'function')
                 p.catch(() => {
@@ -8109,14 +8122,22 @@ export class StreamView {
             p = el.requestPointerLock({ unadjustedMovement: true });
         } catch (e) {
             // An old engine that takes no argument object and throws on one.
+            this._lockUnadjusted = false;
             return el.requestPointerLock();
         }
-        if (!p || typeof p.catch !== 'function') return p;
+        // Firefox and Safari ignore the option and return undefined: a plain
+        // lock, whose moves _isMovementSpike() has to watch.
+        if (!p || typeof p.catch !== 'function') {
+            this._lockUnadjusted = false;
+            return p;
+        }
+        this._lockUnadjusted = true;
         return p.catch((err) => {
             if (err && err.name === 'NotSupportedError') {
                 console.log(
                     '[StreamView] Mouse: unadjusted movement unsupported here, plain pointer lock',
                 );
+                this._lockUnadjusted = false;
                 return el.requestPointerLock();
             }
             throw err;
@@ -8654,6 +8675,13 @@ export class StreamView {
             if (chk('m', 'KeyM')) {
                 e.preventDefault();
                 this.toggleMouseMode();
+                return;
+            }
+            // Picture fill (fit / stretch / zoom): Ctrl+Alt+Shift+F (Win) /
+            // Cmd+Option+Ctrl+F (Mac)
+            if (chk('f', 'KeyF')) {
+                e.preventDefault();
+                this.cyclePictureFill();
                 return;
             }
 
@@ -9583,7 +9611,25 @@ export class StreamView {
     handleMouseMove(e) {
         if (!this.pointerLocked) return;
         if (this._rawPointer) return; // already sent per report by _onPointerRaw
+        if (this._isMovementSpike(e.movementX, e.movementY)) return;
         this._sendRelativeMouse(e.movementX, e.movementY);
+    }
+
+    /**
+     * A move no hand made. Without `unadjustedMovement` (Firefox, Safari, or a
+     * Chromium that refused it) the browser reports its own cursor warps as
+     * motion — a single event of hundreds of pixels that throws the host
+     * pointer against the side of its screen (see _lockPointer). Anything
+     * wider than half the screen in one event is such a warp; the raw counts
+     * of an unadjusted lock are left alone, a fast flick there is real.
+     */
+    _isMovementSpike(dx, dy) {
+        if (this._lockUnadjusted) return false;
+        const scr = window.screen;
+        const maxX = Math.max((scr && scr.width) || 0, window.innerWidth || 0) / 2;
+        const maxY = Math.max((scr && scr.height) || 0, window.innerHeight || 0) / 2;
+        if (!(maxX > 0) || !(maxY > 0)) return false;
+        return Math.abs(dx) > maxX || Math.abs(dy) > maxY;
     }
 
     handleMouseDown(e) {
@@ -9699,6 +9745,35 @@ export class StreamView {
         } else {
             this._requestFullscreen();
         }
+    }
+
+    /**
+     * Switch the picture fill to the next mode (fit → stretch → zoom) and keep
+     * it for the next streams. Out of fullscreen the window is shorter than the
+     * host's screen: stretch and zoom fill it without the bars on the sides.
+     */
+    cyclePictureFill() {
+        const fill = nextPictureFill(this._pictureFill);
+        this.setPictureFill(fill);
+        savePictureFill(fill);
+        this._showTransientHint(t('stream.pictureFill_' + fill), 2000);
+    }
+
+    /** Apply a picture fill mode to this view (CSS + input mapping). */
+    setPictureFill(fill) {
+        this._pictureFill = normalizePictureFill(fill);
+        this._applyPictureFillClass();
+        // The picture moved on the glass: positions must be mapped afresh and
+        // the pointer drawn over it must follow.
+        this._invalidateMediaRect();
+        this._applyHostCursor();
+        this._placeClientCursor();
+    }
+
+    _applyPictureFillClass() {
+        if (!this._rootEl) return;
+        this._rootEl.classList.toggle('stream-fill-stretch', this._pictureFill === 'stretch');
+        this._rootEl.classList.toggle('stream-fill-zoom', this._pictureFill === 'zoom');
     }
 
     /**

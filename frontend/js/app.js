@@ -2929,6 +2929,9 @@ const MoonlightApp = {
             // learns the viewer's mouse resolution, so a low-DPI mouse makes a
             // game slow to aim with, and this is the one place to answer it.
             mouseSensitivity: streamingSettings.mouse_sensitivity,
+            // Fit / stretch / zoom: how the picture fills a window whose shape
+            // differs from the host screen's (see util/PictureFill.js).
+            pictureFill: streamingSettings.picture_fill,
             // Click-to-photon probe: the host says whether it raises its flag
             // on every click (debug builds on Windows, setting on). Only then
             // does the view install its measuring side.

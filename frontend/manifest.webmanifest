@@ -1,6 +1,6 @@
 {
-    "name": "MoonlightWeb",
-    "short_name": "MoonlightWeb",
+    "name": "AllShare (Powered by MMC)",
+    "short_name": "AllShare",
     "description": "Sunshine game streaming in the browser",
     "start_url": "/",
     "scope": "/",

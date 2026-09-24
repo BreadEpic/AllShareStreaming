@@ -213,7 +213,7 @@ export class SetupView {
             <div class="login-view" id="view-setup">
                 <div class="login-box setup-box">
                     <div class="login-logo">
-                        <span class="login-logo-img" role="img" aria-label="Moonlight"></span>
+                        <span class="login-logo-img" role="img" aria-label="AllShare"></span>
                     </div>
                     <h1 class="login-title">${t('setup.title')}</h1>
                     ${body}

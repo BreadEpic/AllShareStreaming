@@ -1209,31 +1209,65 @@ std::pair<int, QJsonObject> ComputerManager::handleWakeHost(const QString& uuid)
     for (int i = 0; i < 16; ++i)
         packet.append(host->macAddress);
 
-    // Targets: global broadcast + subnet-directed broadcast derived from the
-    // host's known addresses (a sleeping host won't answer ARP, so unicast to
-    // its last IP is useless — broadcasting is what wakes it).
+    // Targets. A sleeping host won't answer ARP, so what wakes it is a
+    // broadcast — and the global one only leaves through the interface holding
+    // the default route (a VPN or VM adapter, on some machines). So: the global
+    // broadcast, the directed broadcast of EVERY network this server is on, and
+    // the host's own subnets assuming /24 (reached even from behind a NAT such
+    // as a docker bridge). Its last addresses get it unicast as well, for a
+    // router that keeps a static ARP entry or forwards the WoL port.
     QSet<quint32> targets;
     targets.insert(QHostAddress(QHostAddress::Broadcast).toIPv4Address());
 
-    auto addSubnetBroadcast = [&](const NvAddress& a) {
+    for (const QNetworkInterface& iface : QNetworkInterface::allInterfaces()) {
+        const QNetworkInterface::InterfaceFlags flags = iface.flags();
+        if (!flags.testFlag(QNetworkInterface::IsUp) ||
+            !flags.testFlag(QNetworkInterface::IsRunning) ||
+            flags.testFlag(QNetworkInterface::IsLoopBack) ||
+            !flags.testFlag(QNetworkInterface::CanBroadcast))
+            continue;
+        for (const QNetworkAddressEntry& entry : iface.addressEntries()) {
+            const QHostAddress bcast = entry.broadcast();
+            if (bcast.protocol() == QAbstractSocket::IPv4Protocol)
+                targets.insert(bcast.toIPv4Address());
+        }
+    }
+
+    auto addHostAddress = [&](const NvAddress& a) {
         if (a.address().isEmpty()) return;
         QHostAddress h(a.address());
         if (h.protocol() != QAbstractSocket::IPv4Protocol) return;
+        targets.insert(h.toIPv4Address());
         targets.insert(h.toIPv4Address() | 0x000000FF); // assume /24
     };
-    addSubnetBroadcast(host->localAddress);
-    addSubnetBroadcast(host->activeAddress);
+    addHostAddress(host->localAddress);
+    addHostAddress(host->activeAddress);
+    addHostAddress(host->manualAddress);
 
-    // WoL is conventionally sent to UDP discard (9) and echo (7).
-    static const quint16 wolPorts[] = {9, 7};
+    // UDP discard (9) and echo (7) by convention, 47009 for the Moonlight
+    // Internet Hosting Tool, and Sunshine's own ports — the list moonlight-qt
+    // sends to, so a router forwarding any of them delivers the packet.
+    static const quint16 wolPorts[] = {9, 7, 47009, 47998, 47999, 48000, 48002, 48010};
 
-    QUdpSocket socket;
-    bool sentAny = false;
-    for (quint32 ip : targets) {
-        for (quint16 port : wolPorts) {
-            if (socket.writeDatagram(packet, QHostAddress(ip), port) == packet.size())
-                sentAny = true;
+    const QList<quint32> targetList = targets.values();
+    auto sendAll = [packet, targetList]() {
+        QUdpSocket socket;
+        bool sent = false;
+        for (quint32 ip : targetList) {
+            for (quint16 port : wolPorts) {
+                if (socket.writeDatagram(packet, QHostAddress(ip), port) == packet.size())
+                    sent = true;
+            }
         }
+        return sent;
+    };
+
+    const bool sentAny = sendAll();
+    // Twice more, a moment apart: a single datagram is easily lost on a busy
+    // or Wi-Fi segment, and a card still settling into sleep can miss it.
+    if (sentAny) {
+        QTimer::singleShot(300, this, [sendAll]() { sendAll(); });
+        QTimer::singleShot(900, this, [sendAll]() { sendAll(); });
     }
 
     if (!sentAny)

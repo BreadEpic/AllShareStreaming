@@ -80,7 +80,7 @@
         "sunshineInstallFailed": "L'installation de Sunshine a échoué : {{error}}. Réessayez (votre mot de passe vous sera redemandé), décochez Sunshine ou ignorez cette étape."
     },
     "footer": {
-        "tagline": "MoonlightWeb — Client de streaming de jeux"
+        "tagline": "AllShare (Powered by MMC) — Client de streaming de jeux"
     },
     "appError": {
         "title": "Erreur",
@@ -112,6 +112,9 @@
         "wakeTitle": "Wake On LAN",
         "promptManual": "Saisissez l'adresse IP de l'hôte (ex. : 192.168.1.5) :",
         "wolSent": "Wake-on-LAN envoyé à « {{name}} »",
+        "wakingBtn": "Réveil…",
+        "wakeDone": "« {{name}} » est réveillé",
+        "wakeTimeout": "« {{name}} » ne s'est pas réveillé. Vérifiez que le Wake-on-LAN est activé dans son BIOS et sur sa carte réseau (connexion filaire), puis réessayez.",
         "addedSuccess": "« {{name}} » ajouté avec succès",
         "alreadyInList": "« {{name}} » déjà dans la liste",
         "noHostReturned": "Aucun hôte renvoyé par le serveur",
@@ -341,6 +344,11 @@
         "aspectAuto": "Auto",
         "frameRate": "Fréquence d'images",
         "frameRateDesc": "Une fréquence d'images élevée aide à réduire la latence mais demande plus de bande passante.",
+        "pictureFill": "Remplissage de l'image",
+        "pictureFillDesc": "Quand la fenêtre n'a pas la forme de l'écran de l'hôte (hors plein écran), l'image a des bandes sur les côtés. Étirer ou Zoomer remplissent toute la fenêtre. Raccourci pendant un stream : {{combo}}.",
+        "pictureFill_fit": "Ajuster (image entière, bandes sur les côtés)",
+        "pictureFill_stretch": "Étirer pour remplir la fenêtre",
+        "pictureFill_zoom": "Zoomer pour remplir la fenêtre (rogne les bords)",
         "fpsSuffix": "{{fps}} FPS",
         "fpsAuto": "Auto (la cadence de votre écran)",
         "fpsAutoMeasured": "Auto ({{fps}} FPS, la cadence de votre écran)",
@@ -665,6 +673,10 @@
         "scFullscreen": "Plein écran",
         "scRelease": "Quitter le mode jeu (souris + plein écran)",
         "scMouseMode": "Basculer le mode jeu souris",
+        "scPictureFill": "Remplissage de l'image : ajuster / étirer / zoomer",
+        "pictureFill_fit": "Image : ajustée (bandes sur les côtés)",
+        "pictureFill_stretch": "Image : étirée pour remplir la fenêtre",
+        "pictureFill_zoom": "Image : zoomée pour remplir la fenêtre",
         "scDesktopPrev": "Bureau précédent sur l’hôte",
         "scDesktopNext": "Bureau suivant sur l’hôte",
         "touchTitle": "Commandes tactiles",

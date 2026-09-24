@@ -52,6 +52,7 @@ export function keyboardShortcutRows(isMac) {
         [t('stream.scFullscreen'), ...mods, 'X'],
         [t('stream.scRelease'), ...mods, 'Z'],
         [t('stream.scMouseMode'), ...mods, 'M'],
+        [t('stream.scPictureFill'), ...mods, 'F'],
         [t('stream.scDesktopPrev'), ...mods, '←'],
         [t('stream.scDesktopNext'), ...mods, '→'],
     ];

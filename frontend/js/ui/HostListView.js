@@ -131,6 +131,12 @@ export class HostListView {
     static UPDATE_CHECK_MS = 30 * 60 * 1000;
     static UPDATE_CHECK_MIN_MS = 5 * 60 * 1000;
 
+    // Wake-on-LAN: how long a woken host is waited for before saying it did
+    // not come up, and when the packet goes out a second time — a network card
+    // still settling into sleep can miss the first one.
+    static WAKE_TIMEOUT_MS = 2 * 60 * 1000;
+    static WAKE_RESEND_MS = 20 * 1000;
+
     constructor(container) {
         this.container = container;
         this.hosts = [];
@@ -157,6 +163,9 @@ export class HostListView {
         // Cards currently fading from "launch refused" orange back to neutral,
         // each with the timer that will strip the class.
         this._launchFailTimers = new Map();
+        // Hosts a Wake-on-LAN was sent to and that are not up yet, by uuid:
+        // { since, resent }. Checked on every host poll — see _checkWaking.
+        this._waking = new Map();
         this._active = false;
         this._destroyed = false;
         // Update banner: the cached GitHub-Releases result, and whether an update
@@ -285,6 +294,7 @@ export class HostListView {
             if (wolBtn) {
                 const uuid = wolBtn.dataset.uuid;
                 const host = this.hosts.find((h) => h.uuid === uuid);
+                if (this._waking.has(uuid)) return;
                 wolBtn.disabled = true;
                 BackendClient.wakeHost(uuid)
                     .then(() => {
@@ -292,6 +302,10 @@ export class HostListView {
                             t('hosts.wolSent', { name: host ? host.displayName : uuid }),
                             'success',
                         );
+                        // The card says "Waking…" until the host answers; the
+                        // 3 s host poll notices it and reports back.
+                        this._waking.set(uuid, { since: Date.now(), resent: false });
+                        this.renderList();
                     })
                     .catch((err) => {
                         console.error('[MW] Wake-on-LAN failed:', err);
@@ -824,6 +838,7 @@ export class HostListView {
                 if (idx >= 0) this.hosts[idx] = host;
                 else this.hosts.push(host);
             }
+            this._checkWaking();
             const firstLoad = !this._hostsLoaded;
             this._hostsLoaded = true;
             const after = this._fingerprint();
@@ -844,10 +859,37 @@ export class HostListView {
         }
     }
 
+    /**
+     * Follow the hosts a Wake-on-LAN went to: say so when one is up (it answers
+     * at the IP level, even before its streaming server is running), send the
+     * packet once more after WAKE_RESEND_MS, and give up after WAKE_TIMEOUT_MS
+     * with the usual reasons a machine ignores the packet.
+     */
+    _checkWaking() {
+        const now = Date.now();
+        for (const [uuid, wake] of this._waking) {
+            const host = this.hosts.find((h) => h.uuid === uuid);
+            const name = host ? host.displayName : uuid;
+            if (host && (host.isOnline || host.reachable)) {
+                this._waking.delete(uuid);
+                Toast.success(t('hosts.wakeDone', { name }));
+            } else if (now - wake.since > HostListView.WAKE_TIMEOUT_MS) {
+                this._waking.delete(uuid);
+                Toast.warning(t('hosts.wakeTimeout', { name }));
+            } else if (!wake.resent && now - wake.since > HostListView.WAKE_RESEND_MS) {
+                wake.resent = true;
+                BackendClient.wakeHost(uuid).catch((err) =>
+                    console.warn('[MW] Wake-on-LAN resend failed:', err),
+                );
+            }
+        }
+    }
+
     // Stable fingerprint of host list — skips re-render when nothing changed
     _fingerprint() {
         return JSON.stringify(
             this.hosts.map((h) => [
+                this._waking.has(h.uuid),
                 h.uuid,
                 h.state,
                 h.reachable,
@@ -867,6 +909,7 @@ export class HostListView {
 
     _cardFingerprint(host) {
         return [
+            this._waking.has(host.uuid),
             host.uuid,
             host.state,
             host.reachable,
@@ -1136,6 +1179,12 @@ export class HostListView {
         if (host.isLocked) {
             return `<div class="host-body-center">
                         <button class="btn btn-secondary btn-pair" data-uuid="${host.uuid}">${t('common.pair')}</button>
+                    </div>`;
+        }
+        if (host.canWake && this._waking.has(host.uuid)) {
+            return `<div class="host-body-center">
+                        <button class="btn btn-secondary btn-wol btn-wol--waking" data-uuid="${host.uuid}"
+                                disabled>${Icons.power}${t('hosts.wakingBtn')}</button>
                     </div>`;
         }
         if (host.canWake) {

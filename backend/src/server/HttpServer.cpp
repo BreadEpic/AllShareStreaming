@@ -754,7 +754,11 @@ void HttpServer::personaliseForHomeScreen(const HttpRequest& req, HttpResponse& 
                                           const QString& ifNoneMatch) const
 {
     const HomeScreenIdentity who = m_HomeScreenIdentity(req);
-    const QString title = mw::homescreen::title(mw::edition::displayName(), who.machineName);
+    // The page and its home-screen shortcut are branded AllShare; the program
+    // itself (tray, desktop shortcuts, autostart) keeps its edition name.
+    const QString brand =
+        mw::edition::isDevBuild() ? QStringLiteral("AllShare Dev") : QStringLiteral("AllShare");
+    const QString title = mw::homescreen::title(brand, who.machineName);
     // The served copies, so a DEV identity's shortcut wears its blue icons.
     const auto icon = [this](const char* path) {
         const HttpResponse file = m_StaticFiles->serveFile(QString::fromLatin1(path));

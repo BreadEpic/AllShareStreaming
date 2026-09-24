@@ -1696,3 +1696,21 @@ body.streaming-active::after {
         animation: none;
     }
 }
+
+/* ── Picture fill (Settings → Picture fill, or Ctrl+Alt+Shift+F) ──────────── */
+/* Out of fullscreen the window is shorter than the host's screen and the
+   picture gets bars on its sides. Stretch fills the window with the whole
+   picture, zoom fills it and cuts what overflows. StreamView maps the mouse
+   with the same geometry (util/PictureFill.js). Last in the file so it wins
+   over every object-fit: contain above, CSS fallback fullscreen included. */
+.stream-fill-stretch .stream-canvas,
+.stream-fill-stretch .stream-video,
+.stream-fill-stretch .stream-stale-poster {
+    object-fit: fill;
+}
+
+.stream-fill-zoom .stream-canvas,
+.stream-fill-zoom .stream-video,
+.stream-fill-zoom .stream-stale-poster {
+    object-fit: cover;
+}

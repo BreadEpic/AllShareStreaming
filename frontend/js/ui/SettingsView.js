@@ -31,7 +31,7 @@ import { BackendClient } from '../api/BackendClient.js';
 import { Toast } from './Toast.js';
 import { t, getLanguage, setLanguage, AVAILABLE_LANGUAGES } from '../i18n/i18n.js';
 import { escapeHtml } from '../util/escapeHtml.js';
-import { shortcutsGridHtml, shortcutsTitle } from '../util/shortcutsHelp.js';
+import { comboModifiers, shortcutsGridHtml, shortcutsTitle } from '../util/shortcutsHelp.js';
 import { noticeDetailsHtml } from './PrivacyNotice.js';
 import {
     GamepadRemapDialog,
@@ -52,6 +52,7 @@ import {
 import { aspectToNumber, computeAutoBitrate } from '../util/AutoBitrate.js';
 import { autoFps, measuredFps } from '../util/RefreshRate.js';
 import { ASPECT_VALUES, SCREEN_ASPECTS } from '../util/AspectRatio.js';
+import { normalizePictureFill, PICTURE_FILLS } from '../util/PictureFill.js';
 import {
     CUSTOM_SIZE_MAX,
     CUSTOM_SIZE_MIN,
@@ -102,6 +103,8 @@ export class SettingsView {
         this._streamBitrateMbps = 20;
         this._streamHeight = 1080;
         this._streamAspect = 'auto';
+        // How the picture fills a window shaped unlike the host's screen.
+        this._pictureFill = 'fit';
         // 0 = Auto: this screen's own refresh rate, measured at launch.
         this._streamFps = 0;
         this._hdrEnabled = false;
@@ -367,6 +370,7 @@ export class SettingsView {
         this._streamAspect = ASPECT_VALUES.includes(data.stream_aspect)
             ? data.stream_aspect
             : 'auto';
+        this._pictureFill = normalizePictureFill(data.picture_fill);
         // A stored 0 is Auto and must survive the read; a settings object
         // from before Auto existed carries a rate of its own.
         this._streamFps = Number.isFinite(data.stream_fps) ? Math.max(0, data.stream_fps) : 0;
@@ -517,6 +521,8 @@ export class SettingsView {
                 ? { stream_aspect_forced: true }
                 : {}),
             stream_fps: this._streamFps,
+            // Per device: it answers this browser window's shape.
+            picture_fill: this._pictureFill,
             hdr_enabled: this._hdrEnabled,
             chroma_444_enabled: this._chroma444,
             mute_host_audio: this._muteHostAudio,
@@ -788,6 +794,9 @@ export class SettingsView {
             );
             // 0 is Auto, a choice like any other — never a missing value.
             const fps = Number.isNaN(fpsRaw) ? this._streamFps : fpsRaw;
+            const pictureFill = normalizePictureFill(
+                this.container.querySelector('#settings-picture-fill')?.value ?? this._pictureFill,
+            );
             const hdr = this.container.querySelector('#settings-hdr')?.checked ?? this._hdrEnabled;
             const chroma444 =
                 this.container.querySelector('#settings-chroma-444')?.checked ?? this._chroma444;
@@ -833,6 +842,7 @@ export class SettingsView {
             this._customHeight = choice.customHeight;
             this._streamAspect = aspect;
             this._streamFps = fps;
+            this._pictureFill = pictureFill;
             this._hdrEnabled = hdr;
             this._chroma444 = chroma444;
             this._touchSensitivity = sensitivity;
@@ -863,6 +873,7 @@ export class SettingsView {
         this._customHeight = 1080;
         this._bitrateAuto = true;
         this._streamAspect = 'auto';
+        this._pictureFill = 'fit';
         this._streamFps = 0;
         this._hdrEnabled = false;
         this._chroma444 = false;
@@ -1293,6 +1304,23 @@ export class SettingsView {
                     ${aspectHtml}
 
                     <div class="settings-field">
+                        <label class="settings-label" for="settings-picture-fill">
+                            ${t('settings.pictureFill')}
+                        </label>
+                        <span class="setting-desc">${t('settings.pictureFillDesc', {
+                            combo: [...comboModifiers(/Mac/.test(navigator.platform)), 'F'].join(
+                                ' + ',
+                            ),
+                        })}</span>
+                        <select id="settings-picture-fill" class="settings-select">
+                            ${PICTURE_FILLS.map(
+                                (fill) =>
+                                    `<option value="${fill}" ${fill === this._pictureFill ? 'selected' : ''}>${this.esc(t('settings.pictureFill_' + fill))}</option>`,
+                            ).join('')}
+                        </select>
+                    </div>
+
+                    <div class="settings-field">
                         <label class="settings-label" for="settings-stream-fps">
                             ${t('settings.frameRate')}
                         </label>
@@ -1689,6 +1717,9 @@ export class SettingsView {
                 this._applyAutoBitrate();
                 this._autoSave();
             });
+
+        const pictureFillSelect = this.container.querySelector('#settings-picture-fill');
+        if (pictureFillSelect) pictureFillSelect.addEventListener('change', () => this._autoSave());
 
         const fpsSelect = this.container.querySelector('#settings-stream-fps');
         if (fpsSelect)

@@ -80,7 +80,7 @@
         "sunshineInstallFailed": "Sunshine 安装失败：{{error}}。请重试（系统会要求输入密码）、取消勾选 Sunshine，或跳过此步骤。"
     },
     "footer": {
-        "tagline": "MoonlightWeb — 游戏串流客户端"
+        "tagline": "AllShare (Powered by MMC) — 游戏串流客户端"
     },
     "appError": {
         "title": "错误",
@@ -112,6 +112,9 @@
         "wakeTitle": "网络唤醒",
         "promptManual": "输入主机 IP 地址（例如 192.168.1.5）：",
         "wolSent": "已向“{{name}}”发送网络唤醒",
+        "wakingBtn": "正在唤醒…",
+        "wakeDone": "“{{name}}”已唤醒",
+        "wakeTimeout": "“{{name}}”没有被唤醒。请确认已在其 BIOS 和网卡（有线连接）上启用网络唤醒，然后重试。",
         "addedSuccess": "“{{name}}”添加成功",
         "alreadyInList": "“{{name}}”已在列表中",
         "noHostReturned": "服务器未返回任何主机",
@@ -341,6 +344,11 @@
         "aspectAuto": "自动",
         "frameRate": "帧率",
         "frameRateDesc": "更高的帧率有助于降低延迟，但需要更多带宽。",
+        "pictureFill": "画面填充",
+        "pictureFillDesc": "当窗口形状与主机屏幕不同（非全屏）时，画面两侧会出现黑边。选择拉伸或放大即可填满整个窗口。串流时的快捷键：{{combo}}。",
+        "pictureFill_fit": "适应（完整画面，两侧有黑边）",
+        "pictureFill_stretch": "拉伸以填满窗口",
+        "pictureFill_zoom": "放大以填满窗口（裁剪边缘）",
         "fpsSuffix": "{{fps}} FPS",
         "fpsAuto": "自动（与您的屏幕刷新率一致）",
         "fpsAutoMeasured": "自动（{{fps}} FPS，与您的屏幕刷新率一致）",
@@ -665,6 +673,10 @@
         "scFullscreen": "全屏",
         "scRelease": "退出游戏模式（鼠标 + 全屏）",
         "scMouseMode": "切换鼠标游戏模式",
+        "scPictureFill": "画面填充：适应 / 拉伸 / 放大",
+        "pictureFill_fit": "画面：适应（两侧有黑边）",
+        "pictureFill_stretch": "画面：拉伸填满窗口",
+        "pictureFill_zoom": "画面：放大填满窗口",
         "scDesktopPrev": "主机上一个桌面",
         "scDesktopNext": "主机下一个桌面",
         "touchTitle": "触摸控制",

@@ -137,6 +137,31 @@
     color: var(--accent-strong);
     box-shadow: var(--edge-accent);
 }
+
+/* Wake-on-LAN sent, host not up yet: the button waits, gently pulsing. */
+.btn-wol--waking,
+.btn-wol--waking:disabled {
+    cursor: progress;
+    opacity: 1;
+    animation: btn-wol-waking 1.6s ease-in-out infinite;
+}
+
+@keyframes btn-wol-waking {
+    0%,
+    100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.5;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .btn-wol--waking,
+    .btn-wol--waking:disabled {
+        animation: none;
+    }
+}
 .btn-pagination {
     background: var(--surface-3);
     color: var(--text-1);

@@ -80,7 +80,7 @@
         "sunshineInstallFailed": "Sunshine installation failed: {{error}}. Try again (you'll be asked for your password), uncheck Sunshine, or skip this step."
     },
     "footer": {
-        "tagline": "MoonlightWeb — Game Streaming Client"
+        "tagline": "AllShare (Powered by MMC) — Game Streaming Client"
     },
     "appError": {
         "title": "Error",
@@ -112,6 +112,9 @@
         "wakeTitle": "Wake On LAN",
         "promptManual": "Enter host IP address (e.g., 192.168.1.5):",
         "wolSent": "Wake-on-LAN sent to \"{{name}}\"",
+        "wakingBtn": "Waking…",
+        "wakeDone": "\"{{name}}\" is awake",
+        "wakeTimeout": "\"{{name}}\" did not wake up. Check that Wake-on-LAN is enabled in its BIOS and on its network adapter (wired connection), then try again.",
         "addedSuccess": "\"{{name}}\" added successfully",
         "alreadyInList": "\"{{name}}\" already in list",
         "noHostReturned": "No host was returned from the server",
@@ -341,6 +344,11 @@
         "aspectAuto": "Auto",
         "frameRate": "Frame Rate",
         "frameRateDesc": "A higher frame rate helps reduce latency but needs more bandwidth.",
+        "pictureFill": "Picture Fill",
+        "pictureFillDesc": "When the window is not the shape of the host's screen (not in fullscreen), the picture gets bars on its sides. Stretch or Zoom fill the whole window instead. Shortcut during a stream: {{combo}}.",
+        "pictureFill_fit": "Fit (whole picture, bars on the sides)",
+        "pictureFill_stretch": "Stretch to fill the window",
+        "pictureFill_zoom": "Zoom to fill the window (crops the edges)",
         "fpsSuffix": "{{fps}} FPS",
         "fpsAuto": "Auto (your screen's rate)",
         "fpsAutoMeasured": "Auto ({{fps}} FPS, your screen's rate)",
@@ -665,6 +673,10 @@
         "scFullscreen": "Fullscreen",
         "scRelease": "Exit gaming mode (mouse + fullscreen)",
         "scMouseMode": "Toggle mouse gaming mode",
+        "scPictureFill": "Picture fill: fit / stretch / zoom",
+        "pictureFill_fit": "Picture: fit (bars on the sides)",
+        "pictureFill_stretch": "Picture: stretched to fill the window",
+        "pictureFill_zoom": "Picture: zoomed to fill the window",
         "scDesktopPrev": "Previous desktop on the host",
         "scDesktopNext": "Next desktop on the host",
         "touchTitle": "Touch controls",

@@ -1,3 +1,12 @@
+> [!NOTE]
+> **AllShare (Powered by MMC)** is this repository's build of [Moonlight‑Web](https://github.com/linckosz/moonlight-web) by linckosz: the same application with a new name and logo, plus three additions:
+>
+> - **Wake a sleeping PC more reliably**: the Wake button now sends the magic packet through every network card of the server, to more ports, three times, and the card shows *Waking…* until the PC answers (sent again once after 20 s, gives up after 2 min with a hint).
+> - **Mouse fix**: clicking the black bars beside the picture to capture the mouse no longer parks the PC's pointer on the side of its screen, and pointer jumps some browsers report while the mouse is captured are ignored.
+> - **Picture fill** (*Settings → Picture Fill*, or <kbd>Shift</kbd>+<kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>F</kbd> during a stream): *Fit*, *Stretch* or *Zoom*, so the stream fills the whole window when you are not in fullscreen.
+>
+> Everything below is the original Moonlight‑Web documentation.
+
 <div align="center">
 
 <img src="frontend/assets/logo.png" alt="Moonlight‑Web logo" width="128" />
