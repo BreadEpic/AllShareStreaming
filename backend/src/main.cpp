@@ -4312,11 +4312,64 @@ int main(int argc, char* argv[])
     // away — the codec fallback leaves, then rejoins — waits for it.
     QHash<int, QPointer<StreamWorkerHost>> g_PlayerRetiring;
 
-    shareDeps.stopPlayerStream = [&g_Pool, &detachWorkerSlot, &shareManager,
-                                  &g_PlayerRetiring](int slot, bool notifyEnded) {
+    // A guest's Sunshine session, /cancelled once nothing else streams its
+    // host — the app is shared — and held back for the grace: a guest that
+    // went is usually one rung of its transport chain, or its codec fallback,
+    // and the next join /resumes this uid (startPlayerStream drops it). The
+    // native host has no app to keep, and no grace.
+    auto cancelGuestHostSessionSoon = [&g_PendingHostCancels, &dropPendingHostCancel,
+                                       &g_LiveSunshineUids, &computerManager, &anyOtherSlotLive,
+                                       &g_Pool](int slot, const QString& boundHost,
+                                                const QString& uid) {
+        NvComputer* host = computerManager.getHost(boundHost);
+        if (!host || uid.isEmpty() || anyOtherSlotLive(slot, boundHost)) {
+            g_LiveSunshineUids.remove(uid);
+            return;
+        }
+        const int graceMs =
+            host->backendType == NativeHostBackend::typeName() ? 0 : kHostCancelGraceMs;
+        dropPendingHostCancel(uid, boundHost);
+        auto* timer = new QTimer(qApp);
+        timer->setSingleShot(true);
+        g_PendingHostCancels.insert(uid, {timer, boundHost});
+        QObject::connect(timer, &QTimer::timeout, qApp,
+                         [timer, &g_PendingHostCancels, &g_LiveSunshineUids, &computerManager,
+                          &anyOtherSlotLive, &g_Pool, slot, boundHost, uid]() {
+                             timer->deleteLater();
+                             auto it = g_PendingHostCancels.find(uid);
+                             if (it == g_PendingHostCancels.end() || it->timer != timer) return;
+                             g_PendingHostCancels.erase(it);
+                             g_LiveSunshineUids.remove(uid);
+                             NvComputer* h = computerManager.getHost(boundHost);
+                             if (!h || anyOtherSlotLive(slot, boundHost)) return;
+                             // A new guest on the same slot since, under a new uid: the
+                             // app is theirs now.
+                             if (g_Pool.at(slot).worker && g_Pool.at(slot).hostUuid == boundHost)
+                                 return;
+                             auto* identity = IdentityManager::get();
+                             auto* quitReply = computerManager.http()->quitAppAsync(
+                                 h->activeAddress, h->activeHttpsPort, identity->getCertificate(),
+                                 identity->getPrivateKey(), uid);
+                             QObject::connect(quitReply, &QNetworkReply::finished, quitReply,
+                                              &QNetworkReply::deleteLater);
+                         });
+        timer->start(graceMs);
+    };
+    shareDeps.stopPlayerStream = [&g_Pool, &detachWorkerSlot, &shareManager, &g_PlayerRetiring,
+                                  &g_PlayerUids, &reapCoopSession,
+                                  &cancelGuestHostSessionSoon](int slot, bool notifyEnded) {
         if (slot < kOwnerSlots || slot >= kTotalSlots) return;
         if (!g_Pool.at(slot).worker) return;
+        // Read before the detach clears the slot. Leaving by this door skips
+        // the worker's ended handler, so what it would have closed on the
+        // host is closed here — without it, a guest who left a cold start
+        // left the game running on a screen nobody watches.
+        const QString boundHost = g_Pool.at(slot).hostUuid;
+        const QString coopSessionId = g_Pool.at(slot).coopSessionId;
+        g_Pool.at(slot).coopSessionId.clear();
         g_PlayerRetiring.insert(slot, detachWorkerSlot(slot, false, notifyEnded));
+        reapCoopSession(boundHost, coopSessionId);
+        cancelGuestHostSessionSoon(slot, boundHost, g_PlayerUids.value(slot));
         // detachWorkerSlot severs the worker's ended() handlers, so the state
         // has to be settled here: without it a player who left would stay
         // "streaming" forever and never be able to rejoin their own slot.
@@ -4326,7 +4379,7 @@ int main(int argc, char* argv[])
                                    &detachWorkerSlot, &anyOtherSlotLive, &reapCoopSession,
                                    &slotSignalingPort, &slotWsPath, &server, &appSettings,
                                    &sessionMetrics, signalingPort, stunServer, &g_HostAspect,
-                                   &routerPorts, &g_PlayerUids, &g_PendingHostCancels,
+                                   &routerPorts, &g_PlayerUids, &cancelGuestHostSessionSoon,
                                    &dropPendingHostCancel, &releaseGuestHoleSoon, &keepGuestHole,
                                    &g_PlayerRetiring](int slot, int height, QString aspect,
                                                       ShareManager::Permissions perms,
@@ -4622,9 +4675,8 @@ int main(int argc, char* argv[])
 
         QObject::connect(
             worker, &StreamWorkerHost::ended, qApp,
-            [worker, &g_Pool, &g_LiveSunshineUids, &shareManager, &anyOtherSlotLive,
-             &computerManager, &reapCoopSession, &sessionMetrics, &g_PendingHostCancels,
-             &dropPendingHostCancel, sessionFacts, sessionStartedAt, slot, host, uid,
+            [worker, &g_Pool, &shareManager, &anyOtherSlotLive, &reapCoopSession, &sessionMetrics,
+             &cancelGuestHostSessionSoon, sessionFacts, sessionStartedAt, slot, host, uid,
              coopSessionId]() {
                 qInfo() << "[main] Player worker ended (slot" << slot << ")";
                 if (*sessionStartedAt > 0) {
@@ -4639,42 +4691,9 @@ int main(int argc, char* argv[])
                 // co-op session belongs to this player alone, so closing
                 // it cannot disturb whoever else is on the lobby.
                 reapCoopSession(host->uuid, *coopSessionId);
-                // Same rule as the owner slots — the Sunshine app is shared,
-                // so /cancel only once nothing else is streaming — and held
-                // back for the same grace: a worker that ended on its own is
-                // usually one rung of the guest's transport chain, and the
-                // next rung /resumes this uid (startPlayerStream drops it).
-                if (!anyOtherSlotLive(slot, host->uuid)) {
-                    const QString boundHost = host->uuid;
-                    const int graceMs =
-                        host->backendType == NativeHostBackend::typeName() ? 0 : kHostCancelGraceMs;
-                    dropPendingHostCancel(uid, boundHost);
-                    auto* timer = new QTimer(qApp);
-                    timer->setSingleShot(true);
-                    g_PendingHostCancels.insert(uid, {timer, boundHost});
-                    QObject::connect(timer, &QTimer::timeout, qApp,
-                                     [timer, &g_PendingHostCancels, &g_LiveSunshineUids,
-                                      &computerManager, &anyOtherSlotLive, slot, boundHost, uid]() {
-                                         timer->deleteLater();
-                                         auto it = g_PendingHostCancels.find(uid);
-                                         if (it == g_PendingHostCancels.end() || it->timer != timer)
-                                             return;
-                                         g_PendingHostCancels.erase(it);
-                                         g_LiveSunshineUids.remove(uid);
-                                         NvComputer* h = computerManager.getHost(boundHost);
-                                         if (!h || anyOtherSlotLive(slot, boundHost)) return;
-                                         auto* identity = IdentityManager::get();
-                                         auto* quitReply = computerManager.http()->quitAppAsync(
-                                             h->activeAddress, h->activeHttpsPort,
-                                             identity->getCertificate(), identity->getPrivateKey(),
-                                             uid);
-                                         QObject::connect(quitReply, &QNetworkReply::finished,
-                                                          quitReply, &QNetworkReply::deleteLater);
-                                     });
-                    timer->start(graceMs);
-                } else {
-                    g_LiveSunshineUids.remove(uid);
-                }
+                // Same rule as the owner slots, and as Leave: see
+                // cancelGuestHostSessionSoon.
+                cancelGuestHostSessionSoon(slot, host->uuid, uid);
                 SessionPool::Slot& sl = g_Pool.at(slot);
                 const bool onVirtualDisplay = host->backendType == NativeHostBackend::typeName() &&
                                               sl.appId == NativeHostBackend::virtualDisplayAppId();
