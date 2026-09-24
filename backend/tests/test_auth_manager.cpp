@@ -312,6 +312,40 @@ void run_auth_manager_tests()
     CHECK_EQ(AuthManager::rateLimitKey("8.8.8.8"), QString("8.8.8.8"));   // IPv4 = raw
     CHECK(!AuthManager::rateLimitKey("2001:db8:abcd:1234::1").isEmpty()); // IPv6 = /64-ish
 
+    // ── Whose attempt: behind a local reverse proxy, the visitor's ─────────
+    {
+        using H = QMap<QString, QString>;
+        // No proxy headers: the peer, even on loopback.
+        CHECK_EQ(AuthManager::attemptAddress("127.0.0.1", H{}), QString("127.0.0.1"));
+        // Funnel / nginx: the LAST X-Forwarded-For entry is the proxy's own;
+        // what a visitor wrote before it is theirs to forge.
+        CHECK_EQ(AuthManager::attemptAddress("127.0.0.1",
+                                             H{{"x-forwarded-for", "6.6.6.6, 203.0.113.9"}}),
+                 QString("203.0.113.9"));
+        CHECK_EQ(AuthManager::attemptAddress("::1", H{{"x-forwarded-for", "203.0.113.9"}}),
+                 QString("203.0.113.9"));
+        // cloudflared names the visitor outright, and wins.
+        CHECK_EQ(AuthManager::attemptAddress("127.0.0.1", H{{"cf-connecting-ip", "198.51.100.7"},
+                                                            {"x-forwarded-for", "10.0.0.1"}}),
+                 QString("198.51.100.7"));
+        // RFC 7239, quoted IPv6 with a port, IPv4 with a port.
+        CHECK_EQ(AuthManager::attemptAddress(
+                     "127.0.0.1", H{{"forwarded", "for=1.1.1.1, for=\"[2001:db8::7]:4711\""}}),
+                 QString("2001:db8::7"));
+        CHECK_EQ(AuthManager::attemptAddress("127.0.0.1",
+                                             H{{"forwarded", "proto=https;for=192.0.2.60:80"}}),
+                 QString("192.0.2.60"));
+        // A LAN or internet peer is never believed: the header would buy a fresh
+        // counter with every guess.
+        CHECK_EQ(AuthManager::attemptAddress("192.168.1.20", H{{"x-forwarded-for", "9.9.9.9"}}),
+                 QString("192.168.1.20"));
+        CHECK_EQ(AuthManager::attemptAddress("8.8.8.8", H{{"cf-connecting-ip", "9.9.9.9"}}),
+                 QString("8.8.8.8"));
+        // Garbage in the header: the peer.
+        CHECK_EQ(AuthManager::attemptAddress("127.0.0.1", H{{"x-forwarded-for", "not-an-ip"}}),
+                 QString("127.0.0.1"));
+    }
+
     // ── Home-screen handoff ────────────────────────────────────────────────
     {
         const QString owner = auth.createSession("198.51.100.40", "iOS Safari");

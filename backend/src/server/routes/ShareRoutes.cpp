@@ -303,56 +303,56 @@ void registerShareRoutes(HttpServer& server, ShareManager& share, const ShareRou
     // the mw_player cookie, and feeds ConnectionGuard when that fails.
 
     // POST /api/share/player/pin — {token, pin} → the player cookie.
-    router->post(
-        QStringLiteral("/api/share/player/pin"), [&share, &server](const HttpRequest& req) {
-            const QJsonObject body = QJsonDocument::fromJson(req.body).object();
-            const QString token = body.value(QStringLiteral("token")).toString();
-            const QString pin = body.value(QStringLiteral("pin")).toString();
+    router->post(QStringLiteral("/api/share/player/pin"), [&share,
+                                                           &server](const HttpRequest& req) {
+        const QJsonObject body = QJsonDocument::fromJson(req.body).object();
+        const QString token = body.value(QStringLiteral("token")).toString();
+        const QString pin = body.value(QStringLiteral("pin")).toString();
 
-            const ShareManager::PinOutcome outcome = share.redeemPin(
-                token, pin,
-                AuthManager::rateLimitKey(AuthManager::cleanClientAddress(req.clientAddress)),
-                req.headers.value(QStringLiteral("user-agent")));
+        const ShareManager::PinOutcome outcome = share.redeemPin(
+            token, pin,
+            AuthManager::rateLimitKey(AuthManager::attemptAddress(req.clientAddress, req.headers)),
+            req.headers.value(QStringLiteral("user-agent")));
 
-            QJsonObject obj;
-            switch (outcome.result) {
-            case ShareManager::PinResult::Ok: {
-                obj[QStringLiteral("status")] = QStringLiteral("ok");
-                HttpResponse resp = HttpResponse::json(obj);
-                // Scoped to the join surface, so a stolen player cookie cannot be
-                // replayed against the app's own API. Max-Age follows this
-                // invitation's own lease; an unlimited one gets a long finite
-                // value, because "forever" is not something a cookie can say and
-                // browsers cap it anyway.
-                const qint64 ttl = share.ttlSecs(outcome.slot);
-                resp.headers[QStringLiteral("Set-Cookie")] =
-                    QStringLiteral("%1=%2; HttpOnly; Secure; Path=/; SameSite=Strict; Max-Age=%3")
-                        .arg(QLatin1String(kPlayerCookie), outcome.cookie)
-                        .arg(ttl > 0 ? ttl : qint64(400) * 24 * 3600);
-                return resp;
-            }
-            case ShareManager::PinResult::AlreadyBound:
-                // The PIN was right, so this is not an attacker guessing — it is
-                // the link in a second pair of hands. Say so plainly rather than
-                // through a generic failure, and do not feed ConnectionGuard: the
-                // person on the other end may well be the guest on a new laptop.
-                obj[QStringLiteral("error")] = QStringLiteral("already_bound");
-                return HttpResponse::json(obj, 409);
-            case ShareManager::PinResult::RateLimited:
-                obj[QStringLiteral("error")] = QStringLiteral("rate_limited");
-                obj[QStringLiteral("lockout_seconds")] = outcome.lockoutSeconds;
-                server.reportAuthFailure(req.clientAddress);
-                return HttpResponse::json(obj, 429);
-            case ShareManager::PinResult::Invalid:
-                // One answer for a wrong PIN, an unknown token and an expired one.
-                obj[QStringLiteral("error")] = QStringLiteral("invalid_pin");
-                obj[QStringLiteral("remaining")] = outcome.remainingAttempts;
-                obj[QStringLiteral("lockout_seconds")] = outcome.lockoutSeconds;
-                server.reportAuthFailure(req.clientAddress);
-                return HttpResponse::json(obj, 401);
-            }
-            return HttpResponse::error(500, "Internal error");
-        });
+        QJsonObject obj;
+        switch (outcome.result) {
+        case ShareManager::PinResult::Ok: {
+            obj[QStringLiteral("status")] = QStringLiteral("ok");
+            HttpResponse resp = HttpResponse::json(obj);
+            // Scoped to the join surface, so a stolen player cookie cannot be
+            // replayed against the app's own API. Max-Age follows this
+            // invitation's own lease; an unlimited one gets a long finite
+            // value, because "forever" is not something a cookie can say and
+            // browsers cap it anyway.
+            const qint64 ttl = share.ttlSecs(outcome.slot);
+            resp.headers[QStringLiteral("Set-Cookie")] =
+                QStringLiteral("%1=%2; HttpOnly; Secure; Path=/; SameSite=Strict; Max-Age=%3")
+                    .arg(QLatin1String(kPlayerCookie), outcome.cookie)
+                    .arg(ttl > 0 ? ttl : qint64(400) * 24 * 3600);
+            return resp;
+        }
+        case ShareManager::PinResult::AlreadyBound:
+            // The PIN was right, so this is not an attacker guessing — it is
+            // the link in a second pair of hands. Say so plainly rather than
+            // through a generic failure, and do not feed ConnectionGuard: the
+            // person on the other end may well be the guest on a new laptop.
+            obj[QStringLiteral("error")] = QStringLiteral("already_bound");
+            return HttpResponse::json(obj, 409);
+        case ShareManager::PinResult::RateLimited:
+            obj[QStringLiteral("error")] = QStringLiteral("rate_limited");
+            obj[QStringLiteral("lockout_seconds")] = outcome.lockoutSeconds;
+            server.reportAuthFailure(req.clientAddress);
+            return HttpResponse::json(obj, 429);
+        case ShareManager::PinResult::Invalid:
+            // One answer for a wrong PIN, an unknown token and an expired one.
+            obj[QStringLiteral("error")] = QStringLiteral("invalid_pin");
+            obj[QStringLiteral("remaining")] = outcome.remainingAttempts;
+            obj[QStringLiteral("lockout_seconds")] = outcome.lockoutSeconds;
+            server.reportAuthFailure(req.clientAddress);
+            return HttpResponse::json(obj, 401);
+        }
+        return HttpResponse::error(500, "Internal error");
+    });
 
     // GET /api/share/player/info?token=… — what the join page should display.
     router->get(QStringLiteral("/api/share/player/info"), [&share, &deps](const HttpRequest& req) {

@@ -143,8 +143,10 @@ void registerAuthRoutes(HttpServer& server, AuthManager& authManager, GeoIpServi
         // ── PIN validation (default path) ──────────────────────────────
         if (pin.isEmpty()) return HttpResponse::error(400, "Missing 'pin' field");
 
-        // Rate limiting uses the real socket IP
-        auto result = authManager.validatePin(req.clientAddress, pin);
+        // Counted against the socket peer, or the visitor a local reverse proxy
+        // names (AuthManager::attemptAddress).
+        auto result = authManager.validatePin(
+            AuthManager::attemptAddress(req.clientAddress, req.headers), pin);
 
         QJsonObject obj;
         switch (result.result) {
@@ -512,8 +514,10 @@ void registerAuthRoutes(HttpServer& server, AuthManager& authManager, GeoIpServi
             }
             obj["authenticated"] = auth;
             if (!auth) {
-                obj["remaining"] = authManager.remainingAttempts(req.clientAddress);
-                int lockoutSecs = authManager.lockoutSeconds(req.clientAddress);
+                obj["remaining"] = authManager.remainingAttempts(
+                    AuthManager::attemptAddress(req.clientAddress, req.headers));
+                int lockoutSecs = authManager.lockoutSeconds(
+                    AuthManager::attemptAddress(req.clientAddress, req.headers));
                 if (lockoutSecs > 0) obj["lockout_seconds"] = lockoutSecs;
             }
         }

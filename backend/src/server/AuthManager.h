@@ -19,6 +19,7 @@
 
 #include <QObject>
 #include <QHash>
+#include <QMap>
 #include <optional>
 #include <QDateTime>
 #include <QByteArray>
@@ -372,6 +373,20 @@ public:
      *  IPv6 (a single client trivially owns a whole /64, so per-/128 buckets are
      *  pointless against guessing). */
     static QString rateLimitKey(const QString& ip);
+    /** The address a PIN or password attempt is counted against.
+     *
+     *  The socket peer, except behind a reverse proxy on THIS machine
+     *  (Tailscale Funnel, cloudflared): there every visitor on earth arrives
+     *  from 127.0.0.1, so one of them spending the attempts would lock out all
+     *  the others — the owner included. For a loopback peer only, the address
+     *  the proxy passed along is used instead: CF-Connecting-IP, else the LAST
+     *  X-Forwarded-For entry, else the last Forwarded `for=` — the rightmost
+     *  one is written by the proxy next to us, anything left of it by whoever
+     *  sent the request. Never for a LAN or internet peer: one of those could
+     *  forge the header and buy a fresh counter with every guess.
+     *
+     *  @p headers are the request's, with lower-case names. */
+    static QString attemptAddress(const QString& peer, const QMap<QString, QString>& headers);
 
     // ── Session persistence ───────────────────────────────────────────────────
     /** Save active sessions to disk (app data directory). */
