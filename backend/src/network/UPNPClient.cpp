@@ -37,6 +37,7 @@
 #include <QRegularExpression>
 #include <QSet>
 #include <QUdpSocket>
+#include <QUrl>
 
 #include <algorithm>
 #include <cstring>
@@ -132,7 +133,8 @@ bool UPNPClient::discover(int timeoutMs)
     }
 
     m_Available = true;
-    m_GatewayAddr = QHostAddress(QString::fromLatin1(m_LanAddr));
+    // m_LanAddr is this host's address; the router is the control URL's host.
+    m_GatewayAddr = QHostAddress(QUrl(QString::fromLatin1(m_Urls->controlURL)).host());
 
     qInfo() << "[UPNP] IGD found: LAN addr=" << m_LanAddr << "controlURL=" << m_Urls->controlURL
             << "serviceType=" << m_Data->first.servicetype;

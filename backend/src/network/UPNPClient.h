@@ -68,7 +68,7 @@ public:
     // Returns empty string on failure or if no IGD is available.
     std::string getExternalIPAddress();
 
-    // Get the local IP address of the IGD gateway.
+    // Get the IGD gateway's address on the LAN (its control URL's host).
     QHostAddress gatewayAddress() const { return m_GatewayAddr; }
 
     // Get the LAN IP address of this host on the IGD-facing interface.
