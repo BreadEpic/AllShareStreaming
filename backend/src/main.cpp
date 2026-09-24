@@ -1239,6 +1239,26 @@ static NetClassify::Kind streamClientKind(const HttpRequest& req)
     return NetClassify::Kind::Public;
 }
 
+// A browser whose STUN probe got no answer (frontend/js/api/UdpProbe.js) sits
+// on a network that lets no UDP out: each UDP rung would run to its ICE
+// deadline, ten seconds apiece, before the chain reached one that can connect.
+// Dropped — but only for a browser planned for the internet. On a LAN, STUN can
+// fail for want of an internet while the host is one UDP hop away, and the
+// verdict is the browser's word, so it is only ever allowed to shorten a chain
+// that already had to go the long way. Never down to nothing.
+static void dropUdpRungsWhenBlocked(QStringList& chain, const QJsonObject& body,
+                                    NetClassify::Kind clientKind, bool viaTunnel)
+{
+    if (!body.value(QStringLiteral("udp_blocked")).toBool(false)) return;
+    if (!viaTunnel && clientKind != NetClassify::Kind::Public) return;
+    QStringList kept;
+    for (const QString& m : chain)
+        if (!m.endsWith(QStringLiteral("-udp"))) kept.append(m);
+    if (kept.isEmpty() || kept.size() == chain.size()) return;
+    qInfo() << "[Session] The browser's STUN probe got no answer — UDP rungs skipped:" << kept;
+    chain = kept;
+}
+
 // Default ports of a DEV identity (the DEV build, or --dev): see Edition.h.
 using mw::edition::kDevHttpPort;
 using mw::edition::kDevHttpsPort;
@@ -3025,6 +3045,7 @@ int main(int argc, char* argv[])
                         << transportChain;
             }
         }
+        dropUdpRungsWhenBlocked(transportChain, body, clientKind, req.viaTunnel);
 
         qInfo() << "[Session] Transport chain:" << transportChain
                 << "requested index=" << reqTransportIndex;
@@ -4406,6 +4427,8 @@ int main(int argc, char* argv[])
         // Same rule as the owner's chain: through the rendezvous there is no
         // TLS connection of ours to carry the wss rung.
         if (req.viaTunnel) chain.removeAll(QStringLiteral("wss"));
+        dropUdpRungsWhenBlocked(chain, QJsonDocument::fromJson(req.body).object(),
+                                streamClientKind(req), req.viaTunnel);
         if (chain.isEmpty()) {
             respond(HttpResponse::error(502, "No usable transport"));
             return;

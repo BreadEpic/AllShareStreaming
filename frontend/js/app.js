@@ -99,6 +99,7 @@ import {
 } from './util/homeScreenKeys.js';
 import { SecuringOverlay } from './ui/SecuringOverlay.js';
 import { ourStunHost } from './api/IceServers.js';
+import { probeUdp } from './api/UdpProbe.js';
 import { InstanceMenu } from './ui/InstanceMenu.js';
 import {
     currentInstanceRef,
@@ -453,12 +454,16 @@ const MoonlightApp = {
             container,
             token,
             async ({ height, gaming, touchScreen, padKey }, transportIndex = 0, codec) => {
+                // Same question as the owner's launch, same one-minute memory:
+                // a guest on a network that blocks UDP skips the UDP rungs.
+                const udpBlocked = (await this._probeUdpCached()) === false;
                 const result = await BackendClient.playerJoin(
                     token,
                     height,
                     undefined,
                     transportIndex,
                     codec,
+                    udpBlocked,
                 );
 
                 // StreamView renders (and connects) from its constructor, so the
@@ -1813,6 +1818,10 @@ const MoonlightApp = {
             this._abortStandby('fresh launch');
             this._activeSlot = 0;
             this._dualSupported = undefined;
+            // Does UDP get out of this network? Asked now, answered while the
+            // rest of the launch is prepared, read just before /start: a
+            // relaunch in this session keeps the same answer.
+            this._udpProbe = this._probeUdpCached();
         }
 
         // Store host/app for HEVC fallback re-launch
@@ -1956,6 +1965,10 @@ const MoonlightApp = {
         if (streamingSettings.power_save) {
             streamingSettings.transport_mode = 'webrtc-media-udp';
         }
+
+        // No STUN answer: the backend skips the UDP rungs for an internet
+        // browser instead of letting each one run to its ICE deadline.
+        if ((await this._udpProbe) === false) streamingSettings.udp_blocked = true;
 
         // Aspect ratio → the backend derives the even width from this "W:H"
         // string. The goal is a frame the HOST fills edge to edge, since anything
@@ -2996,6 +3009,25 @@ const MoonlightApp = {
         }
         const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
         return `${scheme}://${window.location.host}${path}`;
+    },
+
+    /**
+     * probeUdp, remembered for a minute: a user who stops and starts again on
+     * the same network does not wait for the same answer twice. A false is
+     * logged — it is the one that changes the session.
+     *
+     * @returns {Promise<boolean|null>}
+     */
+    _probeUdpCached() {
+        const now = Date.now();
+        const cached = this._udpProbeCache;
+        if (cached && now - cached.at < 60000) return Promise.resolve(cached.verdict);
+        return probeUdp(1500).then((verdict) => {
+            this._udpProbeCache = { at: Date.now(), verdict };
+            if (verdict === false)
+                console.log('[MW] UDP probe: no STUN answer in 1.5 s — UDP looks blocked here');
+            return verdict;
+        });
     },
 
     /** Human-readable label for a transport mode (warning toasts / logs). */
