@@ -35,9 +35,12 @@
 
 namespace {
 
-// The public MoonlightWeb repository whose Releases carry the installers built
-// by .github/workflows/release.yml. Kept as a single source of truth here.
-const char* kReleasesApi = "https://api.github.com/repos/linckosz/moonlight-web/releases/latest";
+// The AllShare repository whose Releases carry the installers built by
+// .github/workflows/release.yml. Kept as a single source of truth here. Not the
+// upstream MoonlightWeb one: its releases would be offered as an "update" and
+// installed over AllShare.
+const char* kReleasesApi =
+    "https://api.github.com/repos/BreadEpic/AllShareStreaming/releases/latest";
 
 // arm64 vs x64 — CI names installers with these tokens. QSysInfo reports e.g.
 // "arm64" / "x86_64" for the running process.
