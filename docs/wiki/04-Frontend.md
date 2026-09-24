@@ -117,6 +117,28 @@ The **webrtc-media transport** natively renders into a `<video>` element (RTP �
 | TypeScript (`tsconfig.json`, `checkJs`) | static analysis over JSDoc | advisory |
 | `VersionGuard` | runtime: force-reloads a stale PWA after a deploy (never during a stream) | — |
 
+## 4.8 Controller compatibility
+
+How a pad is read (`gamepadMapping.js`, first match wins): the user's own layout → the browser's `standard` mapping → Chrome Android's pre-sorted layout → SDL_GameControllerDB (desktop, by USB vendor:product) → nothing, and the remap wizard is offered. A pad Windows reports under a generic name ("HID-compliant game controller", e.g. an Xbox pad over Bluetooth) is named from its USB ids.
+
+**Tested on 24/09/2026** — Windows 11, Chrome, Settings → Controllers then a stream, buttons, sticks and triggers checked; Firefox used as a second opinion on the failing cases.
+
+| Controller | Connection / mode | Driver model | Result |
+|---|---|---|---|
+| Xbox One S Controller | Bluetooth | HID + XInput layer | ✅ |
+| Switch Pro Controller | USB‑C | Nintendo HID protocol | ✅ |
+| Switch Pro Controller | Bluetooth | Nintendo HID protocol | ❌ |
+| GameSir X2 Lightning | — | — | ✅ |
+| 8BitDo SN30 Pro | USB‑C (Xbox 360) | XInput | ✅ |
+| 8BitDo SN30 Pro | Bluetooth, Start+X (Xbox One S) | HID + XInput layer | ✅ |
+| 8BitDo SN30 Pro | Bluetooth, Start+A (PS4) | DInput (HID) | ✅ |
+| 8BitDo SN30 Pro | Bluetooth, Start+B (8BitDo) | DInput (HID) | ✅ |
+| 8BitDo SN30 Pro | Bluetooth, Start+Y (Switch Pro) | Nintendo HID protocol | ❌ |
+
+**The Switch protocol over Bluetooth fails in the browser, not in MoonlightWeb** — the genuine Pro Controller and the 8BitDo in Switch mode alike. Chrome drives Nintendo pads through its own driver, which must initialize the pad first; over Bluetooth on Windows that fails, and the pad never reaches `navigator.getGamepads()` (a gamepad tester page shows nothing either, `chrome://device-log` stays empty, closing Steam changes nothing). Firefox does list it (`057e-2009-Wireless Gamepad`), buttons working but not the sticks. Over USB the same pad works. Rewriting the Switch protocol (WebHID) was ruled out: use USB, or another mode of the pad — XInput first, for rumble and no layout to guess.
+
+To tell whether a failing pad is ours or the browser's: open a gamepad tester page in the same browser. If it sees nothing, neither can we.
+
 ---
 
 [← Backend](03-Backend.md) · [Home](Home.md) · [Next: Streaming & Transports →](05-Streaming-and-Transports.md)

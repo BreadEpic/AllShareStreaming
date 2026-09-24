@@ -70,6 +70,23 @@ describe('parsePadId', () => {
         expect(padName('054c-09cc-Wireless')).toBe('Wireless');
         expect(padName('')).toBe('?');
     });
+
+    it('names a pad Windows reports under a generic name from its USB ids', () => {
+        expect(
+            padName('HID-compliant game controller (STANDARD GAMEPAD Vendor: 045e Product: 02e0)'),
+        ).toBe('Xbox One S Controller');
+        expect(padName('HID-compliant game controller (Vendor: 1234 Product: abcd)')).toBe(
+            'Controller 1234:abcd',
+        );
+        // No ids to go on: the generic name is all there is.
+        expect(padName('HID-compliant game controller (STANDARD GAMEPAD)')).toBe(
+            'HID-compliant game controller',
+        );
+        // A real product name is never replaced.
+        expect(padName('Wireless Controller (Vendor: 054c Product: 09cc)')).toBe(
+            'Wireless Controller',
+        );
+    });
 });
 
 describe('detectPlatform', () => {

@@ -123,10 +123,47 @@ export function padKey(gpOrId) {
     return `name:${name.toLowerCase()}`;
 }
 
-/** Display name of a pad: its id without the browser's decorations. */
+/**
+ * Names Windows gives a HID pad whose firmware has no product string —
+ * Chrome passes them on as the pad's name. An Xbox pad over Bluetooth, or an
+ * 8BitDo in XInput mode, then shows up as "HID-compliant game controller".
+ */
+const GENERIC_NAME =
+    /^(hid-compliant game controller|contrôleur de jeu compatible hid|hid 兼容游戏控制器|unknown gamepad)$/i;
+
+/** Well-known pads by USB ids, to name the ones reported with a generic name. */
+const KNOWN_PADS = {
+    '045e:028e': 'Xbox 360 Controller',
+    '045e:02d1': 'Xbox One Controller',
+    '045e:02dd': 'Xbox One Controller',
+    '045e:02e0': 'Xbox One S Controller',
+    '045e:02ea': 'Xbox One S Controller',
+    '045e:02fd': 'Xbox One S Controller',
+    '045e:0b00': 'Xbox Elite Series 2 Controller',
+    '045e:0b05': 'Xbox Elite Series 2 Controller',
+    '045e:0b12': 'Xbox Series Controller',
+    '045e:0b13': 'Xbox Series Controller',
+    '045e:0b20': 'Xbox Series Controller',
+    '045e:0b22': 'Xbox Elite Series 2 Controller',
+    '054c:05c4': 'DualShock 4',
+    '054c:09cc': 'DualShock 4',
+    '054c:0ce6': 'DualSense',
+    '054c:0df2': 'DualSense Edge',
+    '057e:2009': 'Switch Pro Controller',
+};
+
+/**
+ * Display name of a pad: its id without the browser's decorations. A generic
+ * name is replaced by the pad's model when its USB ids are known, by the ids
+ * otherwise — two such pads stay tellable apart.
+ */
 export function padName(gpOrId) {
     const id = typeof gpOrId === 'string' ? gpOrId : gpOrId && gpOrId.id;
-    return parsePadId(id).name || '?';
+    const { name, vid, pid } = parsePadId(id);
+    if (vid && pid && GENERIC_NAME.test(name)) {
+        return KNOWN_PADS[`${vid}:${pid}`] || `Controller ${vid}:${pid}`;
+    }
+    return name || '?';
 }
 
 /** The platform whose raw layout the browser reports. */

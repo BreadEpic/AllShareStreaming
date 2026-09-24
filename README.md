@@ -75,6 +75,24 @@ From the in‑app overlay: **bitrate** (1–150 Mbps or auto), **resolution** (7
 
 </div>
 
+### Controllers
+
+Pads with a standard layout just work. Others are recognized from [SDL_GameControllerDB](https://github.com/mdqinc/SDL_GameControllerDB), and any pad can be remapped in **Settings → Controllers** (layouts stay in that browser). Tested on Windows + Chrome:
+
+| Controller | Connection / mode | Result |
+|---|---|---|
+| Xbox One S Controller | Bluetooth | ✅ |
+| Switch Pro Controller | USB‑C | ✅ |
+| Switch Pro Controller | Bluetooth | ❌ not read correctly by browsers |
+| GameSir X2 Lightning | — | ✅ |
+| 8BitDo SN30 Pro | USB‑C (Xbox 360) | ✅ |
+| 8BitDo SN30 Pro | Bluetooth, Start+X (Xbox One S) | ✅ |
+| 8BitDo SN30 Pro | Bluetooth, Start+A (PS4) | ✅ |
+| 8BitDo SN30 Pro | Bluetooth, Start+B (8BitDo) | ✅ |
+| 8BitDo SN30 Pro | Bluetooth, Start+Y (Switch Pro) | ❌ not read correctly by browsers |
+
+Details and test notes in the [wiki](docs/wiki/04-Frontend.md#48-controller-compatibility).
+
 ---
 
 ## Other hosts it can pair with
