@@ -23,7 +23,7 @@
 #include "server/AuthManager.h"
 #include "server/Provisioning.h"
 #include "network/InternetAccessManager.h"
-#include "network/UPNPClient.h"
+#include "network/RouterPortAllocator.h"
 #include "backend/ComputerManager.h"
 #include "backend/GamepadDriver.h"
 #include "backend/VirtualDisplay.h"
@@ -49,10 +49,13 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QNetworkInterface>
+#include <QPointer>
 #include <QProcess>
 #include <QStandardPaths>
 #include <QThread>
 #include <QTimer>
+
+#include <memory>
 
 // Exit code the restart endpoint leaves with so the service supervisor treats it
 // as "come back": NSSM's `AppExit Default Restart` respawns on any code it hasn't
@@ -113,28 +116,56 @@ void registerSystemRoutes(HttpServer& server, AppSettings& appSettings, AuthMana
     // tells a headless operator whether opening the server to the internet will
     // configure itself or needs a manual port forward on the router.
     //
-    // Blocks for up to the M-SEARCH timeout (~2 s) on the main thread. That is
-    // why it is localhost-only and never polled: it is an explicit operator
-    // action (`moonlightweb --status`, the admin page), not a background check.
-    server.router()->get("/api/internet/upnp-probe", [&](const HttpRequest& req) {
-        if (!req.isLocal) return HttpResponse::error(403, "Only available from localhost");
-        if (mw::edition::lanOnly()) return HttpResponse::error(409, mw::edition::lanOnlyRefusal());
-
-        UPNPClient* upnp = internetAccess.upnpClient();
-        // Re-using a live IGD avoids re-running discovery under an active
-        // Internet Access session (and avoids disturbing its mappings).
-        const bool available = upnp->isAvailable() || upnp->discover(2000);
-
-        QJsonObject obj;
-        obj["available"] = available;
-        if (available) {
-            obj["gateway"] = upnp->gatewayAddress().toString();
-            obj["lan_ip"] = QString::fromStdString(upnp->lanAddress());
-            const std::string ext = upnp->getExternalIPAddress();
-            if (!ext.empty()) obj["external_ip"] = QString::fromStdString(ext);
-        }
-        return HttpResponse::json(obj);
-    });
+    // The router-port allocator's discovery — the process's only one — read
+    // back, or asked for again after a miss and waited on (the M-SEARCH takes
+    // ~2 s, on the allocator's thread). Localhost-only and never polled: it is
+    // an explicit operator action (`moonlightweb --status`, the admin page).
+    server.router()->getAsync(
+        "/api/internet/upnp-probe",
+        [&internetAccess](const HttpRequest& req, ResponseCallback respond) {
+            if (!req.isLocal) {
+                respond(HttpResponse::error(403, "Only available from localhost"));
+                return;
+            }
+            if (mw::edition::lanOnly()) {
+                respond(HttpResponse::error(409, mw::edition::lanOnlyRefusal()));
+                return;
+            }
+            QPointer<RouterPortAllocator> ports = internetAccess.routerPorts();
+            if (!ports) {
+                respond(HttpResponse::json(QJsonObject{{"available", false}}));
+                return;
+            }
+            auto answer = [ports]() {
+                QJsonObject obj;
+                const bool available =
+                    ports && ports->gatewayState() == RouterPortAllocator::GatewayState::Ready;
+                obj["available"] = available;
+                if (available) {
+                    obj["gateway"] = ports->gatewayAddress();
+                    obj["lan_ip"] = ports->lanIp();
+                    if (!ports->publicIp().isEmpty()) obj["external_ip"] = ports->publicIp();
+                }
+                return HttpResponse::json(obj);
+            };
+            ports->discover();
+            if (ports->gatewayState() != RouterPortAllocator::GatewayState::Discovering) {
+                respond(answer());
+                return;
+            }
+            // One answer, whichever comes first: the router's, or the deadline.
+            auto* waiter = new QObject(ports);
+            auto done = std::make_shared<bool>(false);
+            auto finish = [waiter, done, answer, respond]() {
+                if (*done) return;
+                *done = true;
+                respond(answer());
+                waiter->deleteLater();
+            };
+            QObject::connect(ports, &RouterPortAllocator::gatewayReady, waiter, finish);
+            QObject::connect(ports, &RouterPortAllocator::gatewayMissing, waiter, finish);
+            QTimer::singleShot(4000, waiter, finish);
+        });
 
     // API route: enable/configure Internet Access
     // onInternetAccessToggled captured BY VALUE: the parameter dies when this

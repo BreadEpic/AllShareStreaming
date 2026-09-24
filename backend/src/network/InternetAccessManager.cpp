@@ -16,6 +16,8 @@
  */
 
 #include "InternetAccessManager.h"
+#include "RouterPortAllocator.h"
+#include "UPNPClient.h"
 #include "common/Edition.h"
 #include "server/AppSettings.h"
 
@@ -51,7 +53,6 @@ InternetAccessManager::InternetAccessManager(AppSettings* settings, QObject* par
     : QObject(parent)
     , m_Settings(settings)
     , m_Stun(this)
-    , m_Upnp(this)
 {
     // Periodic check timer (5 minutes)
     m_PeriodicCheckTimer = new QTimer(this);
@@ -70,17 +71,37 @@ InternetAccessManager::InternetAccessManager(AppSettings* settings, QObject* par
 
     // Synchronous local IP detection for admin UI display
     refreshLocalAddresses();
+}
 
-    // Eager UPnP discovery (deferred, non-blocking) so that upnp_available
-    // is correctly reported even if Internet Access has never been enabled.
-    // A LAN-only instance never maps a port, so it has no router to find.
-    QTimer::singleShot(2000, this, [this]() {
-        if (mw::edition::lanOnly()) return;
-        if (!m_Upnp.isAvailable()) {
-            qInfo() << "[InternetAccess] Eager UPnP discovery (2s deferred)";
-            m_Upnp.discover(2000);
-        }
+void InternetAccessManager::setRouterPorts(RouterPortAllocator* routerPorts)
+{
+    m_RouterPorts = routerPorts;
+    if (!routerPorts) return;
+    // Every answer from the router can change what the admin page shows.
+    connect(routerPorts, &RouterPortAllocator::gatewayReady, this, [this]() {
+        checkDoubleNat();
+        emit statusChanged(statusJson());
     });
+    connect(routerPorts, &RouterPortAllocator::gatewayMissing, this,
+            [this]() { emit statusChanged(statusJson()); });
+    // Eager discovery (deferred, off the main thread) so that upnp_available
+    // is correctly reported even if Internet Access has never been enabled.
+    // A LAN-only instance never maps a port, so it has no router to find
+    // (discover() says no there).
+    QTimer::singleShot(2000, this, [this]() {
+        if (m_RouterPorts) m_RouterPorts->discover();
+    });
+}
+
+void InternetAccessManager::checkDoubleNat()
+{
+    if (!m_Active || !m_Settings->upnpEnabled() || !m_RouterPorts) return;
+    const QString upnpIp = m_RouterPorts->publicIp();
+    if (upnpIp.isEmpty() || m_PublicIp.isEmpty() || upnpIp == m_PublicIp) return;
+    m_LastError = QStringLiteral("CGNAT detected: UPnP reports %1 but your public IP is %2. "
+                                 "Port forwarding may not work — contact your ISP.")
+                      .arg(upnpIp, m_PublicIp);
+    qWarning() << "[InternetAccess]" << m_LastError;
 }
 
 InternetAccessManager::~InternetAccessManager()
@@ -145,30 +166,22 @@ void InternetAccessManager::start()
     // Discovery still runs, because the per-session mapping needs the gateway
     // and the admin page reports whether one answered.
     m_Phase = QStringLiteral("configuring_ports");
-    if (m_Settings->upnpEnabled()) {
-        if (m_Upnp.discover()) {
-            // Capture local LAN IP for the UI (port mapping display)
-            refreshLocalAddresses();
-
-            // Double NAT detection: UPnP external IP vs STUN public IP
-            std::string upnpExternalIp = m_Upnp.getExternalIPAddress();
-            if (!upnpExternalIp.empty() && !m_PublicIp.isEmpty()) {
-                QString upnpIp = QString::fromStdString(upnpExternalIp);
-                if (upnpIp != m_PublicIp) {
-                    m_LastError =
-                        QStringLiteral("CGNAT detected: UPnP reports %1 but your public IP is %2. "
-                                       "Port forwarding may not work — contact your ISP.")
-                            .arg(upnpIp, m_PublicIp);
-                    qWarning() << "[InternetAccess]" << m_LastError;
-                }
-            }
-        } else {
-            qWarning()
-                << "[InternetAccess] UPnP discovery failed — manual port forwarding may be needed";
-        }
-    }
+    //
+    // The discovery is the router-port allocator's, on its own thread — one
+    // for the whole process. A router already found is compared now; one
+    // still being looked for is compared when it answers (gatewayReady).
+    const bool askRouter = m_Settings->upnpEnabled() && m_RouterPorts;
+    if (askRouter) m_RouterPorts->discover();
 
     m_Active = true;
+    if (askRouter) {
+        refreshLocalAddresses();
+        if (m_RouterPorts->gatewayState() == RouterPortAllocator::GatewayState::Ready)
+            checkDoubleNat();
+        else if (m_RouterPorts->gatewayState() == RouterPortAllocator::GatewayState::Missing)
+            qWarning()
+                << "[InternetAccess] UPnP discovery failed — manual port forwarding may be needed";
+    }
     m_Phase = QStringLiteral("active");
     emit ready(m_Domain, m_PublicIp);
     qInfo() << "[InternetAccess] Setup complete, domain:" << m_Domain << "public IP:" << m_PublicIp;
@@ -303,7 +316,8 @@ QJsonObject InternetAccessManager::statusJson() const
     // user dropped their own next to a domain they own.
     obj[QStringLiteral("cert_pem")] = m_Settings->certPem();
     obj[QStringLiteral("cert_key")] = m_Settings->certKey();
-    obj[QStringLiteral("upnp_available")] = m_Upnp.isAvailable();
+    obj[QStringLiteral("upnp_available")] =
+        m_RouterPorts && m_RouterPorts->gatewayState() == RouterPortAllocator::GatewayState::Ready;
     // Whether the host can reach its own public endpoint (router NAT hairpin).
     // Drives the host-machine redirect from https://localhost to the domain.
     obj[QStringLiteral("hairpin_reachable")] = m_HairpinReachable;

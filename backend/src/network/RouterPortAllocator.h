@@ -91,9 +91,21 @@ public:
     /// rendezvous line-up and on every stream start.
     void ensureStarted();
 
+    /// Find the gateway without being allowed to map anything: the admin
+    /// page's "UPnP available", Internet Access's double-NAT check and the
+    /// operator's probe read it before any hole is asked for. The one
+    /// discovery of the process — nothing else looks for the router. Asks
+    /// again after a miss (a router that was off at start-up). Never on a
+    /// LAN-only edition.
+    void discover();
+
     GatewayState gatewayState() const { return m_State; }
     /// This host's address as the router reports it; empty until Ready.
     QString publicIp() const { return m_PublicIp; }
+    /// The gateway's own address and this host's address on its LAN; empty
+    /// until Ready.
+    QString gatewayAddress() const { return m_GatewayAddress; }
+    QString lanIp() const { return m_LanIp; }
 
     /// One tunnel hole from the corporate-friendly list, then the pool. The
     /// caller enforces its own cap; this only walks the router.
@@ -138,7 +150,10 @@ private:
     };
 
     void deliver(quint64 token, const Claim& claim, const QString& why);
-    void onDiscovered(bool ok, const QString& publicIp, const QString& lanIp);
+    void onDiscovered(bool ok, const QString& publicIp, const QString& lanIp,
+                      const QString& gateway);
+    /// Spawn the worker thread and start a discovery on it.
+    void startWorker();
     void onClaimed(quint64 token, const RouterPortCore::Result& result);
     void onRenewed(const QList<RouterPortCore::Lost>& lost);
     quint64 submit(RouterPortCore::Request request, QObject* context, Callback callback);
@@ -156,6 +171,7 @@ private:
     GatewayState m_State = GatewayState::Unknown;
     QString m_PublicIp;
     QString m_LanIp;
+    QString m_GatewayAddress;
     /// Main-thread mirror of what the worker holds.
     QList<Claim> m_Held;
     QHash<quint64, Pending> m_Pending;

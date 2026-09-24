@@ -2249,6 +2249,9 @@ int main(int argc, char* argv[])
     // slot's. Inert until a rendezvous line-up or a stream start asks for one,
     // and then only with UPnP on and Internet Access consented.
     RouterPortAllocator routerPorts(&appSettings);
+    // The one UPnP discovery of the process: Internet Access reads the
+    // gateway from the allocator rather than looking for it a second time.
+    internetAccess.setRouterPorts(&routerPorts);
     GeoIpService geoIpService(&appSettings);
     UpdateChecker updateChecker(QCoreApplication::applicationVersion(),
                                 appSettings.updateRelayAllowed());

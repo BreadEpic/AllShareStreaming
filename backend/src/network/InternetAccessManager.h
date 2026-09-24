@@ -18,14 +18,15 @@
 #pragma once
 
 #include <QObject>
+#include <QPointer>
 #include <QTimer>
 #include <QJsonObject>
 #include <QStringList>
 
 #include "StunClient.h"
-#include "UPNPClient.h"
 
 class AppSettings;
+class RouterPortAllocator;
 
 /**
  * @brief Orchestrates the full Internet Access feature.
@@ -118,8 +119,10 @@ public:
     /// stays on loopback instead of handing a browser an address that times out.
     bool hairpinReachable() const { return m_HairpinReachable; }
 
-    /// UPnP client (exposed for integration with existing session code).
-    UPNPClient* upnpClient() { return &m_Upnp; }
+    /// The process's one view of the router (discovery, external address).
+    /// Set once at start-up, before start(); without it there is no UPnP.
+    void setRouterPorts(RouterPortAllocator* routerPorts);
+    RouterPortAllocator* routerPorts() const { return m_RouterPorts; }
 
     /// Set the actual HTTP and HTTPS ports the server is listening on.
     /// Must be called before start() so the hairpin test probes the right port.
@@ -179,9 +182,13 @@ private:
     /// changed so live admin pages pick it up.
     void updateHairpinStatus();
 
+    /// Compare the router's external address with the STUN one: two
+    /// different answers mean a second NAT the router cannot open.
+    void checkDoubleNat();
+
     // Owned sub-clients
     StunClient m_Stun;
-    UPNPClient m_Upnp;
+    QPointer<RouterPortAllocator> m_RouterPorts;
 
     // Settings reference (not owned)
     AppSettings* m_Settings = nullptr;

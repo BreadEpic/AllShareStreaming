@@ -18,6 +18,7 @@
 #include "RouterPortAllocator.h"
 #include "RouterPortPools.h"
 #include "UPNPClient.h"
+#include "common/Edition.h"
 #include "common/Logger.h"
 #include "server/AppSettings.h"
 
@@ -122,11 +123,13 @@ public:
         auto upnp = std::make_unique<UPNPClient>();
         if (!upnp->discover(2000)) {
             QMetaObject::invokeMethod(
-                m_Owner, [o = m_Owner]() { o->onDiscovered(false, {}, {}); }, Qt::QueuedConnection);
+                m_Owner, [o = m_Owner]() { o->onDiscovered(false, {}, {}, {}); },
+                Qt::QueuedConnection);
             return;
         }
         const QString publicIp = QString::fromStdString(upnp->getExternalIPAddress());
         const QString lan = QString::fromStdString(upnp->lanAddress());
+        const QString gateway = upnp->gatewayAddress().toString();
         m_Upnp = std::move(upnp);
         m_Gateway = std::make_unique<UpnpGatewayAdapter>(m_Upnp.get());
         m_Core = std::make_unique<RouterPortCore>(*m_Gateway, &portIsFree);
@@ -137,7 +140,10 @@ public:
         m_Renew->start(mw::routerports::kRenewIntervalMs);
 
         QMetaObject::invokeMethod(
-            m_Owner, [o = m_Owner, publicIp, lan]() { o->onDiscovered(true, publicIp, lan); },
+            m_Owner,
+            [o = m_Owner, publicIp, lan, gateway]() {
+                o->onDiscovered(true, publicIp, lan, gateway);
+            },
             Qt::QueuedConnection);
     }
 
@@ -208,7 +214,27 @@ void RouterPortAllocator::ensureStarted()
 {
     if (m_State != GatewayState::Unknown) return;
     if (!enabled()) return;
+    startWorker();
+}
 
+void RouterPortAllocator::discover()
+{
+    if (mw::edition::lanOnly()) return;
+    if (m_State == GatewayState::Unknown) {
+        startWorker();
+        return;
+    }
+    if (m_State != GatewayState::Missing) return;
+    // Asked again: the worker keeps no client after a miss, so start() looks
+    // for the router afresh.
+    m_State = GatewayState::Discovering;
+    const QString previousLan = m_Settings->routerLanIp();
+    QMetaObject::invokeMethod(
+        m_Worker, [w = m_Worker, previousLan]() { w->start(previousLan); }, Qt::QueuedConnection);
+}
+
+void RouterPortAllocator::startWorker()
+{
     m_State = GatewayState::Discovering;
     m_Thread = new QThread(this);
     m_Thread->setObjectName(QStringLiteral("mw-upnp"));
@@ -222,7 +248,8 @@ void RouterPortAllocator::ensureStarted()
         m_Worker, [w = m_Worker, previousLan]() { w->start(previousLan); }, Qt::QueuedConnection);
 }
 
-void RouterPortAllocator::onDiscovered(bool ok, const QString& publicIp, const QString& lanIp)
+void RouterPortAllocator::onDiscovered(bool ok, const QString& publicIp, const QString& lanIp,
+                                       const QString& gateway)
 {
     if (!ok) {
         m_State = GatewayState::Missing;
@@ -234,6 +261,7 @@ void RouterPortAllocator::onDiscovered(bool ok, const QString& publicIp, const Q
     m_State = GatewayState::Ready;
     m_PublicIp = publicIp;
     m_LanIp = lanIp;
+    m_GatewayAddress = gateway;
     Logger::info(QStringLiteral("[UPNP] Gateway found, public %1, this host %2")
                      .arg(publicIp.isEmpty() ? QStringLiteral("(unknown)") : publicIp, lanIp));
     // The address the remembered ports will have been obtained under, from
