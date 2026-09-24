@@ -95,6 +95,10 @@ mw-gpu-load --gpu 0:73665 --autostart --level 93
   running during a stream would hand back to the encoder exactly the GPU time
   the test means to take. To compare "load alone" with "load plus stream" at
   identical cost, replay the calibrated level with `--level`.
+- Levels go down to 1/32 for the weakest iGPUs: below 1 the glow takes fewer
+  raymarch steps, then fewer noise octaves. On DualRTX's AMD iGPU, level 1 is
+  19.3 ms of GPU a frame and 1/32 is 2.7 ms — the N95, 35 fps at level 1, can
+  now be brought up to 45 instead of overloaded.
 
 ## Calibrated levels (22/09/2026)
 

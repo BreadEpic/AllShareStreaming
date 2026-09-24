@@ -28,7 +28,8 @@
 class LoadController
 {
 public:
-    static constexpr double kMinLevel = 1.0;
+    /// One step of one octave (RenderWindow): the cheapest glow there is.
+    static constexpr double kMinLevel = 1.0 / 32.0;
     static constexpr double kMaxLevel = 400000.0;
 
     /// `autoTune` false: the level stays where it is set, no calibration.

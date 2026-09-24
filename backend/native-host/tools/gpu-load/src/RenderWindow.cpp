@@ -73,9 +73,21 @@ double degrees(double radians)
 // What the level buys: the glow's steps per pixel grow first (a game's
 // post-processing), the shells grow with them (its geometry). Both are close to
 // linear in cost, which is what LoadController's correction assumes.
+// Below level 1 the glow keeps getting cheaper instead of stopping at its
+// eight steps of four octaves: first fewer steps, down to one, then fewer
+// octaves, down to one — so the cost keeps going about linearly with the
+// level. The N95's iGPU managed 35 fps at level 1 against a 45 fps target:
+// the floor overloaded it instead of calibrating (22/09/2026).
 int stepsFor(double level)
 {
+    if (level < 1.0) return std::max(1, int(std::lround(8.0 * level)));
     return int(std::min(8.0 + level * 0.5, 1024.0));
+}
+int octavesFor(double level)
+{
+    constexpr double kOneStep = 1.0 / 8.0; // the level where stepsFor reaches 1
+    if (level >= kOneStep) return 4;
+    return std::max(1, int(std::lround(4.0 * level / kOneStep)));
 }
 int shellsFor(double level)
 {
@@ -354,7 +366,8 @@ void RenderWindow::renderFrame()
     const QMatrix4x4 inv = viewProj.inverted();
     std::copy(inv.constData(), inv.constData() + 16, u.invViewProj);
     const float camTime[4] = {eye.x(), eye.y(), eye.z(), time};
-    const float params[4] = {float(stepsFor(m_level)), 4.0f, float(shells), float(m_level)};
+    const float params[4] = {float(stepsFor(m_level)), float(octavesFor(m_level)), float(shells),
+                             float(m_level)};
     const float viewport[4] = {float(px.width()), float(px.height()), m_pulse ? m_pulse() : 0.0f,
                                0.0f};
     std::copy(camTime, camTime + 4, u.camTime);

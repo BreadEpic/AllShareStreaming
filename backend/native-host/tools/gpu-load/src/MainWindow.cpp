@@ -451,7 +451,10 @@ void MainWindow::onTick()
         m_controller.calibrating() ? QStringLiteral("calibrating") : QStringLiteral("locked");
     m_fpsLabel->setText(QString("%1 fps").arg(fps, 0, 'f', 1));
     m_gpuLabel->setText(QString("GPU %1 ms").arg(gpuMs, 0, 'f', 1));
-    m_levelLabel->setText(QString("level %1 (%2)").arg(m_controller.level(), 0, 'f', 0).arg(phase));
+    m_levelLabel->setText(
+        QString("level %1 (%2)")
+            .arg(m_controller.level(), 0, 'f', m_controller.level() < 10.0 ? 2 : 0)
+            .arg(phase));
     m_tempLabel->setText(
         QString("%1 / limit %2 °C").arg(celsiusText(m_lastReading)).arg(m_limit, 0, 'f', 0));
     m_timeLabel->setText(QString("%1 s left").arg((m_deadline.remainingTime() + 999) / 1000));
