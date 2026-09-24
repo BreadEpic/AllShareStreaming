@@ -3387,10 +3387,14 @@ int main(int argc, char* argv[])
             cfg["matchClientDisplay"] = reqMatchDisplay;
             cfg["fallbackWidth"] = reqFallbackW;
             cfg["fallbackHeight"] = reqFallbackH;
-            // Whether this browser administers MoonlightWeb here (loopback, the
-            // host-key session, or the LAN admin password). The native host
-            // keeps everyone else out of windows that run as administrator.
-            cfg["viewerAdmin"] = req.isLocal;
+            // Whether the viewer may drive windows that run as administrator.
+            // This route is the owner's: the auth gate lets through only a
+            // local caller or a signed-in session (the PIN), and guests join
+            // through /api/share/player/*, which always says no. So the owner
+            // is trusted wherever they sign in from — an iPhone on 4G included,
+            // which the old test (admin privilege: loopback, host key or LAN
+            // admin password) left staring at the "minimize" warning.
+            cfg["viewerAdmin"] = true;
             // The consent the desktop portal already gave this installation.
             // Empty on every machine that reads its own scanout — which is all
             // of them but a Linux host with no capability (an AppImage).
