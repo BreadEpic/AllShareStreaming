@@ -91,6 +91,11 @@
         "unableToConnect": "Unable to connect to server"
     },
     "hosts": {
+        "nativeCapturePermission": "This Mac has lost its Screen Recording permission, so it cannot stream its screen. On the Mac: System Settings → Privacy & Security → Screen Recording, turn MoonlightWeb on, then quit and reopen MoonlightWeb.",
+        "nativeInputPermission": "This Mac has lost its Accessibility permission: a stream will show the picture, but your keyboard and mouse will not reach it. On the Mac: System Settings → Privacy & Security → Accessibility, turn MoonlightWeb on.",
+        "nativeInputPermissionStream": "This Mac has lost its Accessibility permission — your keyboard and mouse will not reach it. Turn MoonlightWeb on in System Settings → Privacy & Security → Accessibility on the Mac.",
+        "nativePermOpened": "Opened the setting on the Mac.",
+        "nativePermOnTheMac": "This can only be opened from the Mac itself — do it there.",
         "title": "App Library",
         "addManually": "Add Manually",
         "empty": "No hosts found",

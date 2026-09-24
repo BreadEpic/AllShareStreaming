@@ -57,7 +57,8 @@ export class Host {
         // which is the default and what every Sunshine card stays. The token is
         // never sent to the browser — backendConfigured only says one is stored.
         this.backendType = data.backendType || '';
-        // The native host only: {state: 'ok'|'no_display'|'unavailable',
+        // The native host only: {state: 'ok'|'no_display'|
+        // 'no_capture_permission'|'unavailable', input_permission,
         // virtual_display: {supported, installed, enabled, active, name}}.
         // Computed by the server — the card never guesses whether the machine
         // behind it has a screen, or a "MoonlightWeb Virtual Display" to open.
@@ -109,6 +110,20 @@ export class Host {
             this.nativeDisplay?.state === 'no_display' &&
             !this.nativeDisplay?.virtual_display?.installed
         );
+    }
+
+    // A Mac whose Screen Recording grant is gone: the card stays, and says
+    // which switch to flip instead of painting a grid that cannot stream.
+    get needsCapturePermission() {
+        return (
+            this.backendType === 'native' && this.nativeDisplay?.state === 'no_capture_permission'
+        );
+    }
+
+    // A Mac whose Accessibility grant is gone: it streams a picture and takes
+    // none of the viewer's input, with no word from macOS about it.
+    get lacksInputPermission() {
+        return this.backendType === 'native' && this.nativeDisplay?.input_permission === false;
     }
 
     /** The server's virtual display capability for this card, or null. */

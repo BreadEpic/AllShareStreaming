@@ -1781,6 +1781,10 @@ const MoonlightApp = {
         );
         this.transition('launching');
         Toast.info(t('launch.launching', { name: app.name }));
+        // A Mac without Accessibility streams a picture that ignores every
+        // press, and macOS says nothing: said here, once per launch.
+        if (!codecOverride && host.lacksInputPermission)
+            Toast.warning(t('hosts.nativeInputPermissionStream'));
 
         // Reset fallback counter on user-initiated launch (not a fallback re-launch)
         if (!codecOverride) {

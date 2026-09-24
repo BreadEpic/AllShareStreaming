@@ -285,8 +285,14 @@ void ComputerManager::refreshNativeHost()
     const bool noDisplay =
         !available && NativeHostBackend::isEnabled() &&
         NativeProbeService::instance().snapshot().reason == mw::native::Unavailability::NoDisplay;
+    // A Mac whose Screen Recording grant went away after the install (an
+    // update signed differently, a tccutil reset): the same reasoning. A card
+    // that vanishes says nothing; one that stays says which switch to flip.
+    const bool noPermission = !available && NativeHostBackend::isEnabled() &&
+                              NativeProbeService::instance().snapshot().reason ==
+                                  mw::native::Unavailability::CapturePermission;
 
-    if (!available && !noDisplay) {
+    if (!available && !noDisplay && !noPermission) {
         if (existing) {
             m_Hosts.remove(uuid);
             delete existing;
@@ -323,6 +329,10 @@ void ComputerManager::refreshNativeHost()
     if (noDisplay)
         Logger::info(QString("Native host has no display: %1 — card kept for the virtual display")
                          .arg(host->name));
+    if (noPermission)
+        Logger::warning(QString("Native host lost its Screen Recording permission: %1 — card "
+                                "kept to say so")
+                            .arg(host->name));
     else
         Logger::info(QString("Native host available: %1").arg(host->name));
     emit hostsChanged();
@@ -339,7 +349,13 @@ QJsonObject ComputerManager::nativeDisplayJson()
     obj["state"] = caps.available ? QStringLiteral("ok")
                    : caps.reason == mw::native::Unavailability::NoDisplay
                        ? QStringLiteral("no_display")
+                   : caps.reason == mw::native::Unavailability::CapturePermission
+                       ? QStringLiteral("no_capture_permission")
                        : QStringLiteral("unavailable");
+    // macOS alone can withhold it (Accessibility): false means a stream would
+    // show a picture and take none of the viewer's input — said on the card
+    // and when the stream starts, since macOS itself says nothing.
+    obj["input_permission"] = caps.inputPermission;
     obj["virtual_display"] = VirtualDisplay::toJson(VirtualDisplay::probe());
     return obj;
 }

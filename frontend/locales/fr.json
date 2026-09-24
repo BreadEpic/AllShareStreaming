@@ -91,6 +91,11 @@
         "unableToConnect": "Impossible de se connecter au serveur"
     },
     "hosts": {
+        "nativeCapturePermission": "Ce Mac a perdu son autorisation d'enregistrement de l'écran : il ne peut plus diffuser son écran. Sur le Mac : Réglages Système → Confidentialité et sécurité → Enregistrement de l'écran, activez MoonlightWeb, puis quittez et relancez MoonlightWeb.",
+        "nativeInputPermission": "Ce Mac a perdu son autorisation d'Accessibilité : un stream affichera l'image, mais votre clavier et votre souris ne l'atteindront pas. Sur le Mac : Réglages Système → Confidentialité et sécurité → Accessibilité, activez MoonlightWeb.",
+        "nativeInputPermissionStream": "Ce Mac a perdu son autorisation d'Accessibilité — votre clavier et votre souris ne l'atteindront pas. Activez MoonlightWeb dans Réglages Système → Confidentialité et sécurité → Accessibilité, sur le Mac.",
+        "nativePermOpened": "Réglage ouvert sur le Mac.",
+        "nativePermOnTheMac": "Ce réglage ne s'ouvre que depuis le Mac lui-même — faites-le là-bas.",
         "title": "Bibliothèque d'applications",
         "addManually": "Ajouter manuellement",
         "empty": "Aucun hôte trouvé",

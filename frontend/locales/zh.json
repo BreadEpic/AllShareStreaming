@@ -91,6 +91,11 @@
         "unableToConnect": "无法连接到服务器"
     },
     "hosts": {
+        "nativeCapturePermission": "这台 Mac 已失去“屏幕录制”权限，无法串流其屏幕。请在 Mac 上：系统设置 → 隐私与安全性 → 屏幕录制，打开 MoonlightWeb，然后退出并重新打开 MoonlightWeb。",
+        "nativeInputPermission": "这台 Mac 已失去“辅助功能”权限：串流会显示画面，但您的键盘和鼠标无法控制它。请在 Mac 上：系统设置 → 隐私与安全性 → 辅助功能，打开 MoonlightWeb。",
+        "nativeInputPermissionStream": "这台 Mac 已失去“辅助功能”权限——您的键盘和鼠标无法控制它。请在 Mac 的系统设置 → 隐私与安全性 → 辅助功能中打开 MoonlightWeb。",
+        "nativePermOpened": "已在 Mac 上打开该设置。",
+        "nativePermOnTheMac": "只能在这台 Mac 本机上打开此设置——请在 Mac 上操作。",
         "title": "应用库",
         "addManually": "手动添加",
         "empty": "未找到主机",

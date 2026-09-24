@@ -265,6 +265,22 @@ export class HostListView {
                 return;
             }
 
+            const permBtn = e.target.closest('.btn-mac-perm');
+            if (permBtn) {
+                // Opens the pane on the Mac itself: only the Mac's own browser
+                // may ask (the backend answers anyone else with a refusal), so
+                // a remote viewer is told where to go instead.
+                const open =
+                    permBtn.dataset.pane === 'accessibility'
+                        ? BackendClient.openAccessibilitySettings()
+                        : BackendClient.openScreenRecordingSettings();
+                open.then(
+                    () => Toast.show(t('hosts.nativePermOpened'), 'success'),
+                    () => Toast.show(t('hosts.nativePermOnTheMac'), 'info'),
+                );
+                return;
+            }
+
             const wolBtn = e.target.closest('.btn-wol');
             if (wolBtn) {
                 const uuid = wolBtn.dataset.uuid;
@@ -995,7 +1011,8 @@ export class HostListView {
 
         // Fill in app grids for available hosts (cache hit = instant).
         for (const host of this.hosts) {
-            if (host.isAvailable && !host.needsVirtualDisplay) this._ensureAppsLoaded(host);
+            if (host.isAvailable && !host.needsVirtualDisplay && !host.needsCapturePermission)
+                this._ensureAppsLoaded(host);
         }
     }
 
@@ -1097,9 +1114,24 @@ export class HostListView {
                         <p class="host-empty-display-text">${t('vdisplay.emptyBody')}</p>
                     </div>`;
         }
+        if (host.needsCapturePermission) {
+            // The Mac's Screen Recording grant went away after the install (an
+            // update, a reset). The card stays and says which switch to flip:
+            // one that vanished would say nothing at all.
+            return `<div class="host-body-center host-empty-display">
+                        <p class="host-empty-display-text">${t('hosts.nativeCapturePermission')}</p>
+                        <button class="btn btn-secondary btn-mac-perm" data-pane="screen">${t('setup.openScreenRecording')}</button>
+                    </div>`;
+        }
         if (host.isAvailable) {
-            // App grid filled asynchronously by _ensureAppsLoaded().
-            return `<div class="host-apps" data-uuid="${host.uuid}"></div>`;
+            // App grid filled asynchronously by _ensureAppsLoaded(). A Mac that
+            // lost Accessibility still streams, but takes no input: said above
+            // the grid, since macOS says nothing.
+            const inputWarn = host.lacksInputPermission
+                ? `<div class="host-perm-warn"><p>${t('hosts.nativeInputPermission')}</p>
+                       <button class="btn btn-secondary btn-mac-perm" data-pane="accessibility">${t('setup.openAccessibility')}</button></div>`
+                : '';
+            return inputWarn + `<div class="host-apps" data-uuid="${host.uuid}"></div>`;
         }
         if (host.isLocked) {
             return `<div class="host-body-center">
