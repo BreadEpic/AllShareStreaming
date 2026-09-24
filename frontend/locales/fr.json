@@ -387,6 +387,8 @@
         "touchScreenDesc": "Touchez directement l'endroit voulu sur l'image (absolu) au lieu du modèle trackpad relatif. Le glisser à 1 doigt fait alors défiler, dans toutes les directions.",
         "pointerSensitivity": "Sensibilité du pointeur :",
         "pointerSensitivityDesc": "Vitesse du curseur trackpad/tactile (plus élevé = déplacement plus rapide).",
+        "mouseSensitivity": "Sensibilité de la souris :",
+        "mouseSensitivityDesc": "Distance parcourue par le pointeur de l'hôte à chaque pas de votre souris quand le stream la capture (jeux). Augmentez-la si la visée est lente avec cette souris ; 1 = inchangé.",
         "resetDefaults": "Réinitialiser les paramètres",
         "resetDefaultsDesc": "Restaure tous les paramètres de streaming à leurs valeurs par défaut.",
         "shortcutsDesc": "Ce que font les commandes pendant un stream. La même liste s’affiche brièvement sur l’image au démarrage d’un stream, puis s’efface.",

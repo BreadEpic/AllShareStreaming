@@ -108,6 +108,7 @@ export class SettingsView {
         this._chroma444 = false;
         this._muteHostAudio = true;
         this._touchSensitivity = 2.2;
+        this._mouseSensitivity = 1;
         // Mobile only: direct touch-screen input (absolute) instead of the
         // relative trackpad model. Off by default.
         this._touchScreen = false;
@@ -376,6 +377,10 @@ export class SettingsView {
             typeof data.touch_sensitivity === 'number' && data.touch_sensitivity > 0
                 ? data.touch_sensitivity
                 : 2.2;
+        this._mouseSensitivity =
+            typeof data.mouse_sensitivity === 'number' && data.mouse_sensitivity > 0
+                ? data.mouse_sensitivity
+                : 1;
         this._touchScreen = data.touch_screen === true;
         // Allow tearing (default on): resolveTearing() owns the default, the
         // legacy keys and the "cannot tear anyway" gate — see BrowserDetect.
@@ -517,6 +522,8 @@ export class SettingsView {
             mute_host_audio: this._muteHostAudio,
             seamless_switching: true,
             touch_sensitivity: this._touchSensitivity,
+            // Per device: it answers this device's mouse.
+            mouse_sensitivity: this._mouseSensitivity,
             touch_screen: this._touchScreen,
             tearing_enabled: this._tearing,
             // Marks the value above as a real choice rather than the old OFF
@@ -788,6 +795,10 @@ export class SettingsView {
                 this.container.querySelector('#settings-sensitivity')?.value,
             );
             const sensitivity = isNaN(sensRaw) ? this._touchSensitivity : sensRaw;
+            const mouseSensRaw = parseFloat(
+                this.container.querySelector('#settings-mouse-sensitivity')?.value,
+            );
+            const mouseSensitivity = isNaN(mouseSensRaw) ? this._mouseSensitivity : mouseSensRaw;
             const touchScreen =
                 this.container.querySelector('#settings-touch-screen')?.checked ??
                 this._touchScreen;
@@ -825,6 +836,7 @@ export class SettingsView {
             this._hdrEnabled = hdr;
             this._chroma444 = chroma444;
             this._touchSensitivity = sensitivity;
+            this._mouseSensitivity = mouseSensitivity;
             this._touchScreen = touchScreen;
             this._tearing = tearing;
             this._videoWorker = videoWorker;
@@ -856,6 +868,7 @@ export class SettingsView {
         this._chroma444 = false;
         this._muteHostAudio = true;
         this._touchSensitivity = 2.2;
+        this._mouseSensitivity = 1;
         this._touchScreen = false;
         this._tearing = SUPPORTS_CANVAS_TEARING;
         this._videoWorker = 'auto';
@@ -1401,6 +1414,21 @@ export class SettingsView {
                             </span>
                         </label>
                         <span class="setting-desc">${t('settings.gamingModeDesc')}</span>
+                    </div>
+
+                    <div class="settings-field">
+                        <label class="settings-label" for="settings-mouse-sensitivity">
+                            ${t('settings.mouseSensitivity')} <strong id="settings-mouse-sensitivity-value">${this._mouseSensitivity.toFixed(2)}</strong>×
+                        </label>
+                        <span class="setting-desc">${t('settings.mouseSensitivityDesc')}</span>
+                        <input type="range" id="settings-mouse-sensitivity"
+                               class="settings-slider"
+                               min="0.25" max="4" step="0.05"
+                               value="${this._mouseSensitivity}" />
+                        <div class="settings-slider-labels">
+                            <span>0.25×</span>
+                            <span>4×</span>
+                        </div>
                     </div>`
                     }
 
@@ -1565,6 +1593,13 @@ export class SettingsView {
         if (sensSlider && sensLabel) {
             sensSlider.addEventListener('input', () => {
                 sensLabel.textContent = parseFloat(sensSlider.value).toFixed(1);
+            });
+        }
+        const mouseSlider = this.container.querySelector('#settings-mouse-sensitivity');
+        const mouseLabel = this.container.querySelector('#settings-mouse-sensitivity-value');
+        if (mouseSlider && mouseLabel) {
+            mouseSlider.addEventListener('input', () => {
+                mouseLabel.textContent = parseFloat(mouseSlider.value).toFixed(2);
             });
         }
     }
@@ -1734,6 +1769,8 @@ export class SettingsView {
 
         const sensSlider = this.container.querySelector('#settings-sensitivity');
         if (sensSlider) sensSlider.addEventListener('change', () => this._autoSave());
+        const mouseSensSlider = this.container.querySelector('#settings-mouse-sensitivity');
+        if (mouseSensSlider) mouseSensSlider.addEventListener('change', () => this._autoSave());
 
         // Language selector — changing it persists the choice and reloads.
         const langSelect = this.container.querySelector('#settings-language');

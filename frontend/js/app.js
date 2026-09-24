@@ -2925,6 +2925,10 @@ const MoonlightApp = {
             ...viewOpts,
             intraRefresh: result.intra_refresh === true,
             gamepadProfile,
+            // Multiplier on relative mouse motion (pointer lock). The host never
+            // learns the viewer's mouse resolution, so a low-DPI mouse makes a
+            // game slow to aim with, and this is the one place to answer it.
+            mouseSensitivity: streamingSettings.mouse_sensitivity,
             // Click-to-photon probe: the host says whether it raises its flag
             // on every click (debug builds on Windows, setting on). Only then
             // does the view install its measuring side.

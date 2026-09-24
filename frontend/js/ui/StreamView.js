@@ -1347,6 +1347,15 @@ export class StreamView {
         // Trackpad acceleration factor (CSS px → host deltas), user-configurable in Settings.
         this._touchSensitivity =
             typeof touchSensitivity === 'number' && touchSensitivity > 0 ? touchSensitivity : 2.0;
+        // Mouse sensitivity (Settings, 1 = the counts the mouse reported). The
+        // scaled motion keeps its fractions from one report to the next: at
+        // 0.5, two one-count moves are one count, not zero.
+        this._mouseSensitivity =
+            typeof opts.mouseSensitivity === 'number' && opts.mouseSensitivity > 0
+                ? opts.mouseSensitivity
+                : 1;
+        this._mouseCarryX = 0;
+        this._mouseCarryY = 0;
 
         // Virtual keyboard (touch devices): hidden capture element + toggle button.
         this._kbdBtn = null;
@@ -7074,7 +7083,7 @@ export class StreamView {
                 // Raw mode: every report already went out from _onPointerRaw;
                 // this is the same motion summed up, a frame late.
                 if (this._rawPointerLive()) return;
-                this._sendToHost({ type: 'mousemove', dx: e.movementX, dy: e.movementY });
+                this._sendRelativeMouse(e.movementX, e.movementY);
             } else {
                 this._lastMouseClientX = e.clientX;
                 this._lastMouseClientY = e.clientY;
@@ -9380,7 +9389,7 @@ export class StreamView {
                 // host cursor and handles the capture click.
                 if (!this._mouseFocused) return;
                 if (e.movementX || e.movementY) {
-                    this._sendToHost({ type: 'mousemove', dx: e.movementX, dy: e.movementY });
+                    this._sendRelativeMouse(e.movementX, e.movementY);
                 }
                 return;
             }
@@ -9551,10 +9560,30 @@ export class StreamView {
         );
     }
 
+    /**
+     * One relative mouse move, scaled by the Settings sensitivity. Whole counts
+     * go out, the remainder waits for the next move — so a slow hand at 0.5 is
+     * half as fast, not stopped.
+     */
+    _sendRelativeMouse(dx, dy) {
+        const s = this._mouseSensitivity;
+        if (s === 1) {
+            this._sendToHost({ type: 'mousemove', dx, dy });
+            return;
+        }
+        const x = dx * s + this._mouseCarryX;
+        const y = dy * s + this._mouseCarryY;
+        const outX = Math.trunc(x);
+        const outY = Math.trunc(y);
+        this._mouseCarryX = x - outX;
+        this._mouseCarryY = y - outY;
+        if (outX || outY) this._sendToHost({ type: 'mousemove', dx: outX, dy: outY });
+    }
+
     handleMouseMove(e) {
         if (!this.pointerLocked) return;
         if (this._rawPointer) return; // already sent per report by _onPointerRaw
-        this._sendToHost({ type: 'mousemove', dx: e.movementX, dy: e.movementY });
+        this._sendRelativeMouse(e.movementX, e.movementY);
     }
 
     handleMouseDown(e) {

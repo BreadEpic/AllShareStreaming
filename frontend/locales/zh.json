@@ -387,6 +387,8 @@
         "touchScreenDesc": "直接点按画面中你想要的位置（绝对定位），而非相对触控板模式。此时单指拖动即可向任意方向滚动。",
         "pointerSensitivity": "指针灵敏度：",
         "pointerSensitivityDesc": "触控板/触摸光标速度（越高指针移动越快）。",
+        "mouseSensitivity": "鼠标灵敏度：",
+        "mouseSensitivityDesc": "串流捕获鼠标时（游戏），您的鼠标每移动一个单位，主机指针移动的距离。如果用这只鼠标瞄准感觉慢，请调高；1 = 不变。",
         "resetDefaults": "恢复默认参数",
         "resetDefaultsDesc": "将所有串流设置恢复为默认值。",
         "shortcutsDesc": "串流过程中各项操作的作用。串流开始时同样的列表会在画面上短暂显示，然后自动隐藏。",
