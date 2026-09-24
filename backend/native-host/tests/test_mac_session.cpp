@@ -7,6 +7,7 @@
 #include "mw/native/NativeHost.h"
 
 #include <atomic>
+#include <cmath>
 #include <chrono>
 #include <cstdio>
 #include <fstream>
@@ -31,25 +32,31 @@ using namespace mw::native;
 namespace {
 
 #if defined(MW_NATIVE_MACOS)
-/// Whether the main display lists a mode of another size at or under
-/// @p width x @p height — something "Match my screen" could switch to. A CI
-/// runner's paravirtual display lists 1024x768 alone.
-bool mainDisplayListsSmallerMode(int width, int height)
+/// Whether the main display lists a mode "Match my screen" could switch to,
+/// by the session's own rule (MacSession applyClientMode): @p width x @p height
+/// exactly, or a smaller one of the same shape, in pixels, usable for the
+/// desktop, and not the mode it is in. A CI runner's paravirtual 1024x768
+/// display lists 4:3 modes only, none of a 16:10 client's shape.
+bool mainDisplayListsMatchingMode(int width, int height)
 {
     const CGDirectDisplayID id = CGMainDisplayID();
     CGDisplayModeRef current = CGDisplayCopyDisplayMode(id);
-    const size_t curW = current ? CGDisplayModeGetWidth(current) : 0;
-    const size_t curH = current ? CGDisplayModeGetHeight(current) : 0;
+    const size_t curW = current ? CGDisplayModeGetPixelWidth(current) : 0;
+    const size_t curH = current ? CGDisplayModeGetPixelHeight(current) : 0;
     if (current) CGDisplayModeRelease(current);
     CFArrayRef modes = CGDisplayCopyAllDisplayModes(id, nullptr);
     if (!modes) return false;
+    const double wantAspect = static_cast<double>(width) / height;
     bool found = false;
     for (CFIndex i = 0; i < CFArrayGetCount(modes) && !found; ++i) {
         auto mode =
             static_cast<CGDisplayModeRef>(const_cast<void*>(CFArrayGetValueAtIndex(modes, i)));
-        const size_t w = CGDisplayModeGetWidth(mode), h = CGDisplayModeGetHeight(mode);
-        found = (w != curW || h != curH) && w <= static_cast<size_t>(width) &&
-                h <= static_cast<size_t>(height);
+        if (!CGDisplayModeIsUsableForDesktopGUI(mode)) continue;
+        const size_t w = CGDisplayModeGetPixelWidth(mode), h = CGDisplayModeGetPixelHeight(mode);
+        if (w == 0 || h == 0 || (w == curW && h == curH)) continue;
+        if (w > static_cast<size_t>(width) || h > static_cast<size_t>(height)) continue;
+        const double aspect = static_cast<double>(w) / h;
+        found = std::abs(aspect - wantAspect) / wantAspect <= 0.005;
     }
     CFRelease(modes);
     return found;
@@ -234,8 +241,8 @@ void run_mac_session_tests()
         config.fallbackWidth = config.requestedWidth;
         config.fallbackHeight = config.requestedHeight;
         if (!display->primary ||
-            !mainDisplayListsSmallerMode(config.requestedWidth, config.requestedHeight)) {
-            std::fprintf(stderr, "  skipped: the display lists no other mode to switch to\n");
+            !mainDisplayListsMatchingMode(config.requestedWidth, config.requestedHeight)) {
+            std::fprintf(stderr, "  skipped: the display lists no mode of the client's shape\n");
             return;
         }
         std::string error;
