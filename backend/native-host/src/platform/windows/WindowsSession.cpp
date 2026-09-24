@@ -307,6 +307,11 @@ public:
         // it was; a display just put in the client's mode reshapes it — the
         // box rule against the new size gives the box itself back.
         FrameSize frame{m_Config.width, m_Config.height};
+        // A display just put in the client's mode is fitted against what the
+        // client ASKED, not against the frame the Selector shaped to the old
+        // mode: a 16:9 panel shaped 2560x1600 to 2560x1440, and the box rule
+        // against the new 2560x1600 would then have streamed 2304x1440.
+        if (modeChanged) frame = FrameSize{m_Config.requestedWidth, m_Config.requestedHeight};
         if (modeChanged || fellBack) {
             frame = frameForDisplay({m_Capture->width(), m_Capture->height()}, frame,
                                     policyOf(m_Config));

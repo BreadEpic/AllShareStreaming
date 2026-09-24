@@ -281,6 +281,31 @@ public:
                 log::warning("[native] audio unavailable, streaming silent: " + audioError);
         }
 
+        // "Match my screen": the display in the client's own mode, before the
+        // capture opens so the first frame is already the right size. Same
+        // policy as Windows (applyClientMode there); no mode to switch to and
+        // the session becomes what Auto would have been.
+        const bool modeChanged = applyClientMode();
+        const bool fellBack = !modeChanged && fallBackFromMatch(m_Config);
+        if (fellBack)
+            log::info("[native] \"Match my screen\" falls back to Auto: fitting " +
+                      std::to_string(m_Config.width) + "x" + std::to_string(m_Config.height));
+        if (modeChanged || fellBack) {
+            // Fitted against what the client ASKED once the mode has changed —
+            // the Selector's frame was shaped to the old mode (see Windows).
+            const FrameSize box = modeChanged
+                                      ? FrameSize{m_Config.requestedWidth, m_Config.requestedHeight}
+                                      : FrameSize{m_Config.width, m_Config.height};
+            const FrameSize frame = frameForDisplay({m_Display.pixelWidth, m_Display.pixelHeight},
+                                                    box, policyOf(m_Config));
+            log::info(std::string("[native] the frame follows ") +
+                      (modeChanged ? "the display's new mode: " : "the Auto box: ") +
+                      std::to_string(m_Config.width) + "x" + std::to_string(m_Config.height) +
+                      " -> " + std::to_string(frame.width) + "x" + std::to_string(frame.height));
+            m_Config.width = frame.width;
+            m_Config.height = frame.height;
+        }
+
         if (!openCapture(m_Config.width, m_Config.height, error)) return false;
         if (m_Audio && !m_Capture->audioActive()) {
             // The stream took no audio tap (macOS 12). Nothing will ever push,
@@ -383,8 +408,10 @@ public:
         }
         if (!wasRunning && !m_Encoder && !m_Capture && !m_Audio) {
             // Nothing was streaming, but a mute may still have been engaged by
-            // a start() that failed after it. The speakers come back either way.
+            // a start() that failed after it. The speakers come back either way,
+            // and so does a display mode changed before the capture refused.
             m_HostMute.release();
+            restoreDisplayMode();
             return;
         }
         m_Encoder.reset();
@@ -394,6 +421,140 @@ public:
         m_Audio.reset();
         // After the capture is closed: the speakers come back.
         m_HostMute.release();
+        // And the display its own mode.
+        restoreDisplayMode();
+    }
+
+    // ── "Match my screen" ────────────────────────────────────────────────
+    //
+    // The client wants its own pixels, one for one: a display mode of the
+    // client screen's size in PIXELS. macOS lists each size twice on a Retina
+    // panel — 1:1 and HiDPI (twice the pixels of its points) — so a size is
+    // matched on pixels, and between two candidates of the same pixels the one
+    // with the scale the display already has wins: the desktop keeps the look
+    // its user chose. The exact size is taken at the highest refresh; otherwise
+    // the largest listed mode of the client's shape (within 0.5%) that fits
+    // inside it; otherwise nothing changes. kCGConfigureForAppOnly: the change
+    // is the session's — undone at stop(), and by macOS if the process dies.
+
+    /// @returns true when the display's mode was changed for this session.
+    bool applyClientMode()
+    {
+        if (!m_Config.matchClientDisplay || !m_Config.fitRequestedBox) return false;
+        const int wantW = m_Config.requestedWidth, wantH = m_Config.requestedHeight;
+        if (wantW <= 0 || wantH <= 0) return false;
+        if (m_Display.pixelWidth == wantW && m_Display.pixelHeight == wantH) return false;
+
+        const CGDirectDisplayID id = m_Display.displayId;
+        CGDisplayModeRef current = CGDisplayCopyDisplayMode(id);
+        if (!current) return false;
+        const bool currentHiDpi =
+            CGDisplayModeGetPixelWidth(current) > CGDisplayModeGetWidth(current);
+        const double wantAspect = static_cast<double>(wantW) / wantH;
+
+        NSDictionary* options =
+            @{(__bridge NSString*)kCGDisplayShowDuplicateLowResolutionModes : @YES};
+        CFArrayRef modes = CGDisplayCopyAllDisplayModes(id, (__bridge CFDictionaryRef)options);
+        CGDisplayModeRef best = nullptr;
+        bool exact = false;
+        long long bestArea = 0;
+        // Ranks two modes of the same pixel size: the display's own scale,
+        // then the higher refresh.
+        const auto better = [currentHiDpi](CGDisplayModeRef a, CGDisplayModeRef b) {
+            const bool aSame =
+                (CGDisplayModeGetPixelWidth(a) > CGDisplayModeGetWidth(a)) == currentHiDpi;
+            const bool bSame =
+                (CGDisplayModeGetPixelWidth(b) > CGDisplayModeGetWidth(b)) == currentHiDpi;
+            if (aSame != bSame) return aSame;
+            return CGDisplayModeGetRefreshRate(a) > CGDisplayModeGetRefreshRate(b);
+        };
+        const CFIndex count = modes ? CFArrayGetCount(modes) : 0;
+        for (CFIndex i = 0; i < count; ++i) {
+            auto mode = (CGDisplayModeRef)CFArrayGetValueAtIndex(modes, i);
+            if (!CGDisplayModeIsUsableForDesktopGUI(mode)) continue;
+            const int w = static_cast<int>(CGDisplayModeGetPixelWidth(mode));
+            const int h = static_cast<int>(CGDisplayModeGetPixelHeight(mode));
+            if (w <= 0 || h <= 0) continue;
+            if (w == wantW && h == wantH) {
+                if (!exact || better(mode, best)) best = mode;
+                exact = true;
+                continue;
+            }
+            if (exact || w > wantW || h > wantH) continue;
+            const double aspect = static_cast<double>(w) / h;
+            if (std::abs(aspect - wantAspect) / wantAspect > 0.005) continue;
+            const long long area = static_cast<long long>(w) * h;
+            if (area > bestArea || (area == bestArea && better(mode, best))) {
+                best = mode;
+                bestArea = area;
+            }
+        }
+        if (!best) {
+            log::info("[native] " + m_Display.name + " lists no mode of " + std::to_string(wantW) +
+                      "x" + std::to_string(wantH) + " or of its shape — the display keeps " +
+                      std::to_string(m_Display.pixelWidth) + "x" +
+                      std::to_string(m_Display.pixelHeight));
+            if (modes) CFRelease(modes);
+            CGDisplayModeRelease(current);
+            return false;
+        }
+
+        const int newW = static_cast<int>(CGDisplayModeGetPixelWidth(best));
+        const int newH = static_cast<int>(CGDisplayModeGetPixelHeight(best));
+        const double newHz = CGDisplayModeGetRefreshRate(best);
+        CGDisplayConfigRef config = nullptr;
+        CGError err = CGBeginDisplayConfiguration(&config);
+        if (err == kCGErrorSuccess)
+            err = CGConfigureDisplayWithDisplayMode(config, id, best, nullptr);
+        if (err == kCGErrorSuccess)
+            err = CGCompleteDisplayConfiguration(config, kCGConfigureForAppOnly);
+        else if (config)
+            CGCancelDisplayConfiguration(config);
+        if (modes) CFRelease(modes);
+        if (err != kCGErrorSuccess) {
+            log::warning("[native] " + m_Display.name + " refused " + std::to_string(newW) + "x" +
+                         std::to_string(newH) + " (CGError " + std::to_string(err) +
+                         ") — the display keeps its mode");
+            CGDisplayModeRelease(current);
+            return false;
+        }
+        m_SavedMode = current; // released by restoreDisplayMode()
+        m_SavedModeDisplay = id;
+
+        const int wasW = m_Display.pixelWidth, wasH = m_Display.pixelHeight;
+        // Read back rather than assumed: the size, the refresh and the rest of
+        // what the session keys on come from the same list the probe reads.
+        for (const platform::MacDisplay& d : platform::listDisplays())
+            if (d.displayId == id) m_Display = d;
+        m_DisplayMilliHz = m_Display.refreshMilliHz;
+        log::info("[native] " + m_Display.name + " put in " + std::to_string(newW) + "x" +
+                  std::to_string(newH) + " @ " + std::to_string(static_cast<int>(newHz + 0.5)) +
+                  " Hz for the session (" +
+                  (exact ? "the client's own size" : "the largest of its shape that fits") +
+                  ", was " + std::to_string(wasW) + "x" + std::to_string(wasH) + ")");
+        return true;
+    }
+
+    /// The mode the session changed, put back. Idempotent.
+    void restoreDisplayMode()
+    {
+        if (!m_SavedMode) return;
+        CGDisplayConfigRef config = nullptr;
+        CGError err = CGBeginDisplayConfiguration(&config);
+        if (err == kCGErrorSuccess)
+            err =
+                CGConfigureDisplayWithDisplayMode(config, m_SavedModeDisplay, m_SavedMode, nullptr);
+        if (err == kCGErrorSuccess)
+            err = CGCompleteDisplayConfiguration(config, kCGConfigureForAppOnly);
+        else if (config)
+            CGCancelDisplayConfiguration(config);
+        if (err == kCGErrorSuccess)
+            log::info("[native] the display's own mode is back");
+        else
+            log::warning("[native] the display's own mode could not be put back (CGError " +
+                         std::to_string(err) + ")");
+        CGDisplayModeRelease(m_SavedMode);
+        m_SavedMode = nullptr;
     }
 
     const SessionInfo& info() const override { return m_Info; }
@@ -1433,6 +1594,9 @@ private:
 
     platform::MacDisplay m_Display;
     IOPMAssertionID m_KeepAwake = kIOPMNullAssertionID;
+    /// The mode "Match my screen" replaced, to put back at stop().
+    CGDisplayModeRef m_SavedMode = nullptr;
+    CGDirectDisplayID m_SavedModeDisplay = 0;
     IOPMAssertionID m_Wake = kIOPMNullAssertionID;
     /// The App Nap opt-out, held from start() to stop().
     id<NSObject> m_Activity = nil;

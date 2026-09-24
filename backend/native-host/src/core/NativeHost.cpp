@@ -90,11 +90,12 @@ std::unique_ptr<Session> NativeHost::createSession(const SessionConfig& config,
                      "tier");
     }
 
-    // "Match my screen" is a Windows session's to attempt (a display mode
-    // change, WindowsSession::applyClientMode). Elsewhere it is Auto from the
-    // start: the fallback box, never upscaled.
+    // "Match my screen" is a Windows or macOS session's to attempt (a display
+    // mode change, applyClientMode in both). On Linux it is Auto from the start:
+    // the fallback box, never upscaled — no mode change without root under
+    // Wayland, and none attempted (decided 24/09/2026).
     SessionConfig asked = config;
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(__APPLE__)
     if (fallBackFromMatch(asked))
         log::info("[native] this platform changes no display mode — \"Match my screen\" "
                   "streams as Auto");
