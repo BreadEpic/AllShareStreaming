@@ -192,6 +192,8 @@ jobs:
         with:
           version: 6.11.0
           arch: win64_msvc2022_64
+          # The control-channel test (b1591f08) links Qt WebSockets.
+          modules: qtwebsockets
           # aqt 3.3.0 doesn't know the new Qt 6.11 per-arch repo layout (404s on
           # Updates.xml); pin the commit that added it. py7zr 1.1.0 avoids the 7z
           # path-sanitization bug (aqtinstall#995) that breaks SBOM extraction.
