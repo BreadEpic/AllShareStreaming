@@ -108,7 +108,7 @@ describe('HostListView app grid', () => {
         expect(names(container)).toEqual(['Desktop']);
         await settle();
 
-        expect(names(container)).toEqual(['Desktop', 'Cyberpunk 2077']);
+        expect(names(container)).toEqual(['Cyberpunk 2077', 'Desktop']);
     });
 
     it('keeps a remembered grid up when the host is momentarily unreachable', async () => {
