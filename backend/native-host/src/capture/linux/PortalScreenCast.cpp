@@ -163,6 +163,7 @@ struct PortalScreenCast::Impl
     sd_bus* bus = nullptr;
     std::string session;
     int calls = 0; ///< makes each handle token unique within one session
+    bool virtualMonitor = false;
 
     ~Impl()
     {
@@ -201,6 +202,25 @@ bool PortalScreenCast::available(std::string& reason)
     }
     reason = "ScreenCast portal version " + std::to_string(version);
     return true;
+}
+
+uint32_t PortalScreenCast::sourceTypes()
+{
+    sd_bus* bus = nullptr;
+    if (sd_bus_open_user(&bus) < 0) return 0;
+    sd_bus_error error = SD_BUS_ERROR_NULL;
+    uint32_t types = 0;
+    if (sd_bus_get_property_trivial(bus, kBus, kObject, kScreenCast, "AvailableSourceTypes", &error,
+                                    'u', &types) < 0)
+        types = 0;
+    sd_bus_error_free(&error);
+    sd_bus_unref(bus);
+    return types;
+}
+
+void PortalScreenCast::setVirtual(bool virtualMonitor)
+{
+    d->virtualMonitor = virtualMonitor;
 }
 
 bool PortalScreenCast::start(const std::string& restoreToken, int timeoutMs, PortalStream& out,
@@ -311,15 +331,17 @@ bool PortalScreenCast::start(const std::string& restoreToken, int timeoutMs, Por
                 // lets the client keep drawing its own.
                 // persist_mode 2 = remember until the user revokes it, which is
                 // what buys a restore token and, with it, silence next time.
+                // types 4 = VIRTUAL instead: a monitor made for this session.
+                const uint32_t types = d->virtualMonitor ? kSourceVirtual : kSourceMonitor;
                 if (restoreToken.empty())
                     return sd_bus_message_append(m, "a{sv}", 5, "handle_token", "s", token.c_str(),
-                                                 "types", "u", uint32_t{1}, "multiple", "b", 0,
+                                                 "types", "u", types, "multiple", "b", 0,
                                                  "cursor_mode", "u", uint32_t{4}, "persist_mode",
                                                  "u", uint32_t{2});
-                return sd_bus_message_append(
-                    m, "a{sv}", 6, "handle_token", "s", token.c_str(), "types", "u", uint32_t{1},
-                    "multiple", "b", 0, "cursor_mode", "u", uint32_t{4}, "persist_mode", "u",
-                    uint32_t{2}, "restore_token", "s", restoreToken.c_str());
+                return sd_bus_message_append(m, "a{sv}", 6, "handle_token", "s", token.c_str(),
+                                             "types", "u", types, "multiple", "b", 0, "cursor_mode",
+                                             "u", uint32_t{4}, "persist_mode", "u", uint32_t{2},
+                                             "restore_token", "s", restoreToken.c_str());
             },
             selected, 15000))
         return false;
@@ -381,7 +403,8 @@ bool PortalScreenCast::start(const std::string& restoreToken, int timeoutMs, Por
     out.hasPosition = started.hasPosition;
     out.x = started.x;
     out.y = started.y;
-    log::info("[native] portal: node " + std::to_string(out.nodeId) +
+    log::info(std::string("[native] portal: ") + (d->virtualMonitor ? "virtual monitor, " : "") +
+              "node " + std::to_string(out.nodeId) +
               (out.width > 0
                    ? " (" + std::to_string(out.width) + "x" + std::to_string(out.height) + ")"
                    : std::string()) +

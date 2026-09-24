@@ -122,6 +122,12 @@ QJsonObject VirtualDisplayJob::statusJson() const
 void VirtualDisplayJob::activate(int width, int height, int refresh, bool hdr, Callback cb)
 {
     m_Release.stop();
+    // Linux: the stream's own portal session makes the display, at the
+    // client's size, when the worker starts. Nothing to do first.
+    if (VirtualDisplay::livesInStream()) {
+        if (cb) cb(true, QString());
+        return;
+    }
     VirtualDisplay::normaliseMode(width, height);
     VirtualDisplay::normaliseRate(refresh);
     // Already on and seen by the engine: nothing to wait for. (A running
@@ -168,6 +174,8 @@ void VirtualDisplayJob::deactivate(Callback cb)
 
 void VirtualDisplayJob::releaseSoon()
 {
+    // Linux: it went with the stream's portal session.
+    if (VirtualDisplay::livesInStream()) return;
     m_Release.start();
 }
 

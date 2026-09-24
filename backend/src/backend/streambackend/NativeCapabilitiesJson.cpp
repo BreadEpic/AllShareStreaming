@@ -95,6 +95,7 @@ QJsonObject toJson(const Capabilities& caps)
         o["kind"] = QString::fromLatin1(toString(d.kind));
         o["model"] = QString::fromStdString(d.model);
         o["key"] = QString::fromStdString(d.key);
+        if (d.capture != CaptureApi::None) o["capture"] = static_cast<int>(d.capture);
         displays.append(o);
     }
     obj["displays"] = displays;
@@ -150,6 +151,7 @@ bool fromJson(const QJsonObject& obj, Capabilities& out)
         d.kind = displayKindFromString(o["kind"].toString().toStdString());
         d.model = o["model"].toString().toStdString();
         d.key = o["key"].toString().toStdString();
+        d.capture = static_cast<CaptureApi>(o["capture"].toInt(0));
         out.displays.push_back(std::move(d));
     }
     out.hasBattery = obj["hasBattery"].toBool(false);

@@ -374,7 +374,7 @@ public:
                 return false;
             }
         } else {
-            m_ConnectorName = "portal";
+            m_ConnectorName = m_Target.portalVirtual ? "virtual display" : "portal";
         }
 
         if (!openCapture(error)) return false;
@@ -685,6 +685,11 @@ private:
                 m_Capture.reset();
             }
             auto portal = std::make_unique<capture::PortalCapture>();
+            // A monitor made for this stream, at its size and cadence. Its
+            // consent is a different one from a monitor's: the consumer hands
+            // the matching token in, and stores what comes back apart.
+            if (m_Target.portalVirtual)
+                portal->setVirtualMonitor(m_Config.width, m_Config.height, m_Config.fps);
             portal->setRestoreToken(m_PortalToken);
             if (!portal->start(error)) return false;
             // A grant only comes back from a start that raised the dialog.

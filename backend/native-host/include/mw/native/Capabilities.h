@@ -232,7 +232,19 @@ struct DisplayInfo
     /// name on Windows ("\\.\DISPLAY3"). Empty on the other platforms, which
     /// change no modes yet.
     std::string osName;
+
+    /// This display's own route to a picture, when it is not the machine's
+    /// (Capabilities::capture). None means the machine's. Linux's portal
+    /// virtual display is the one case: it exists only inside a ScreenCast
+    /// session, whatever route the monitors beside it take.
+    CaptureApi capture = CaptureApi::None;
 };
+
+/// DisplayInfo::key of the display a Linux ScreenCast portal creates for the
+/// stream (source type VIRTUAL): it does not exist before the session asks for
+/// it, at the client's size, and goes with it. The server recognises it by
+/// this key rather than by name — the probe does not know the edition's name.
+constexpr const char* kPortalVirtualDisplayKey = "portal-virtual";
 
 /// Why the native engine cannot run here. The caller maps every one of these to
 /// the SAME user-facing sentence (§23: "not available on this configuration —

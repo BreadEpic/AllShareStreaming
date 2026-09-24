@@ -113,6 +113,11 @@ struct PortalCapture::Impl
     /// An earlier grant to replay, so start() raises no dialog.
     std::string restore;
 
+    /// A virtual monitor's mode; zero width for a real monitor.
+    int virtualWidth = 0;
+    int virtualHeight = 0;
+    int virtualFps = 60;
+
     int64_t nowUs() const
     {
         return std::chrono::duration_cast<std::chrono::microseconds>(
@@ -311,10 +316,19 @@ void PortalCapture::setRestoreToken(std::string token)
     d->restore = std::move(token);
 }
 
+void PortalCapture::setVirtualMonitor(int width, int height, int fps)
+{
+    d->virtualWidth = width;
+    d->virtualHeight = height;
+    d->virtualFps = fps > 0 ? fps : 60;
+}
+
 bool PortalCapture::start(std::string& error)
 {
     ensurePipeWire();
 
+    const bool virtualMonitor = d->virtualWidth > 0 && d->virtualHeight > 0;
+    d->portal.setVirtual(virtualMonitor);
     if (!d->portal.start(d->restore, 0, d->granted, error)) return false;
     if (!d->granted.valid()) {
         error = "the portal granted nothing usable";
@@ -377,6 +391,16 @@ bool PortalCapture::start(std::string& error)
     spa_fraction rateDefault = SPA_FRACTION(60, 1);
     spa_fraction rateMin = SPA_FRACTION(0, 1);
     spa_fraction rateMax = SPA_FRACTION(1000, 1);
+    if (virtualMonitor) {
+        // A virtual monitor has no size of its own: the compositor makes it
+        // the size this format settles on. One size, then — the client's —
+        // and its cadence as the most it will be asked for.
+        const auto w = static_cast<uint32_t>(d->virtualWidth);
+        const auto h = static_cast<uint32_t>(d->virtualHeight);
+        const auto fps = static_cast<uint32_t>(d->virtualFps);
+        sizeDefault = sizeMin = sizeMax = SPA_RECTANGLE(w, h);
+        rateDefault = rateMax = SPA_FRACTION(fps, 1);
+    }
     const spa_pod* params[1];
     params[0] = static_cast<const spa_pod*>(spa_pod_builder_add_object(
         &builder, SPA_TYPE_OBJECT_Format, SPA_PARAM_EnumFormat, SPA_FORMAT_mediaType,

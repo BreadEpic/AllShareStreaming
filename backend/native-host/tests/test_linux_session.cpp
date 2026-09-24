@@ -518,3 +518,88 @@ void run_linux_session_tests()
     }
 #endif
 }
+
+// The portal's VIRTUAL source: a monitor the compositor makes for the session
+// at the size and cadence the stream asks for (GNOME 46+). What is checked is
+// the contract the "virtual display" card rests on — the picture comes back
+// at the client's size, not at any monitor's. Opt-in (MW_PORTAL_VIRTUAL=1):
+// the portal may raise a dialog, and a test nobody watches must not hang on it.
+void run_linux_virtual_display_tests()
+{
+    SECTION("Linux — the portal's virtual display, at the client's size");
+
+#if !defined(MW_NATIVE_LINUX_GFX) || !defined(MW_NATIVE_LINUX_PORTAL)
+    std::fprintf(stderr, "  skipped: the portal route is not built\n");
+#else
+    const Capabilities caps = NativeHost::probe();
+    const DisplayInfo* virt = nullptr;
+    for (const DisplayInfo& d : caps.displays)
+        if (d.key == kPortalVirtualDisplayKey) virt = &d;
+    if (!virt) {
+        std::fprintf(stderr, "  skipped: the portal offers no virtual source here\n");
+        return;
+    }
+    CHECK(virt->kind == DisplayKind::Virtual);
+    CHECK(virt->capture == CaptureApi::PipeWire);
+    CHECK(!virt->primary || caps.displays.size() == 1);
+    std::fprintf(stderr, "  listed: %s — %s\n", virt->label.c_str(), virt->detail.c_str());
+    const char* opt = std::getenv("MW_PORTAL_VIRTUAL");
+    if (!opt || std::string(opt) != "1") {
+        std::fprintf(stderr, "  session skipped: set MW_PORTAL_VIRTUAL=1 (the portal may ask)\n");
+        return;
+    }
+
+    SessionConfig config;
+    config.displayId = virt->id;
+    config.width = 1600;
+    config.height = 900;
+    config.fps = 30;
+    config.bitrateKbps = 10000;
+    config.clientCodecs = {Codec::H264};
+    // A grant from an earlier run replays silently; without one the portal
+    // asks, and the grant it hands back is printed for the next run.
+    const char* replay = std::getenv("MW_PORTAL_VIRTUAL_TOKEN");
+    if (replay && *replay) config.portalRestoreToken = replay;
+
+    std::atomic<int> frames{0};
+    std::string ended;
+    std::string error;
+    std::unique_ptr<Session> session = NativeHost::createSession(
+        config, [&](const EncodedFrame&) { frames.fetch_add(1); }, nullptr, nullptr, nullptr,
+        [&](const std::string& reason) { ended = reason; }, error);
+    if (!session) {
+        std::fprintf(stderr, "  createSession failed: %s\n", error.c_str());
+        CHECK(false);
+        return;
+    }
+    std::atomic<int> grants{0};
+    std::string granted;
+    session->setPortalGrantCallback([&](const std::string& token) {
+        grants.fetch_add(1);
+        granted = token;
+    });
+    const bool started = session->start(error);
+    CHECK(started);
+    if (!started) {
+        std::fprintf(stderr, "  start failed: %s\n", error.c_str());
+        return;
+    }
+    const SessionInfo& info = session->info();
+    std::fprintf(stderr, "  session: display %dx%d, stream %dx%d via %s, capture %s\n",
+                 info.displayWidth, info.displayHeight, info.width, info.height,
+                 toString(info.encoder), toString(info.capture));
+    CHECK_EQ(info.displayWidth, 1600);
+    CHECK_EQ(info.displayHeight, 900);
+    CHECK_EQ(static_cast<int>(info.capture), static_cast<int>(CaptureApi::PipeWire));
+    std::this_thread::sleep_for(std::chrono::seconds(3));
+    session->stop();
+    std::fprintf(stderr, "  %d frame(s)%s\n", frames.load(),
+                 ended.empty() ? "" : (", ended: " + ended).c_str());
+    CHECK(frames.load() >= 1);
+    CHECK(ended.empty());
+    if (!granted.empty())
+        std::fprintf(stderr, "  new grant — MW_PORTAL_VIRTUAL_TOKEN=%s\n", granted.c_str());
+    // A replayed grant raises no dialog, and so hands nothing back.
+    if (replay && *replay) CHECK_EQ(grants.load(), 0);
+#endif
+}

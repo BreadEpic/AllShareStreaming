@@ -475,8 +475,12 @@ public:
     // (no capability to read the scanout: an AppImage). Cleared on its own the
     // day the portal refuses it — a stale token is answered with a dialog, and
     // the fresh grant overwrites this one.
-    QString portalRestoreToken() const;
-    void setPortalRestoreToken(const QString& token);
+    //
+    // @p virtualDisplay: the grant for the portal's VIRTUAL source (the
+    // "virtual display" card on Linux) — a different consent from a monitor's,
+    // kept apart so neither overwrites the other.
+    QString portalRestoreToken(bool virtualDisplay = false) const;
+    void setPortalRestoreToken(const QString& token, bool virtualDisplay = false);
 
     // ── Instance name ────────────────────────────────────────────────────────
     //

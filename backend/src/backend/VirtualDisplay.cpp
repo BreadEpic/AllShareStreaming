@@ -393,7 +393,54 @@ void resetAtStartup()
     VirtualDisplayJob::instance().deactivate(nullptr);
 }
 
-#else // macOS: the engine's own display (mw::native::vdisplay); Linux: step 3
+#elif defined(Q_OS_LINUX) // the portal's VIRTUAL source, made by the stream itself
+
+bool nodePresent()
+{
+    // The probe lists it whenever the portal offers the source type.
+    return anyOurs(NativeProbeService::instance().snapshot());
+}
+
+bool nodeEnabled()
+{
+    return false;
+}
+
+bool processElevated()
+{
+    return false;
+}
+
+bool isOurs(const mw::native::DisplayInfo& display)
+{
+    return display.key == mw::native::kPortalVirtualDisplayKey;
+}
+
+Status probe()
+{
+    Status st;
+    st.supported = st.installed = nodePresent();
+    st.method = st.supported ? QStringLiteral("portal") : QString();
+    return st;
+}
+
+bool applyInProcess(const Request& req, Result* result)
+{
+    // Never reached from /start (livesInStream): nothing to turn on or off.
+    Q_UNUSED(req);
+    Result res;
+    res.ok = true;
+    res.stage = QStringLiteral("done");
+    if (result) *result = res;
+    return true;
+}
+
+void resetAtStartup()
+{
+    AppSettings().clearVirtualDisplay();
+}
+
+#else // macOS: the engine's own display (mw::native::vdisplay)
 
 bool nodePresent()
 {
@@ -503,5 +550,14 @@ void resetAtStartup()
 }
 
 #endif
+
+bool livesInStream()
+{
+#if defined(Q_OS_LINUX)
+    return true;
+#else
+    return false;
+#endif
+}
 
 } // namespace VirtualDisplay

@@ -35,6 +35,7 @@ void run_encode_load_cap_tests();
 void run_h264_vui_tests();
 void run_parameter_sets_tests();
 void run_linux_session_tests();
+void run_linux_virtual_display_tests();
 void run_mac_keymap_tests();
 void run_mac_session_tests();
 void run_vpl_params_tests();
@@ -113,6 +114,7 @@ int main()
     run_cpu_cursor_tests();
     run_portal_tests();
     run_linux_session_tests();
+    run_linux_virtual_display_tests();
     run_mac_session_tests();
 
     const int total = g_nativeStats.passed + g_nativeStats.failed;

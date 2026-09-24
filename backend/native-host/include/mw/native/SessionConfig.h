@@ -150,6 +150,10 @@ struct SessionConfig
     /// which is the one time the user sees a dialog — the grant that comes back
     /// arrives through SessionCallbacks::onPortalGrant, and whoever stores it
     /// hands it back here next time. Ignored everywhere else.
+    ///
+    /// ⚠️ The portal's virtual display (kPortalVirtualDisplayKey) is a consent
+    /// of its own: a session on it takes, and reports, THAT grant — the
+    /// consumer keeps the two apart.
     std::string portalRestoreToken;
 
     /// Let the frame follow the display's shape when the host changes its mode

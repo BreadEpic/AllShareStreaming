@@ -71,6 +71,12 @@ public:
     /// is why it is here and not on the interface.
     void setRestoreToken(std::string token);
 
+    /// Capture a VIRTUAL monitor the compositor creates for this session, at
+    /// @p width x @p height and @p fps — the size and cadence are what this
+    /// side asks for in the PipeWire format, which is how the compositor sizes
+    /// it. Set before start().
+    void setVirtualMonitor(int width, int height, int fps);
+
     /// Ask the portal, connect to the node it names, and wait for the first
     /// negotiated format. ⚠️ Raises the portal's dialog unless a restore token
     /// was set — see PortalScreenCast::start.

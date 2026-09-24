@@ -3262,10 +3262,13 @@ int main(int argc, char* argv[])
             // The desktop portal consent this installation already holds, and
             // where a fresh one goes. In-process, so the settings file is right
             // here; the worker path does the same trip through a JSON event.
-            s->setPortalRestoreToken(appSettings.portalRestoreToken());
+            // The virtual display card holds a consent of its own (Linux).
+            const bool portalVirtual = host->backendType == NativeHostBackend::typeName() &&
+                                       appId == NativeHostBackend::virtualDisplayAppId();
+            s->setPortalRestoreToken(appSettings.portalRestoreToken(portalVirtual));
             QObject::connect(s, &StreamSession::portalGrantReceived, qApp,
-                             [&appSettings](const QString& token) {
-                                 appSettings.setPortalRestoreToken(token);
+                             [&appSettings, portalVirtual](const QString& token) {
+                                 appSettings.setPortalRestoreToken(token, portalVirtual);
                                  qInfo() << "[Session] Desktop portal consent stored — this "
                                             "machine will not ask again";
                              });
@@ -3401,7 +3404,10 @@ int main(int argc, char* argv[])
             // The consent the desktop portal already gave this installation.
             // Empty on every machine that reads its own scanout — which is all
             // of them but a Linux host with no capability (an AppImage).
-            cfg["portalRestoreToken"] = appSettings.portalRestoreToken();
+            // The virtual display card holds a consent of its own (Linux).
+            const bool portalVirtual = host->backendType == NativeHostBackend::typeName() &&
+                                       appId == NativeHostBackend::virtualDisplayAppId();
+            cfg["portalRestoreToken"] = appSettings.portalRestoreToken(portalVirtual);
             cfg["clientUniqueId"] = reqClientUniqueId;
             cfg["clientKind"] = NetClassify::toString(clientKind);
             cfg["autoMode"] = true;
@@ -3454,8 +3460,8 @@ int main(int argc, char* argv[])
             // the TTL above this IS persisted — it is a decision the person
             // made, and losing it means asking them again for nothing.
             QObject::connect(worker, &StreamWorkerHost::portalGrantReceived, qApp,
-                             [&appSettings](const QString& token) {
-                                 appSettings.setPortalRestoreToken(token);
+                             [&appSettings, portalVirtual](const QString& token) {
+                                 appSettings.setPortalRestoreToken(token, portalVirtual);
                                  qInfo() << "[Session] Desktop portal consent stored — this "
                                             "machine will not ask again";
                              });
@@ -4617,7 +4623,9 @@ int main(int argc, char* argv[])
         // See the owner path. The consent belongs to the MACHINE, not to the
         // viewer, so an invited player's session replays it too — otherwise
         // the host's own screen would raise a dialog nobody is there to answer.
-        cfg["portalRestoreToken"] = appSettings.portalRestoreToken();
+        const bool portalVirtual = host->backendType == NativeHostBackend::typeName() &&
+                                   appId == NativeHostBackend::virtualDisplayAppId();
+        cfg["portalRestoreToken"] = appSettings.portalRestoreToken(portalVirtual);
         // Gamepads from different sessions would all arrive as controller 0;
         // offset each player so they land on distinct virtual pads.
         cfg["gamepadOffset"] = slot - kOwnerSlots + 1;
@@ -4648,8 +4656,8 @@ int main(int argc, char* argv[])
 
         // See the owner path: a grant is persisted wherever it turns up.
         QObject::connect(worker, &StreamWorkerHost::portalGrantReceived, qApp,
-                         [&appSettings](const QString& token) {
-                             appSettings.setPortalRestoreToken(token);
+                         [&appSettings, portalVirtual](const QString& token) {
+                             appSettings.setPortalRestoreToken(token, portalVirtual);
                              qInfo() << "[Session] Desktop portal consent stored — this "
                                         "machine will not ask again";
                          });

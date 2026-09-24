@@ -72,6 +72,10 @@ struct ResolvedTarget
     /// was the usable one.
     CaptureApi capture = CaptureApi::None;
 
+    /// Linux: the display is the portal's VIRTUAL source — created by the
+    /// session at the stream's size and cadence, gone when it ends.
+    bool portalVirtual = false;
+
     /// The adapter that scans the display out — where capture must happen.
     uint64_t captureAdapterHandle = 0;
     /// The adapter that will encode. Equal to the capture adapter in the normal

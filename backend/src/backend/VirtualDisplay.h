@@ -78,8 +78,15 @@ struct DisplayInfo;
  * CGVirtualDisplay classes BetterDisplay and DeskPad are built on). The card
  * is always there; opening it creates the display in this process, makes it
  * the main display, and the display goes away with the last stream. The seam
- * is mw::native::vdisplay (native-host/include/mw/native/VirtualDisplay.h);
- * Linux Wayland will join it through the portal's VIRTUAL source.
+ * is mw::native::vdisplay (native-host/include/mw/native/VirtualDisplay.h).
+ *
+ * ── Linux Wayland: the portal's VIRTUAL source ─────────────────────────────
+ *
+ * A ScreenCast portal that lists source type 4 (GNOME 46+) creates a monitor
+ * for a session that asks for one, sized by the format the stream negotiates.
+ * The card is there whenever the probe lists that display (key
+ * "portal-virtual"); the worker's own portal session makes it at the client's
+ * size and cadence, and it is gone when the stream ends — see livesInStream().
  *
  * ── The mode ────────────────────────────────────────────────────────────────
  *
@@ -362,5 +369,11 @@ bool applyInProcess(const Request& req, Result* result);
 /// remembered primary. macOS: nothing to do — the display died with the
 /// process — beyond forgetting the record.
 void resetAtStartup();
+
+/// Linux: the display is made by the stream's own ScreenCast session (the
+/// portal's VIRTUAL source, at the client's size) and goes with it. Nothing
+/// for the server to turn on before a launch or off after the last stream —
+/// the job is skipped altogether. False on Windows and macOS.
+bool livesInStream();
 
 } // namespace VirtualDisplay

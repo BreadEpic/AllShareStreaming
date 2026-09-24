@@ -803,20 +803,29 @@ void AppSettings::setUniqueId(const QString& id)
 
 // ── Desktop portal consent ───────────────────────────────────────────────────
 
-QString AppSettings::portalRestoreToken() const
+namespace {
+QString portalTokenKey(bool virtualDisplay)
+{
+    return virtualDisplay ? QStringLiteral("portal_virtual_restore_token")
+                          : QStringLiteral("portal_restore_token");
+}
+} // namespace
+
+QString AppSettings::portalRestoreToken(bool virtualDisplay) const
 {
     QJsonObject obj = readAll();
-    return obj.value("portal_restore_token").toString();
+    return obj.value(portalTokenKey(virtualDisplay)).toString();
 }
 
-void AppSettings::setPortalRestoreToken(const QString& token)
+void AppSettings::setPortalRestoreToken(const QString& token, bool virtualDisplay)
 {
+    const QString key = portalTokenKey(virtualDisplay);
     QJsonObject obj = readAll();
     // Rewriting the same token would be a settings file written on every
     // session for nothing. The portal only issues a new one when it actually
     // asked, so equality here is the normal case on a machine that is working.
-    if (obj.value("portal_restore_token").toString() == token) return;
-    obj["portal_restore_token"] = token;
+    if (obj.value(key).toString() == token) return;
+    obj[key] = token;
     writeAll(obj);
 }
 

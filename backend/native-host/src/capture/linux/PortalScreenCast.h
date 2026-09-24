@@ -121,6 +121,18 @@ public:
     /// almost always this.
     static bool available(std::string& reason);
 
+    /// The portal's AvailableSourceTypes bitmask (1 monitor, 2 window, 4
+    /// virtual), 0 when no portal answers. GNOME 42 says 3, GNOME 48 says 7.
+    static uint32_t sourceTypes();
+    static constexpr uint32_t kSourceMonitor = 1;
+    static constexpr uint32_t kSourceVirtual = 4;
+
+    /// Ask for a VIRTUAL source rather than a monitor: the compositor creates
+    /// a monitor for this session alone, sized by the PipeWire format the
+    /// consumer negotiates, and removes it when the session closes. Before
+    /// start().
+    void setVirtual(bool virtualMonitor);
+
     /// Run the whole handshake. Blocking, and ⚠️ WAITS ON A HUMAN unless
     /// @p restoreToken replays an earlier grant: the portal shows a dialog and
     /// nothing comes back until it is answered. @p timeoutMs bounds that wait.

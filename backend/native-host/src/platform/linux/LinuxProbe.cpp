@@ -32,6 +32,7 @@
 #include <va/va_drm.h>
 #include <xf86drm.h>
 
+#include <algorithm>
 #include <climits>
 #include <cstdio>
 #include <cstdlib>
@@ -326,11 +327,22 @@ Unavailability enumerate(Capabilities& caps)
         ++nextGpuId;
     }
 
-    if (caps.displays.empty()) {
+#if defined(MW_NATIVE_LINUX_PORTAL)
+    // The portal's VIRTUAL source: a monitor the compositor creates for a
+    // stream, at the client's size, and removes after it (GNOME 46+ says so
+    // in AvailableSourceTypes; GNOME 42 and KDE 5 do not). Listed whatever
+    // route the real monitors take — it has only the one — and even with no
+    // monitor at all, which is the headless machine it exists for.
+    const uint32_t sourceTypes = capture::PortalScreenCast::sourceTypes();
+    const bool portalVirtual = (sourceTypes & capture::PortalScreenCast::kSourceVirtual) != 0;
+#else
+    const bool portalVirtual = false;
+#endif
+    if (caps.displays.empty() && !portalVirtual) {
         caps.diagnostic = "no display is connected";
         return Unavailability::NoDisplay;
     }
-    if (!anyPrimary) caps.displays.front().primary = true;
+    if (!anyPrimary && !caps.displays.empty()) caps.displays.front().primary = true;
     caps.hasBattery = hasSystemBattery();
 
     // The privilege check, once, so the host list can say why rather than a
@@ -355,7 +367,7 @@ Unavailability enumerate(Capabilities& caps)
     // would be offering three buttons that all do the same thing and none of
     // them what they say. The size shown is the primary output's, as a
     // reasonable guess — the real one arrives when the compositor negotiates.
-    if (caps.capture != CaptureApi::Kms) {
+    if (caps.capture != CaptureApi::Kms && !caps.displays.empty()) {
         std::string reason;
         if (capture::PortalScreenCast::available(reason)) {
             const DisplayInfo* hint = nullptr;
@@ -383,6 +395,41 @@ Unavailability enumerate(Capabilities& caps)
             log::info("[native] no capability to read the scanout (" + caps.diagnostic +
                       ") \xE2\x80\x94 falling back to the ScreenCast portal, which asks the user "
                       "once");
+            caps.diagnostic.clear();
+        }
+    }
+
+    if (portalVirtual) {
+        // Encoded where an encoder is: the compositor renders it on whichever
+        // GPU it likes, and the portal hands it over like any of its streams.
+        const GpuInfo* gpu = nullptr;
+        for (const GpuInfo& g : caps.gpus)
+            if (!gpu && !g.encoders.empty() && !g.codecs.empty()) gpu = &g;
+        if (!gpu && !caps.gpus.empty()) gpu = &caps.gpus.front();
+        int nextId = 0;
+        for (const DisplayInfo& d : caps.displays)
+            nextId = std::max(nextId, d.id + 1);
+        DisplayInfo virt;
+        virt.id = nextId;
+        virt.gpuId = gpu ? gpu->id : -1;
+        // Nominal: the real size is the client's, set when the stream starts.
+        virt.width = 1920;
+        virt.height = 1080;
+        virt.refreshMilliHz = 60000;
+        virt.primary = caps.displays.empty();
+        virt.label = "Virtual display";
+        virt.model = "Virtual display";
+        virt.kind = DisplayKind::Virtual;
+        virt.key = kPortalVirtualDisplayKey;
+        virt.capture = CaptureApi::PipeWire;
+        virt.detail = "created by the ScreenCast portal at the client's size when the stream "
+                      "starts (source types " +
+                      std::to_string(sourceTypes) + ")";
+        caps.displays.push_back(virt);
+        // Nothing else to capture: this display's route is the machine's.
+        if (caps.capture != CaptureApi::Kms && caps.capture != CaptureApi::PipeWire &&
+            caps.displays.size() == 1) {
+            caps.capture = CaptureApi::PipeWire;
             caps.diagnostic.clear();
         }
     }
