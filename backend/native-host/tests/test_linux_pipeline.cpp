@@ -85,6 +85,19 @@ void run_linux_pipeline_tests()
         // AV1 carries its sequence header inside the frame: there is no separate
         // parameter set to look for, so the question does not apply.
         CHECK(carriesParameterSets({0x12, 0x00}, Codec::Av1));
+
+        // Ours handed over as packed headers and the driver's own written on
+        // top: two SPS in one keyframe. One is the normal case.
+        using mw::native::encode::doublesParameterSets;
+        CHECK(!doublesParameterSets(goodHevc, Codec::Hevc));
+        CHECK(!doublesParameterSets(goodH264, Codec::H264));
+        std::vector<uint8_t> twiceHevc = goodHevc;
+        twiceHevc.insert(twiceHevc.end(), goodHevc.begin(), goodHevc.end());
+        CHECK(doublesParameterSets(twiceHevc, Codec::Hevc));
+        std::vector<uint8_t> twiceH264 = goodH264;
+        twiceH264.insert(twiceH264.end(), goodH264.begin(), goodH264.end());
+        CHECK(doublesParameterSets(twiceH264, Codec::H264));
+        CHECK(!doublesParameterSets({}, Codec::Hevc));
     }
 #endif
 

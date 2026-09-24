@@ -150,6 +150,19 @@ bool carriesParameterSets(const std::vector<uint8_t>& bitstream, Codec codec)
     return codec == Codec::Av1;
 }
 
+bool doublesParameterSets(const std::vector<uint8_t>& bitstream, Codec codec)
+{
+    int sps = 0;
+    for (size_t i = 0; i + 3 < bitstream.size(); ++i) {
+        if (bitstream[i] != 0 || bitstream[i + 1] != 0 || bitstream[i + 2] != 1) continue;
+        const uint8_t header = bitstream[i + 3];
+        const bool isSps =
+            codec == Codec::Hevc ? ((header >> 1) & 0x3F) == 33 : (header & 0x1F) == 7;
+        if (isSps && ++sps > 1) return true;
+    }
+    return false;
+}
+
 struct VaapiEncoder::Impl
 {
     int renderFd = -1;
@@ -364,10 +377,25 @@ bool VaapiEncoder::init(const std::string& renderNode, Codec codec, int width, i
     m_WantIntraRefresh = intraRefresh;
     m_PackedHeadersOffered = false;
 
-    // As every driver did until Mesa 25: the driver writes the headers. Only
-    // when its first keyframe shows it wrote none — and it says it can take
-    // them from us — is the encoder opened again with ours (ParameterSets.h).
-    // A GPU that works today never takes the second path.
+    // HEVC: our headers wherever the driver takes them. Its own slice headers
+    // (Mesa 23) keep a lost picture in the reference set, so a delta that
+    // repairs a loss decodes against a picture the receiver never had. With
+    // ours the repair is exact; where the driver refuses them, or writes its
+    // own on top, it goes back to its own and repairs with a keyframe
+    // (supportsReferenceInvalidation).
+    if (codec == Codec::Hevc) {
+        if (open(renderNode, /*packedHeaders=*/true, error)) return true;
+        if (!m_PackedHeadersUsed) return false; // not offered: that was the driver's own
+        log::info("[native] VA-API HEVC: " + error +
+                  " — back to the driver's headers, keyframes after a loss");
+        error.clear();
+        return open(renderNode, /*packedHeaders=*/false, error);
+    }
+
+    // H.264, as every driver did until Mesa 25: the driver writes the headers.
+    // Only when its first keyframe shows it wrote none — and it says it can
+    // take them from us — is the encoder opened again with ours. A GPU that
+    // works today never takes the second path.
     if (open(renderNode, /*packedHeaders=*/false, error)) return true;
     if (error.find(kNoParameterSets) == std::string::npos || !m_PackedHeadersOffered) return false;
     log::info("[native] VA-API: " + error + " — writing them here instead");
@@ -410,6 +438,7 @@ bool VaapiEncoder::open(const std::string& renderNode, bool packedHeaders, std::
                               codec != Codec::Av1;
     m_PackedHeadersOffered = d->packedHeadersOffered;
     d->packedHeaders = packedHeaders && d->packedHeadersOffered;
+    m_PackedHeadersUsed = d->packedHeaders;
     d->rollingColumnRefresh = attribs[3].value != VA_ATTRIB_NOT_SUPPORTED &&
                               (attribs[3].value & VA_ENC_INTRA_REFRESH_ROLLING_COLUMN);
 
@@ -450,7 +479,9 @@ bool VaapiEncoder::open(const std::string& renderNode, bool packedHeaders, std::
     // reported honestly so the receiver keeps its own recovery.
     m_IntraRefresh = m_WantIntraRefresh && d->rollingColumnRefresh;
     m_IntraRefreshPeriod = m_IntraRefresh ? intraRefreshPeriodFrames(m_Fps) : 0;
-    if (m_WantIntraRefresh && !m_IntraRefresh && !packedHeaders)
+    // Said on the first open only (packed for HEVC, not for H.264): a second
+    // one would repeat it.
+    if (m_WantIntraRefresh && !m_IntraRefresh && packedHeaders == (codec == Codec::Hevc))
         log::info(
             "[native] VA-API: this driver has no rolling intra-refresh — keyframes on demand");
 
@@ -493,6 +524,7 @@ bool VaapiEncoder::parameterSetsAreWritten(std::string& error)
         return false;
     }
     const bool written = carriesParameterSets(m_Bitstream, m_Codec);
+    const bool doubled = d->packedHeaders && doublesParameterSets(m_Bitstream, m_Codec);
     releaseOutput();
 
     // Back to a freshly initialized encoder: the probe never happened.
@@ -506,6 +538,10 @@ bool VaapiEncoder::parameterSetsAreWritten(std::string& error)
     d->reconCurrent = 0;
     d->referenceSlot = -1;
 
+    if (doubled) {
+        error = "this driver writes its own parameter sets on top of ours";
+        return false;
+    }
     if (!written) {
         error = std::string("this driver ") + kNoParameterSets + " — its " + toString(m_Codec) +
                 " keyframes carry the picture alone, and no client can configure a decoder from "
@@ -1218,6 +1254,10 @@ bool VaapiEncoder::invalidateReference(uint32_t frameNumber, std::string& error)
 {
     if (!d->display) {
         error = "the encoder is not initialized";
+        return false;
+    }
+    if (!supportsReferenceInvalidation()) {
+        error = "the driver writes the HEVC slice headers — a keyframe is the only repair";
         return false;
     }
     // The named frame never arrived, and every picture encoded after it may

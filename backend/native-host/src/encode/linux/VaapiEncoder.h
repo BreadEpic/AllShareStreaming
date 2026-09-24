@@ -94,6 +94,11 @@ namespace mw::native::encode {
 /// file that can be tested without a GPU.
 bool carriesParameterSets(const std::vector<uint8_t>& bitstream, Codec codec);
 
+/// Whether @p bitstream carries its sequence parameters more than once — a
+/// driver that writes its own on top of the ones we handed it as packed
+/// headers. Same walk as carriesParameterSets().
+bool doublesParameterSets(const std::vector<uint8_t>& bitstream, Codec codec);
+
 class VaapiEncoder
 {
 public:
@@ -125,9 +130,15 @@ public:
     ///                    the receiver will use if it never gets it.
     bool encode(bool forceKeyframe, uint32_t frameNumber, EncoderOutput& out, std::string& error);
 
-    /// Whether invalidateReference() does anything here. True on every VA-API
-    /// encoder: the reference list is ours to write, picture by picture.
-    bool supportsReferenceInvalidation() const { return true; }
+    /// Whether invalidateReference() does anything here. True wherever the
+    /// reference list is ours to write, picture by picture — which HEVC is only
+    /// when the slice headers are ours too: a driver that writes them (Mesa 23)
+    /// keeps the lost picture in its reference set, and the decoder then looks
+    /// for a picture it never had (18 wrong frames out of 41 on the 780M).
+    bool supportsReferenceInvalidation() const
+    {
+        return m_Codec != Codec::Hevc || m_PackedHeadersUsed;
+    }
 
     /// The frame numbered @p frameNumber never reached the receiver: encode the
     /// next pictures against older ones only, so the stream heals with an
@@ -179,6 +190,8 @@ private:
     bool m_WantIntraRefresh = false;
     /// The driver said it takes every header from us — kept across open()s.
     bool m_PackedHeadersOffered = false;
+    /// The encoder open now writes every header itself (ParameterSets.h).
+    bool m_PackedHeadersUsed = false;
 
     bool m_IntraRefresh = false;
     int m_IntraRefreshPeriod = 0;
