@@ -19,6 +19,7 @@
 
 #include "../../core/Log.h"
 #include "../../core/Selector.h"
+#include "../ParameterSets.h"
 #include "../RateControl.h"
 
 #include <fcntl.h>
@@ -95,6 +96,35 @@ VABufferID refreshBand(VADisplay display, VAContextID context, int position, int
     return id;
 }
 
+/// What a driver that wants the headers from us must be able to take: the
+/// sequence (VPS, SPS), the picture (PPS) and every slice header.
+constexpr unsigned kPackedHeaders =
+    VA_ENC_PACKED_HEADER_SEQUENCE | VA_ENC_PACKED_HEADER_PICTURE | VA_ENC_PACKED_HEADER_SLICE;
+
+/// One NAL unit handed to the driver as a packed header: the parameter buffer
+/// that says what it is, then its bytes. Annex-B with emulation prevention in
+/// place, which is what `has_emulation_bytes` promises.
+bool addPacked(VADisplay display, VAContextID context, VAEncPackedHeaderType type,
+               const std::vector<uint8_t>& nal, std::vector<VABufferID>& buffers)
+{
+    VAEncPackedHeaderParameterBuffer param = {};
+    param.type = type;
+    param.bit_length = static_cast<uint32_t>(nal.size() * 8);
+    param.has_emulation_bytes = 1;
+    VABufferID paramId = VA_INVALID_ID;
+    if (vaCreateBuffer(display, context, VAEncPackedHeaderParameterBufferType, sizeof(param), 1,
+                       &param, &paramId) != VA_STATUS_SUCCESS)
+        return false;
+    buffers.push_back(paramId);
+    VABufferID dataId = VA_INVALID_ID;
+    if (vaCreateBuffer(display, context, VAEncPackedHeaderDataBufferType,
+                       static_cast<unsigned>(nal.size()), 1, const_cast<uint8_t*>(nal.data()),
+                       &dataId) != VA_STATUS_SUCCESS)
+        return false;
+    buffers.push_back(dataId);
+    return true;
+}
+
 } // namespace
 
 bool carriesParameterSets(const std::vector<uint8_t>& bitstream, Codec codec)
@@ -157,7 +187,11 @@ struct VaapiEncoder::Impl
     VADRMPRIMESurfaceDescriptor exported = {};
     bool haveExport = false;
 
-    bool packedHeadersRequired = false;
+    /// The driver takes VPS/SPS/PPS and slice headers from us (kPackedHeaders)
+    /// — asked of it at init, used only once it has shown it needs them.
+    bool packedHeadersOffered = false;
+    /// This encoder hands the driver every header (see ParameterSets.h).
+    bool packedHeaders = false;
     bool rollingColumnRefresh = false;
 };
 
@@ -327,6 +361,25 @@ bool VaapiEncoder::init(const std::string& renderNode, Codec codec, int width, i
     m_Fps = fps > 0 ? fps : 60;
     m_BitrateKbps = bitrateKbps > 0 ? bitrateKbps : 20000;
     m_Tuning = tuning;
+    m_WantIntraRefresh = intraRefresh;
+    m_PackedHeadersOffered = false;
+
+    // As every driver did until Mesa 25: the driver writes the headers. Only
+    // when its first keyframe shows it wrote none — and it says it can take
+    // them from us — is the encoder opened again with ours (ParameterSets.h).
+    // A GPU that works today never takes the second path.
+    if (open(renderNode, /*packedHeaders=*/false, error)) return true;
+    if (error.find(kNoParameterSets) == std::string::npos || !m_PackedHeadersOffered) return false;
+    log::info("[native] VA-API: " + error + " — writing them here instead");
+    error.clear();
+    return open(renderNode, /*packedHeaders=*/true, error);
+}
+
+bool VaapiEncoder::open(const std::string& renderNode, bool packedHeaders, std::string& error)
+{
+    stop();
+    d = std::make_unique<Impl>();
+    const Codec codec = m_Codec;
 
     if (!openDisplay(renderNode, error)) return false;
     if (!chooseProfile(codec, error)) return false;
@@ -352,18 +405,23 @@ bool VaapiEncoder::init(const std::string& renderNode, Codec codec, int width, i
         error = "the encoder has no constant-bitrate mode";
         return false;
     }
-    d->packedHeadersRequired = attribs[2].value != VA_ATTRIB_NOT_SUPPORTED &&
-                               attribs[2].value != 0 && false; // see the header: not sent yet
+    d->packedHeadersOffered = attribs[2].value != VA_ATTRIB_NOT_SUPPORTED &&
+                              (attribs[2].value & kPackedHeaders) == kPackedHeaders &&
+                              codec != Codec::Av1;
+    m_PackedHeadersOffered = d->packedHeadersOffered;
+    d->packedHeaders = packedHeaders && d->packedHeadersOffered;
     d->rollingColumnRefresh = attribs[3].value != VA_ATTRIB_NOT_SUPPORTED &&
                               (attribs[3].value & VA_ENC_INTRA_REFRESH_ROLLING_COLUMN);
 
-    VAConfigAttrib chosen[2] = {};
+    VAConfigAttrib chosen[3] = {};
     chosen[0].type = VAConfigAttribRTFormat;
     chosen[0].value = VA_RT_FORMAT_YUV420;
     chosen[1].type = VAConfigAttribRateControl;
     chosen[1].value = VA_RC_CBR;
-    VAStatus status =
-        vaCreateConfig(d->display, d->profile, VAEntrypointEncSlice, chosen, 2, &d->config);
+    chosen[2].type = VAConfigAttribEncPackedHeaders;
+    chosen[2].value = kPackedHeaders;
+    VAStatus status = vaCreateConfig(d->display, d->profile, VAEntrypointEncSlice, chosen,
+                                     d->packedHeaders ? 3 : 2, &d->config);
     if (status != VA_STATUS_SUCCESS) {
         error = "could not create the encoder configuration: " + vaText(status);
         return false;
@@ -390,9 +448,9 @@ bool VaapiEncoder::init(const std::string& renderNode, Codec codec, int width, i
 
     // Intra-refresh only where the driver rolls columns; otherwise keyframes,
     // reported honestly so the receiver keeps its own recovery.
-    m_IntraRefresh = intraRefresh && d->rollingColumnRefresh;
+    m_IntraRefresh = m_WantIntraRefresh && d->rollingColumnRefresh;
     m_IntraRefreshPeriod = m_IntraRefresh ? intraRefreshPeriodFrames(m_Fps) : 0;
-    if (intraRefresh && !m_IntraRefresh)
+    if (m_WantIntraRefresh && !m_IntraRefresh && !packedHeaders)
         log::info(
             "[native] VA-API: this driver has no rolling intra-refresh — keyframes on demand");
 
@@ -414,7 +472,7 @@ bool VaapiEncoder::init(const std::string& renderNode, Codec codec, int width, i
               (m_IntraRefresh
                    ? ", intra-refresh over " + std::to_string(m_IntraRefreshPeriod) + " frames"
                    : ", keyframes on demand") +
-              ", headers by the driver" +
+              (d->packedHeaders ? ", headers written here" : ", headers by the driver") +
               (m_Tuning.isDefault() ? "" : " [bench: " + m_Tuning.describe() + "]"));
     return true;
 }
@@ -519,7 +577,6 @@ bool VaapiEncoder::renderH264(bool idr, std::string& error)
     const uint32_t heightMbs = static_cast<uint32_t>((m_Height + 15) / 16);
     const VASurfaceID current = d->recon[d->reconCurrent];
     const bool predicts = !idr && d->referenceSlot >= 0;
-    const VASurfaceID reference = predicts ? d->recon[d->referenceSlot] : VA_INVALID_SURFACE;
     const uint32_t referencePicNum = predicts ? d->reconState[d->referenceSlot].picNum : 0;
 
     std::vector<VABufferID> buffers;
@@ -593,13 +650,23 @@ bool VaapiEncoder::renderH264(bool idr, std::string& error)
         ref.picture_id = VA_INVALID_SURFACE;
         ref.flags = VA_PICTURE_H264_INVALID;
     }
-    if (predicts) {
-        pic.ReferenceFrames[0].picture_id = reference;
-        pic.ReferenceFrames[0].frame_idx = referencePicNum;
-        pic.ReferenceFrames[0].flags = VA_PICTURE_H264_SHORT_TERM_REFERENCE;
-        pic.ReferenceFrames[0].TopFieldOrderCnt = static_cast<int32_t>(2 * referencePicNum);
-        pic.ReferenceFrames[0].BottomFieldOrderCnt = pic.ReferenceFrames[0].TopFieldOrderCnt;
-    }
+    int listed = 0;
+    const auto listReference = [&](int slot) {
+        auto& ref = pic.ReferenceFrames[listed++];
+        ref.picture_id = d->recon[slot];
+        ref.frame_idx = d->reconState[slot].picNum;
+        ref.flags = VA_PICTURE_H264_SHORT_TERM_REFERENCE;
+        ref.TopFieldOrderCnt = static_cast<int32_t>(2 * d->reconState[slot].picNum);
+        ref.BottomFieldOrderCnt = ref.TopFieldOrderCnt;
+    };
+    if (predicts) listReference(d->referenceSlot);
+    // With packed headers every picture still held is named too: Mesa drops a
+    // surface from its DPB the second picture in a row that leaves it out, and
+    // a repair that reaches back after a loss would then find it gone.
+    if (predicts && d->packedHeaders)
+        for (int i = 0; i < kReconSurfaces; ++i)
+            if (i != d->reconCurrent && i != d->referenceSlot && d->reconState[i].valid)
+                listReference(i);
     pic.coded_buf = d->coded;
     pic.pic_parameter_set_id = 0;
     pic.seq_parameter_set_id = 0;
@@ -614,6 +681,37 @@ bool VaapiEncoder::renderH264(bool idr, std::string& error)
     if (!add(VAEncPictureParameterBufferType, &pic, sizeof(pic))) {
         error = "could not create the picture parameters";
         return false;
+    }
+
+    if (d->packedHeaders) {
+        // The same stream, described again as the headers themselves — after
+        // the picture parameters, which say whether this one is an IDR.
+        paramsets::H264Sequence seq;
+        seq.profileIdc = d->profile == VAProfileH264High   ? 100
+                         : d->profile == VAProfileH264Main ? 77
+                                                           : 66;
+        seq.levelIdc = 51;
+        seq.widthMbs = widthMbs;
+        seq.heightMbs = heightMbs;
+        seq.cropRight = (widthMbs * 16 - static_cast<uint32_t>(m_Width)) / 2;
+        seq.cropBottom = (heightMbs * 16 - static_cast<uint32_t>(m_Height)) / 2;
+        seq.maxRefFrames = kMaxReferences;
+        seq.log2MaxFrameNum = 16; // log2_max_frame_num_minus4 = 12, above
+        seq.fps = m_Fps;
+        paramsets::H264Slice header;
+        header.idr = idr;
+        header.frameNum = m_FrameNum;
+        header.idrPicId = m_IdrPicId;
+        header.referenceFrameNum = referencePicNum;
+        if ((idr && (!addPacked(d->display, d->context, VAEncPackedHeaderSequence,
+                                paramsets::h264Sps(seq), buffers) ||
+                     !addPacked(d->display, d->context, VAEncPackedHeaderPicture,
+                                paramsets::h264Pps(seq), buffers))) ||
+            !addPacked(d->display, d->context, VAEncPackedHeaderSlice,
+                       paramsets::h264SliceHeader(seq, header), buffers)) {
+            error = "could not create the packed headers";
+            return false;
+        }
     }
 
     if (m_IntraRefresh) {
@@ -681,7 +779,6 @@ bool VaapiEncoder::renderHevc(bool idr, std::string& error)
     const uint32_t ctbHeight = static_cast<uint32_t>((m_Height + 63) / 64);
     const VASurfaceID current = d->recon[d->reconCurrent];
     const bool predicts = !idr && d->referenceSlot >= 0;
-    const VASurfaceID reference = predicts ? d->recon[d->referenceSlot] : VA_INVALID_SURFACE;
     const uint32_t referencePicNum = predicts ? d->reconState[d->referenceSlot].picNum : 0;
 
     std::vector<VABufferID> buffers;
@@ -757,11 +854,22 @@ bool VaapiEncoder::renderHevc(bool idr, std::string& error)
         ref.picture_id = VA_INVALID_SURFACE;
         ref.flags = VA_PICTURE_HEVC_INVALID;
     }
-    if (predicts) {
-        pic.reference_frames[0].picture_id = reference;
-        pic.reference_frames[0].pic_order_cnt = static_cast<int32_t>(referencePicNum);
-        pic.reference_frames[0].flags = 0;
-    }
+    // Every picture still held, the one predicted from first — named for the
+    // same reason as on H.264, and they are the reference picture set below.
+    std::vector<uint32_t> kept;
+    int listed = 0;
+    const auto listReference = [&](int slot) {
+        auto& ref = pic.reference_frames[listed++];
+        ref.picture_id = d->recon[slot];
+        ref.pic_order_cnt = static_cast<int32_t>(d->reconState[slot].picNum);
+        ref.flags = 0;
+        kept.push_back(d->reconState[slot].picNum);
+    };
+    if (predicts) listReference(d->referenceSlot);
+    if (predicts && d->packedHeaders)
+        for (int i = 0; i < kReconSurfaces; ++i)
+            if (i != d->reconCurrent && i != d->referenceSlot && d->reconState[i].valid)
+                listReference(i);
     pic.coded_buf = d->coded;
     // 0xFF is the "there is no collocated picture" value the header asks for
     // when slice_temporal_mvp_enabled_flag is 0.
@@ -785,6 +893,38 @@ bool VaapiEncoder::renderHevc(bool idr, std::string& error)
     if (!add(VAEncPictureParameterBufferType, &pic, sizeof(pic))) {
         error = "could not create the picture parameters";
         return false;
+    }
+
+    if (d->packedHeaders) {
+        paramsets::HevcSequence seq;
+        seq.width = static_cast<uint32_t>(m_Width);
+        seq.height = static_cast<uint32_t>(m_Height);
+        // The size Mesa's radeonsi codes — whole 64-wide CTB columns, rows of
+        // 16 — whatever the SPS says: it re-writes the size itself and keeps
+        // only the conformance window from ours, so the window must be measured
+        // from THAT size or the client shows the padding.
+        seq.codedWidth = (seq.width + 63) & ~63u;
+        seq.codedHeight = (seq.height + 15) & ~15u;
+        seq.levelIdc = 153;
+        seq.maxReferences = kMaxReferences;
+        seq.log2MaxPocLsb = 16;
+        seq.fps = m_Fps;
+        paramsets::HevcSlice header;
+        header.idr = idr;
+        header.poc = m_FrameNum;
+        header.kept = kept;
+        header.referencePoc = referencePicNum;
+        if ((idr && (!addPacked(d->display, d->context, VAEncPackedHeaderSequence,
+                                paramsets::hevcVps(seq), buffers) ||
+                     !addPacked(d->display, d->context, VAEncPackedHeaderSequence,
+                                paramsets::hevcSps(seq), buffers) ||
+                     !addPacked(d->display, d->context, VAEncPackedHeaderPicture,
+                                paramsets::hevcPps(seq), buffers))) ||
+            !addPacked(d->display, d->context, VAEncPackedHeaderSlice,
+                       paramsets::hevcSliceHeader(seq, header), buffers)) {
+            error = "could not create the packed headers";
+            return false;
+        }
     }
 
     if (m_IntraRefresh) {

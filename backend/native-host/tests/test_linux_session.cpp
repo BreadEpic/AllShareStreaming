@@ -421,6 +421,21 @@ void run_linux_session_tests()
                              hevcInfo.height, toString(hevcInfo.codec), toString(hevcInfo.encoder));
                 CHECK_EQ(static_cast<int>(hevcInfo.codec), static_cast<int>(Codec::Hevc));
                 std::this_thread::sleep_for(std::chrono::seconds(2));
+
+                // The same named loss as in H.264. HEVC is where it is harder:
+                // the decoder keeps only the pictures each slice's reference set
+                // lists, so the repair works only if the older one was kept.
+                // Drop the named frame from the file and the pictures after it
+                // must decode to the same bytes as with it.
+                const int hevcKeyframesBefore = hevcKeyframes.load();
+                const uint32_t hevcLost = hevcLast.load();
+                hevcSession->invalidateReference(hevcLost);
+                std::this_thread::sleep_for(std::chrono::milliseconds(600));
+                std::fprintf(stderr, "  named frame %u as lost — %d keyframe(s) followed\n",
+                             hevcLost, hevcKeyframes.load() - hevcKeyframesBefore);
+                if (hevcInfo.referenceInvalidation)
+                    CHECK_EQ(hevcKeyframes.load() - hevcKeyframesBefore, 0);
+
                 hevcSession->requestKeyframe();
                 std::this_thread::sleep_for(std::chrono::milliseconds(700));
                 hevcSession->stop();

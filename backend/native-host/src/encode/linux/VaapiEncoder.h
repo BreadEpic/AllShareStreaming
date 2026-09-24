@@ -52,9 +52,8 @@
 // generate them from the sequence and picture parameters, and re-emit the
 // parameter sets on every IDR — which is what a browser that joins late or
 // loses the first keyframe needs. Packed headers supplied by the application
-// are supported by both and used by FFmpeg; they are NOT sent here until a
-// measurement shows the driver's own are missing something (the VUI's
-// bitstream_restriction, say — the B8 lesson from NVENC).
+// are supported by both and used by FFmpeg; here they are sent only to a
+// driver that has shown it needs them.
 //
 // ⚠️ And on one machine they were missing EVERYTHING. Measured 16/09/2026 on a
 // Radeon 610M (radeonsi "raphael_mendocino", Mesa 25.2.8): every IDR came out as
@@ -64,12 +63,20 @@
 // headless one, and gives up 15 seconds later with "decoder_unsupported": a
 // stream that never starts and says nothing useful about why.
 //
-// Writing the parameter sets here instead is a bitstream writer that has to
-// agree, bit for bit, with slice headers the driver still writes — new risk for
-// every GPU that works today, to rescue one that does not. So the encoder does
-// the cheap, certain thing: init() encodes ONE throwaway IDR and looks. A driver
-// that writes its parameter sets is used as before; one that does not is refused
-// by name, and the session falls back to the CPU pair, which always works.
+// It was not the GPU but the Mesa: from 25.x its VA-API frontend (radeonsi, and
+// anything else behind it) writes the parameter sets only when the application
+// hands them in as packed headers — and reads frame_num and the reference
+// picture set from the application's packed slice header, leaving them at zero
+// without one. Every AMD host on a current distribution, not one laptop.
+//
+// So init() encodes ONE throwaway IDR and looks. A driver that writes its
+// parameter sets is used exactly as before — no GPU that works today changes
+// path. One that does not, and says it takes packed headers, is opened again
+// with every header written here (ParameterSets.h): sequence and picture sets
+// with each IDR, a slice header with every picture. Mesa parses them and
+// re-writes them itself, so they must say exactly what the parameter buffers
+// say. A driver that still writes none is refused by name, and the session
+// falls back to the CPU pair, which always works.
 
 namespace mw::native::encode {
 
@@ -147,6 +154,9 @@ private:
     struct Impl;
     std::unique_ptr<Impl> d;
 
+    /// Everything init() does once the parameters are known — twice when the
+    /// driver's first keyframe comes out bare (see above).
+    bool open(const std::string& renderNode, bool packedHeaders, std::string& error);
     bool openDisplay(const std::string& renderNode, std::string& error);
     bool chooseProfile(Codec codec, std::string& error);
     bool createSurfaces(std::string& error);
@@ -165,6 +175,10 @@ private:
     EncoderTuning m_Tuning;
 
     convert::Nv12Target m_Input;
+
+    bool m_WantIntraRefresh = false;
+    /// The driver said it takes every header from us — kept across open()s.
+    bool m_PackedHeadersOffered = false;
 
     bool m_IntraRefresh = false;
     int m_IntraRefreshPeriod = 0;

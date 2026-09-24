@@ -399,6 +399,7 @@ if(MW_BUILD_TESTS)
         tests/test_virtual_display.cpp
         tests/test_encode_load_cap.cpp
         tests/test_h264_vui.cpp
+        tests/test_parameter_sets.cpp
         tests/test_reference_slots.cpp
         tests/test_audio_pacer.cpp
         tests/test_audio_interleave.cpp
