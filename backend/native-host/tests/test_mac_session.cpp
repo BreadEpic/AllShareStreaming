@@ -13,6 +13,10 @@
 #include <string>
 #include <thread>
 
+#if defined(MW_NATIVE_MACOS)
+#include <CoreGraphics/CoreGraphics.h>
+#endif
+
 using namespace mw::native;
 
 // A whole macOS session, the way the backend would run one: probe, select,
@@ -27,6 +31,30 @@ using namespace mw::native;
 namespace {
 
 #if defined(MW_NATIVE_MACOS)
+/// Whether the main display lists a mode of another size at or under
+/// @p width x @p height — something "Match my screen" could switch to. A CI
+/// runner's paravirtual display lists 1024x768 alone.
+bool mainDisplayListsSmallerMode(int width, int height)
+{
+    const CGDirectDisplayID id = CGMainDisplayID();
+    CGDisplayModeRef current = CGDisplayCopyDisplayMode(id);
+    const size_t curW = current ? CGDisplayModeGetWidth(current) : 0;
+    const size_t curH = current ? CGDisplayModeGetHeight(current) : 0;
+    if (current) CGDisplayModeRelease(current);
+    CFArrayRef modes = CGDisplayCopyAllDisplayModes(id, nullptr);
+    if (!modes) return false;
+    bool found = false;
+    for (CFIndex i = 0; i < CFArrayGetCount(modes) && !found; ++i) {
+        auto mode =
+            static_cast<CGDisplayModeRef>(const_cast<void*>(CFArrayGetValueAtIndex(modes, i)));
+        const size_t w = CGDisplayModeGetWidth(mode), h = CGDisplayModeGetHeight(mode);
+        found = (w != curW || h != curH) && w <= static_cast<size_t>(width) &&
+                h <= static_cast<size_t>(height);
+    }
+    CFRelease(modes);
+    return found;
+}
+
 void runOne(const Capabilities& caps, const DisplayInfo& display, Codec codec, const char* path)
 {
     SessionConfig config;
@@ -205,6 +233,11 @@ void run_mac_session_tests()
         config.height = config.requestedHeight;
         config.fallbackWidth = config.requestedWidth;
         config.fallbackHeight = config.requestedHeight;
+        if (!display->primary ||
+            !mainDisplayListsSmallerMode(config.requestedWidth, config.requestedHeight)) {
+            std::fprintf(stderr, "  skipped: the display lists no other mode to switch to\n");
+            return;
+        }
         std::string error;
         std::unique_ptr<Session> session = NativeHost::createSession(
             config, [](const EncodedFrame&) {}, nullptr, nullptr, nullptr, nullptr, error);
