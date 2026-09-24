@@ -15,8 +15,20 @@
  * this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include "mw/native/NativeHost.h"
 #include "mw/native/VirtualDisplay.h"
 #include "native_test_framework.h"
+
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <thread>
+
+#if defined(__APPLE__)
+#include <CoreFoundation/CoreFoundation.h>
+#include <objc/message.h>
+#include <objc/runtime.h>
+#endif
 
 // The in-process virtual display seam, on every platform.
 //
@@ -70,4 +82,54 @@ void run_virtual_display_tests()
         vdisplay::Spec spec;
         CHECK(spec.name.find("Virtual") != std::string::npos);
     }
+
+#if defined(__APPLE__)
+    // A real display, on the Mac bench only (MW_TEST_VIRTUAL_DISPLAY=1): it
+    // needs the window server of a logged-in session. SDR first, then HDR —
+    // what the probe says about each is what the Selector will act on.
+    SECTION("VirtualDisplay (macOS) — an HDR display is one the probe calls HDR");
+    if (!std::getenv("MW_TEST_VIRTUAL_DISPLAY")) {
+        std::fprintf(stderr, "  skipped: MW_TEST_VIRTUAL_DISPLAY not set\n");
+    } else {
+        // The server is an application with a window-server connection; this
+        // binary is not, and without one the display never gets its mode or
+        // its name (it lists as "Display — 0×0"). NSApp, made the way AppKit
+        // would, from C++.
+        using Msg = void* (*)(void*, SEL);
+        reinterpret_cast<Msg>(objc_msgSend)(reinterpret_cast<void*>(objc_getClass("NSApplication")),
+                                            sel_registerName("sharedApplication"));
+        for (const bool hdr : {false, true}) {
+            vdisplay::Spec spec;
+            spec.width = 1920;
+            spec.height = 1080;
+            spec.refreshHz = 60;
+            spec.hdr = hdr;
+            std::string error;
+            const bool made = vdisplay::create(spec, &error);
+            if (!made) std::fprintf(stderr, "  create failed: %s\n", error.c_str());
+            CHECK(made);
+            const DisplayInfo* ours = nullptr;
+            Capabilities caps;
+            for (int i = 0; made && i < 50 && !ours; ++i) {
+                // The run loop turns: the display comes online on the main
+                // queue (its descriptor's), which a sleep would starve.
+                CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.1, false);
+                caps = NativeHost::probe();
+                for (const DisplayInfo& d : caps.displays)
+                    if (d.detail.find("Virtual") != std::string::npos) ours = &d;
+            }
+            if (!ours)
+                for (const DisplayInfo& d : caps.displays)
+                    std::fprintf(stderr, "  listed: %s (%s)\n", d.label.c_str(), d.detail.c_str());
+            CHECK(ours != nullptr);
+            if (ours) {
+                std::fprintf(stderr, "  %s display: %s %dx%d, hdrActive %d\n", hdr ? "HDR" : "SDR",
+                             ours->label.c_str(), ours->width, ours->height, ours->hdrActive);
+                CHECK_EQ(ours->hdrActive, hdr);
+            }
+            vdisplay::destroy();
+            CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.5, false);
+        }
+    }
+#endif
 }

@@ -158,6 +158,14 @@ bool create(const Spec& spec, std::string* error)
         setKey(descriptor, "productID", @(kProductId));
         setKey(descriptor, "vendorID", @(kVendorId));
         setKey(descriptor, "serialNum", @(kSerial));
+        if (spec.hdr) {
+            // BT.2020 primaries, D65 white: without them the HDR mode below
+            // takes the display down (a crash in the probe on mw-mac).
+            setKey(descriptor, "redPrimary", [NSValue valueWithPoint:NSMakePoint(0.708, 0.292)]);
+            setKey(descriptor, "greenPrimary", [NSValue valueWithPoint:NSMakePoint(0.170, 0.797)]);
+            setKey(descriptor, "bluePrimary", [NSValue valueWithPoint:NSMakePoint(0.131, 0.046)]);
+            setKey(descriptor, "whitePoint", [NSValue valueWithPoint:NSMakePoint(0.3127, 0.3290)]);
+        }
         // The queue the descriptor's callbacks (termination) are delivered on.
         // Private selectors are named, never written as a selector literal:
         // the compiler has no declaration for them and would (rightly) warn.
@@ -174,11 +182,25 @@ bool create(const Spec& spec, std::string* error)
             return false;
         }
 
-        using InitMode = id (*)(id, SEL, uint32_t, uint32_t, double);
-        id mode = reinterpret_cast<InitMode>(objc_msgSend)(
-            [c.mode alloc], sel_registerName("initWithWidth:height:refreshRate:"),
-            static_cast<uint32_t>(spec.width), static_cast<uint32_t>(spec.height),
-            static_cast<double>(spec.refreshHz));
+        // Transfer function 1 is the one that gives the display EDR headroom
+        // (Spec::hdr). An OS without the four-argument initialiser gets the
+        // SDR display it always had.
+        const SEL initHdr = sel_registerName("initWithWidth:height:refreshRate:transferFunction:");
+        id mode = nil;
+        if (spec.hdr && [c.mode instancesRespondToSelector:initHdr]) {
+            using InitModeTf = id (*)(id, SEL, uint32_t, uint32_t, double, uint32_t);
+            mode = reinterpret_cast<InitModeTf>(objc_msgSend)(
+                [c.mode alloc], initHdr, static_cast<uint32_t>(spec.width),
+                static_cast<uint32_t>(spec.height), static_cast<double>(spec.refreshHz), 1u);
+        } else {
+            if (spec.hdr)
+                log::info("[native] virtual display: this macOS has no HDR display mode — SDR");
+            using InitMode = id (*)(id, SEL, uint32_t, uint32_t, double);
+            mode = reinterpret_cast<InitMode>(objc_msgSend)(
+                [c.mode alloc], sel_registerName("initWithWidth:height:refreshRate:"),
+                static_cast<uint32_t>(spec.width), static_cast<uint32_t>(spec.height),
+                static_cast<double>(spec.refreshHz));
+        }
         [mode autorelease];
         id settings = [[[c.settings alloc] init] autorelease];
         setKey(settings, "hiDPI", @0u);
@@ -197,7 +219,7 @@ bool create(const Spec& spec, std::string* error)
         g_displayId = [[display valueForKey:@"displayID"] unsignedIntValue];
         log::info("[native] virtual display created: id " + std::to_string(g_displayId) + ", " +
                   std::to_string(spec.width) + "x" + std::to_string(spec.height) + " @ " +
-                  std::to_string(spec.refreshHz) + " Hz");
+                  std::to_string(spec.refreshHz) + " Hz" + (spec.hdr ? ", HDR (EDR)" : ""));
     }
     return true;
 }

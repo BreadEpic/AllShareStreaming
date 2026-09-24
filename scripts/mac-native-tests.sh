@@ -73,6 +73,12 @@ codesign -d -r- "$APP" 2>&1 | grep designated
 # ── Run it in the GUI session ───────────────────────────────────────────────
 launchctl bootout "gui/$UID_/$LABEL" 2>/dev/null || true
 rm -f "$LOG"
+# launchd starts the bundle with an empty environment: the MW_TEST_* switches
+# a caller set (MW_TEST_VIRTUAL_DISPLAY…) are handed over by name.
+ENV_XML=""
+while IFS== read -r k v; do
+    ENV_XML="$ENV_XML<key>$k</key><string>$v</string>"
+done < <(env | grep "^MW_TEST_" | grep -v "^MW_TEST_WORK=" || true)
 cat > "$PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -81,6 +87,7 @@ cat > "$PLIST" <<EOF
   <key>ProgramArguments</key><array><string>$APP/Contents/MacOS/mw-native-tests</string></array>
   <key>RunAtLoad</key><true/>
   <key>ProcessType</key><string>Interactive</string>
+  <key>EnvironmentVariables</key><dict>$ENV_XML</dict>
   <key>StandardOutPath</key><string>$LOG</string>
   <key>StandardErrorPath</key><string>$LOG</string>
 </dict></plist>

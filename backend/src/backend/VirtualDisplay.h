@@ -246,6 +246,10 @@ struct Request
     /// the browser (util/RefreshRate.js). 0 — no measurement — is kRefreshHz.
     /// Always within [kRateMin, kRateMax] once parsed.
     int refresh = 0;
+    /// Activate, macOS: make the display able to show HDR (EDR) — asked only
+    /// when the viewer asked for HDR. Applied in process, never written to
+    /// the request file: Windows' display is SDR, whatever this says.
+    bool hdr = false;
 };
 
 /// Parse and validate a request. The file is read by an elevated process, so

@@ -3726,13 +3726,16 @@ int main(int argc, char* argv[])
             // presenting 24 frames a second into the void.
             // Unmeasured (0) leaves the display's default rate.
             const int vdRefresh = reqFps;
+            // HDR asked (the native host asks it whenever this screen can show
+            // it): a Mac makes its display EDR-capable then, and only then.
+            const bool vdHdr = reqHdr;
             std::function<void()> readyThenStart = claimThenStart;
             if (host->backendType == NativeHostBackend::typeName() &&
                 appId == NativeHostBackend::virtualDisplayAppId()) {
                 readyThenStart = [claimThenStart, worker, respond, standby, reqSlot, generation,
-                                  vdWidth, vdHeight, vdRefresh]() {
+                                  vdWidth, vdHeight, vdRefresh, vdHdr]() {
                     VirtualDisplayJob::instance().activate(
-                        vdWidth, vdHeight, vdRefresh,
+                        vdWidth, vdHeight, vdRefresh, vdHdr,
                         [claimThenStart, worker, respond, standby, reqSlot,
                          generation](bool ok, const QString& error) {
                             if (g_SlotLaunchGeneration.value(reqSlot) != generation) {

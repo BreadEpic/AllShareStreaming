@@ -480,6 +480,7 @@ bool applyInProcess(const Request& req, Result* result)
         spec.width = w;
         spec.height = h;
         spec.refreshHz = hz;
+        spec.hdr = req.hdr;
         spec.name = displayName().toStdString();
         res.previousPrimary = QString::number(mw::native::vdisplay::mainDisplay());
         std::string error;

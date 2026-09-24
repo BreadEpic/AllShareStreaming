@@ -76,8 +76,12 @@ public:
     /// another mode is put through the operation again — the driver's mode
     /// list is rewritten and the node restarted — because a mode that is not
     /// the client's is the one thing this choice cannot live with.
-    void activate(int width, int height, int refresh, Callback cb);
-    void activate(Callback cb) { activate(0, 0, 0, std::move(cb)); }
+    ///
+    /// @p hdr: the viewer asked for HDR. macOS makes its display able to
+    /// show it (EDR) only then — an SDR stream off a display declared in
+    /// BT.2020 would come out washed. Windows ignores it: its display is SDR.
+    void activate(int width, int height, int refresh, bool hdr, Callback cb);
+    void activate(Callback cb) { activate(0, 0, 0, false, std::move(cb)); }
 
     /// Turn it off (previous primary back, disable). @p cb may be null.
     void deactivate(Callback cb);
@@ -99,11 +103,12 @@ private:
         int width = 0;
         int height = 0;
         int refresh = 0;
+        bool hdr = false;
         Callback cb;
     };
 
     void enqueue(VirtualDisplay::Request::Action action, int width, int height, int refresh,
-                 Callback cb);
+                 bool hdr, Callback cb);
     void startNext();
     void setState(State s);
     void fail(const QString& error);
@@ -129,6 +134,7 @@ private:
     int m_ActiveWidth = 0;
     int m_ActiveHeight = 0;
     int m_ActiveRefresh = 0;
+    bool m_ActiveHdr = false;
     QDateTime m_StartedAt;
     QDateTime m_FinishedAt;
 

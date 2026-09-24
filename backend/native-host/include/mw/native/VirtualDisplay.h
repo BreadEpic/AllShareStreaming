@@ -46,6 +46,13 @@ struct Spec
     int width = 1920;
     int height = 1080;
     int refreshHz = 60;
+    /// macOS: a display able to show HDR — Extended Dynamic Range, PQ, BT.2020
+    /// primaries. Measured on mw-mac (15.6.1, 24/09/2026): the mode's transfer
+    /// function 1 with BT.2020 primaries gives the display an EDR headroom of
+    /// 5.0 (0 and 2 to 5 stay at 1.0, SDR), and the probe then reports it HDR
+    /// like any EDR panel. Asked only for a viewer who asked for HDR: an SDR
+    /// stream off a display declared in BT.2020 would come out washed.
+    bool hdr = false;
     /// What the OS shows as the monitor's name. Contains "Virtual" so the
     /// probe classifies it DisplayKind::Virtual (Capabilities.h,
     /// nameLooksVirtual) — keep that word in it.
