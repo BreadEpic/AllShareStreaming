@@ -5553,20 +5553,11 @@ export class StreamView {
                 value +
                 '</span>' +
                 '</div>';
-            if (!isMedia) rows.push(legRow('', escapeHtml(t('stream.statLegHeader'))));
-            for (const leg of legs) {
-                const label = escapeHtml(t('stream.' + leg.key));
-                let value = '–';
-                if (leg.stats.count > 0) {
-                    const ms = leg.stats.avg * (leg.scale || 1);
-                    latency += ms;
-                    const p99 = this._legP99(leg);
-                    latencyP99 += (p99 >= 0 ? p99 : leg.stats.avg) * (leg.scale || 1);
-                    if (leg.counts) haveLatency = true;
-                    value = ms.toFixed(1) + this._legTailSuffix(leg) + 'ms';
-                }
-                rows.push(legRow(label, value));
-            }
+            // The rows follow the picture's own path, top to bottom: which
+            // machine and encoder, then the host's stages in the order a frame
+            // goes through them, the network, and the browser's stages down to
+            // the draw. Read in order, the breakdown IS the pipeline.
+            //
             // WHICH machine produced everything under this heading. First,
             // above the encoder, because it is the outermost fact: every number
             // below belongs to one PC, and a report that names the milliseconds
@@ -5596,8 +5587,10 @@ export class StreamView {
                     escapeHtml(this._nativeEncoderLabel || t('stream.statEncoderUnknown')),
                 ),
             );
-            // The host's stages, shown but not added: the total leg above
-            // already holds their sum. These say WHICH stage moved.
+            if (!isMedia) rows.push(legRow('', escapeHtml(t('stream.statLegHeader'))));
+            // The host's stages, shown but not added: the total leg right after
+            // them holds their sum. These say WHICH stage moved, and they come
+            // first because a frame is acquired before it goes anywhere.
             if (hostStages) {
                 const named = {
                     acquire: 'statStageAcquire',
@@ -5618,9 +5611,10 @@ export class StreamView {
                 }
             }
             // Reserve currently held by the pacer. Not added to the total — the
-            // hold already lands in the render-queue leg above (decoder output →
-            // draw start), so counting it here would double it. It is shown so
-            // the adaptation is visible: 0 on a clean link, growing under jitter.
+            // hold already lands in the render-queue leg (decoder output → draw
+            // start), so counting it would double it; it is shown right under
+            // that leg so the adaptation is visible where it is spent: 0 on a
+            // clean link, growing under jitter.
             // Worker mode: the WORKER's pacer does the pacing and posts its
             // stats with the counters; the main-thread _framePacer exists only
             // as the fallback for a failed worker init and would read 0 forever
@@ -5630,18 +5624,28 @@ export class StreamView {
                 : this._framePacer
                   ? this._framePacer.stats
                   : this._pacerStats;
-            if (pacer) {
-                rows.push(
-                    '<div class="stats-leg-row">' +
-                        '<span class="stats-label">' +
-                        escapeHtml(t('stream.statLegReserve')) +
-                        '</span>' +
-                        '<span class="stats-value">' +
-                        pacer.targetMs.toFixed(1) +
-                        'ms</span>' +
-                        '</div>',
-                );
+            const reserveRow = pacer
+                ? legRow(escapeHtml(t('stream.statLegReserve')), pacer.targetMs.toFixed(1) + 'ms')
+                : null;
+            let reserveShown = false;
+            for (const leg of legs) {
+                const label = escapeHtml(t('stream.' + leg.key));
+                let value = '–';
+                if (leg.stats.count > 0) {
+                    const ms = leg.stats.avg * (leg.scale || 1);
+                    latency += ms;
+                    const p99 = this._legP99(leg);
+                    latencyP99 += (p99 >= 0 ? p99 : leg.stats.avg) * (leg.scale || 1);
+                    if (leg.counts) haveLatency = true;
+                    value = ms.toFixed(1) + this._legTailSuffix(leg) + 'ms';
+                }
+                rows.push(legRow(label, value));
+                if (leg.key === 'statLegQueue' && reserveRow) {
+                    rows.push(reserveRow);
+                    reserveShown = true;
+                }
             }
+            if (reserveRow && !reserveShown) rows.push(reserveRow);
             // The audio playout buffer: how far the sound sits behind the
             // picture on the browser side. Shown, not added — audio and video
             // are independent paths, and the total is the picture's.
