@@ -59,6 +59,7 @@ import {
 } from '../util/Av1Utils.js';
 
 import {
+    CAN_CAPTURE_MOUSE,
     IS_TOUCH_DEVICE,
     IS_MOBILE,
     IS_MOBILE_OR_TABLET,
@@ -499,8 +500,11 @@ export class StreamView {
         this._transportMode = transportMode || transport;
         this._gamingMode = gamingMode;
         // Force gaming mode off on touch devices — pointer lock and mouse
-        // capture are irrelevant when input is touch-based.
-        if (IS_TOUCH_DEVICE) {
+        // capture are irrelevant when input is touch-based. Not when a mouse is
+        // connected (touchscreen laptop, 2-in-1, tablet with a trackpad): that
+        // mouse sent as positions stops at the edge of the screen, and a game
+        // turning its camera with it cannot turn any further.
+        if (IS_TOUCH_DEVICE && !CAN_CAPTURE_MOUSE) {
             this._gamingMode = false;
         }
         this._upnpEnabled = upnpEnabled;
@@ -875,6 +879,15 @@ export class StreamView {
         // Whether the current pointer lock reports the mouse's own counts
         // (unadjustedMovement) — see _lockPointer / _isMovementSpike.
         this._lockUnadjusted = false;
+        // Desktop mode: a game hid the host's pointer to turn its camera with
+        // the mouse, and the next click or key captures it — see
+        // _onHostCursorVisibility.
+        this._autoCaptureArmed = false;
+        this._onAutoCaptureKey = null;
+        this._autoCaptureHintShown = false;
+        // When the host last hid its pointer — a hide must last while our
+        // pointer moves before it counts as a game taking the mouse.
+        this._hostCursorHiddenSince = 0;
         this._lastRawPointerMs = 0; // last pointerrawupdate seen — see _rawPointerLive
         this._mediaRectWarned = false; // one line when the media rect fell back
         this.pointerLocked = false;
@@ -6137,8 +6150,11 @@ export class StreamView {
             // The host's pointer, for us to draw. See _pictureCursor: visible
             // with no image is a real state, not a missing one.
             const firstShape = !this._hostCursorSeen;
+            const wasHidden = this._hostDrawsCursor && !this._hostCursorVisible;
             this._hostDrawsCursor = true;
             this._hostCursorVisible = msg.visible === true;
+            if (!this._hostCursorVisible && !wasHidden)
+                this._hostCursorHiddenSince = performance.now();
             this._hostCursorPng = msg.png || null;
             this._hostCursorKind = typeof msg.kind === 'string' ? msg.kind : '';
             this._hostCursorHotspot = [msg.hotspotX | 0, msg.hotspotY | 0];
@@ -6172,6 +6188,7 @@ export class StreamView {
             // yet by definition.
             if (firstShape || this._clientPointerFresh()) this._applyHostCursor();
             this._clientCursorShapeChanged();
+            this._onHostCursorVisibility();
             return;
         }
         if (msg.type === 'cursorpos') {
@@ -7520,8 +7537,12 @@ export class StreamView {
      * we draw it ourselves and should.
      */
     _sendCursorMode() {
+        // Not for a lock desktop mode took on its own (a game's mouse-look):
+        // the host only reports its pointer while it does not draw it, and that
+        // report — the game showing its pointer again — is what releases it.
         const composite =
-            !!this.pointerLocked || (IS_MOBILE_OR_TABLET && !MOBILE_CURSOR_CLIENT_DRAWN);
+            (!!this.pointerLocked && this._gamingMode) ||
+            (IS_MOBILE_OR_TABLET && !MOBILE_CURSOR_CLIENT_DRAWN);
         const cursorPx = composite ? this._compositeCursorPx() : 0;
         if (composite === this._sentCursorComposite && cursorPx === this._sentCursorPx) return;
         // Only the transition into compositing invalidates what we hold; a size
@@ -7880,12 +7901,24 @@ export class StreamView {
         // cursor to hide (trackpad model).
 
         this._onNormalMouseMove = (e) => {
+            // Captured for a game's mouse-look (see _onHostCursorVisibility):
+            // motion goes out as deltas, which have no edge to stop at.
+            if (this.pointerLocked) {
+                if (this._rawPointerLive()) return;
+                if (this._isMovementSpike(e.movementX, e.movementY)) return;
+                this._sendRelativeMouse(e.movementX, e.movementY);
+                return;
+            }
             // Remember where the pointer is so the cursor decision can be
             // re-applied on window focus (see _refreshLocalCursorOnFocus), and
             // when — see _clientPointerFresh.
             this._lastMouseClientX = e.clientX;
             this._lastMouseClientY = e.clientY;
             this._lastClientMoveMs = performance.now();
+            // Moving while a game hides the host pointer (after switching
+            // windows, say) is what arms the capture — see
+            // _onHostCursorVisibility.
+            if (this._hostDrawsCursor && !this._hostCursorVisible) this._onHostCursorVisibility();
 
             const rect = this._mediaRect();
             // Absolute pixel position within the displayed image
@@ -7919,6 +7952,15 @@ export class StreamView {
         };
 
         this._onNormalMouseDown = (e) => {
+            // Captured: the press is aimed at wherever the game holds the host
+            // pointer, and our pointer's frozen position means nothing.
+            if (this.pointerLocked) {
+                this.handleMouseDown(e);
+                return;
+            }
+            // A game has hidden the pointer to look around: this click takes
+            // the mouse, and still goes to the game below.
+            if (this._autoCaptureArmed) this._autoCapture();
             // A click is aimed at a point, so it carries that point. Positions
             // and presses used to travel separately, and a press went out even
             // for a point the position path refuses to map (a degenerate rect,
@@ -7972,6 +8014,7 @@ export class StreamView {
         }
         document.removeEventListener('pointerlockchange', this._onPointerLockChange);
         this._disarmPointerCapture();
+        this._disarmAutoCapture();
         window.removeEventListener('beforeunload', this._onBeforeUnload);
         window.removeEventListener('pagehide', this._onPageHide);
         window.removeEventListener('blur', this._onWindowBlur);
@@ -8092,6 +8135,94 @@ export class StreamView {
         if (!this._pointerCaptureArmed) return;
         document.removeEventListener('keydown', this._pointerCaptureArmed, true);
         this._pointerCaptureArmed = null;
+    }
+
+    /**
+     * Desktop mode, and the host just hid or showed its pointer.
+     *
+     * Desktop mode sends positions, and a position stops at the edge of this
+     * screen: a game that turns its camera with the mouse (first person,
+     * Roblox's LockCenter) turns until the viewer's pointer reaches the side,
+     * then no further — no full turn is possible. The host hiding its pointer
+     * while ours moves over the picture is that game taking the mouse, so the
+     * next click or key captures it and motion goes out as deltas, as in
+     * gaming mode. The game showing its pointer again (a menu, a cutscene,
+     * Escape) gives it back. A pointer the host hid while ours sat still — a
+     * video player hiding it when idle — is left alone.
+     *
+     * Only the native host reports its pointer; with Sunshine, Mouse Gaming
+     * Mode is the way to turn freely.
+     */
+    _onHostCursorVisibility() {
+        if (this._gamingMode || !CAN_CAPTURE_MOUSE || !this.inputEl) return;
+        if (!this._hostDrawsCursor || this._hostCursorVisible) {
+            this._disarmAutoCapture();
+            if (this.pointerLocked && document.pointerLockElement === this.inputEl) {
+                document.exitPointerLock();
+            }
+            return;
+        }
+        if (this.pointerLocked || this._autoCaptureArmed) return;
+        if (!this._clientPointerFresh()) return;
+        // A video player hides the pointer when it sits still and shows it on
+        // the first move, a round trip later: only a hide that outlasts that
+        // while ours keeps moving is a game holding the mouse.
+        if (performance.now() - this._hostCursorHiddenSince < StreamView.AUTO_CAPTURE_HIDDEN_MS)
+            return;
+        if (!this._overPicture(this._lastMouseClientX, this._lastMouseClientY)) return;
+        this._armAutoCapture();
+    }
+
+    _armAutoCapture() {
+        this._autoCaptureArmed = true;
+        // A key is a gesture the browser accepts for the lock, and the first
+        // thing a player presses; the click path lives in _onNormalMouseDown.
+        this._onAutoCaptureKey = (e) => {
+            // Escape is no gesture the browser accepts for the lock, and it is
+            // the key that opens the game's menu anyway.
+            if (e.key !== 'Escape') this._autoCapture();
+        };
+        document.addEventListener('keydown', this._onAutoCaptureKey, true);
+        if (!this._autoCaptureHintShown) {
+            this._autoCaptureHintShown = true;
+            this._showTransientHint(t('stream.autoCaptureHint'), 3000);
+        }
+    }
+
+    _disarmAutoCapture() {
+        this._autoCaptureArmed = false;
+        if (this._onAutoCaptureKey) {
+            document.removeEventListener('keydown', this._onAutoCaptureKey, true);
+            this._onAutoCaptureKey = null;
+        }
+    }
+
+    _autoCapture() {
+        this._disarmAutoCapture();
+        if (this._gamingMode || this.pointerLocked || this._hostCursorVisible) return;
+        // Desktop mode never listened for the lock: it had no use for it.
+        document.addEventListener('pointerlockchange', this._onPointerLockChange);
+        // Refused (a gesture the browser did not accept): the pointer stays
+        // free, positions keep going out, and the next click or key asks again.
+        const retry = () => {
+            if (!this._gamingMode && !this.pointerLocked && !this._hostCursorVisible)
+                this._armAutoCapture();
+        };
+        try {
+            const p = this._lockPointer();
+            if (p && typeof p.catch === 'function') p.catch(retry);
+        } catch (e) {
+            retry();
+        }
+    }
+
+    /** Whether a client point sits over the streamed picture (not the bars). */
+    _overPicture(clientX, clientY) {
+        if (typeof clientX !== 'number' || typeof clientY !== 'number') return false;
+        const rect = this._mediaRect();
+        const x = clientX - rect.left;
+        const y = clientY - rect.top;
+        return x >= 0 && y >= 0 && x <= rect.width && y <= rect.height;
     }
 
     /**
@@ -9412,9 +9543,10 @@ export class StreamView {
         this._onPointerRaw = (e) => {
             if (e.pointerType !== 'mouse') return;
             this._lastRawPointerMs = performance.now();
-            if (this._gamingMode) {
+            if (this._gamingMode || this.pointerLocked) {
                 // Pre-focus, the pointer is free: the mousemove path places the
-                // host cursor and handles the capture click.
+                // host cursor and handles the capture click. Desktop mode
+                // captured for a game's mouse-look sends deltas the same way.
                 if (!this._mouseFocused) return;
                 if (e.movementX || e.movementY) {
                     this._sendRelativeMouse(e.movementX, e.movementY);
@@ -9643,6 +9775,10 @@ export class StreamView {
     /** One wheel notch, in the units the GameStream scroll packet carries. */
     static WHEEL_DELTA = 120;
 
+    /** How long the host's pointer must stay hidden while ours moves before a
+     *  desktop-mode capture arms — see _onHostCursorVisibility. */
+    static AUTO_CAPTURE_HIDDEN_MS = 300;
+
     /**
      * Browser wheel delta → notches, whatever unit the event is expressed in.
      * Chromium reports pixels (100 per notch), Firefox lines (3 per notch),
@@ -9716,8 +9852,13 @@ export class StreamView {
         if (this.pointerLocked) this._disarmPointerCapture();
         this._mouseFocused = this.pointerLocked;
         if (this.hintEl) {
-            this.hintEl.style.display = this.pointerLocked ? 'none' : 'flex';
+            // "Click to capture" belongs to gaming mode; a desktop-mode capture
+            // released (Escape, switching windows) never shows it.
+            this.hintEl.style.display = this.pointerLocked || !this._gamingMode ? 'none' : 'flex';
         }
+        // Released while the game still hides its pointer: the next click or
+        // key takes the mouse back.
+        if (!this.pointerLocked) this._onHostCursorVisibility();
         // Capturing/releasing the mouse drives both the full keyboard lock and
         // the gaming-mode exit-reminder overlay.
         this._syncKeyboardLock();
@@ -9815,6 +9956,7 @@ export class StreamView {
         // Whichever way it is going, a capture that was waiting for a keystroke
         // belongs to the mode being left.
         this._disarmPointerCapture();
+        this._disarmAutoCapture();
 
         // ── Toggle mode ─────────────────────────────────────────────────
         this._gamingMode = !this._gamingMode;

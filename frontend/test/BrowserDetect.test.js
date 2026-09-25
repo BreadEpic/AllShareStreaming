@@ -188,3 +188,31 @@ describe('BrowserDetect — Snapdragon picks SGSR whatever the form factor', () 
         expect(spy).toHaveBeenCalledTimes(1);
     });
 });
+
+// A touch screen is not "no mouse": a touchscreen laptop, a 2-in-1 or a tablet
+// with a trackpad has both, and Mouse Gaming Mode is the only way their mouse
+// turns a game's camera all the way round.
+describe('BrowserDetect.hasFinePointer', () => {
+    const original = window.matchMedia;
+    afterEach(() => {
+        window.matchMedia = original;
+    });
+
+    it('is true when a mouse or trackpad is connected', async () => {
+        window.matchMedia = vi.fn((q) => ({ matches: q === '(any-pointer: fine)' }));
+        const { hasFinePointer } = await import('../js/util/BrowserDetect.js');
+        expect(hasFinePointer()).toBe(true);
+    });
+
+    it('is false on a touch-only device', async () => {
+        window.matchMedia = vi.fn(() => ({ matches: false }));
+        const { hasFinePointer } = await import('../js/util/BrowserDetect.js');
+        expect(hasFinePointer()).toBe(false);
+    });
+
+    it('is false where the browser cannot answer', async () => {
+        window.matchMedia = undefined;
+        const { hasFinePointer } = await import('../js/util/BrowserDetect.js');
+        expect(hasFinePointer()).toBe(false);
+    });
+});

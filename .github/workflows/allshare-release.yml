@@ -39,7 +39,7 @@ jobs:
           **AllShare (Powered by MMC)** — [Moonlight‑Web](https://github.com/linckosz/moonlight-web) with a new name and logo, plus:
 
           - **Wake a sleeping PC more reliably** — the Wake button sends the magic packet through every network card of the server, to more ports, three times; the card shows *Waking…* until the PC answers.
-          - **Mouse fix** — clicking the black bars beside the picture to capture the mouse no longer parks the PC's pointer on the side of its screen; pointer jumps some browsers report are ignored.
+          - **Mouse fixes for games** — turn a full 360° in games that look around with the mouse (Roblox, first-person games): when a game hides the PC's pointer while you move the mouse, the next click or key captures the mouse, and it is released when the game shows its pointer again. Mouse Gaming Mode now also works on touchscreen laptops, 2-in-1s and tablets with a mouse. Clicking the black bars beside the picture no longer parks the PC's pointer on the side of its screen.
           - **Picture fill** — *Settings → Picture Fill* or <kbd>Shift</kbd>+<kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>F</kbd>: *Fit*, *Stretch* or *Zoom*, so the stream fills the window when not in fullscreen.
 
           **Install:** download `MoonlightWeb-installer-…-win-x64.exe` below and run it. The installer is not code-signed: if Windows SmartScreen warns, choose *More info → Run anyway*.

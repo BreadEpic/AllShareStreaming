@@ -42,6 +42,7 @@ import {
 import { padKey, padName } from '../stream/gamepadMapping.js';
 import { listMappings, removeMapping, CHANGED_EVENT } from '../util/gamepadMappingsStore.js';
 import {
+    CAN_CAPTURE_MOUSE,
     SUPPORTS_CANVAS_TEARING,
     IS_MOBILE_OR_TABLET,
     resolveTearing,
@@ -1430,7 +1431,7 @@ export class SettingsView {
                     ${gamepadProfileHtml}
 
                     ${
-                        IS_TOUCH_DEVICE
+                        IS_TOUCH_DEVICE && !CAN_CAPTURE_MOUSE
                             ? ''
                             : `
                     <div class="settings-field">

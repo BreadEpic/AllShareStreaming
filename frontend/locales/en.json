@@ -662,6 +662,7 @@
         "enhancerOff": "Off",
         "iosFullscreenHint": "For true fullscreen: Share → Add to Home Screen, then launch Moonlight from the icon.",
         "exitFullscreenHint": "Press {{combo}} to exit fullscreen",
+        "autoCaptureHint": "The game is using the mouse to look around — click or press a key to capture it",
         "gamingExitTitle": "Exit mouse gaming mode",
         "gamingExitDesc": "release mouse & leave fullscreen",
         "closeOverlay": "Hide",

@@ -108,6 +108,33 @@ export function isIphone() {
 /** True when the browser supports touch events (any touch-capable device). */
 export const IS_TOUCH_DEVICE = platform.isTouchDevice;
 
+/**
+ * A mouse or trackpad is connected — `any-pointer: fine` — even on a device
+ * that also has a touch screen. Touchscreen laptops, 2-in-1s, Chromebooks and
+ * tablets with a mouse all report touch, and used to lose Mouse Gaming Mode
+ * for it: their mouse was sent as positions, which stop at the edge of the
+ * screen, so a game turning the camera with the mouse could not turn past it.
+ */
+export function hasFinePointer() {
+    try {
+        return typeof window.matchMedia === 'function'
+            ? window.matchMedia('(any-pointer: fine)').matches
+            : false;
+    } catch (e) {
+        return false;
+    }
+}
+
+/**
+ * The mouse can be captured (Pointer Lock) for Mouse Gaming Mode: a device
+ * without a touch screen, or one with a mouse connected — and a browser that
+ * implements the API at all.
+ */
+export const CAN_CAPTURE_MOUSE =
+    typeof Element !== 'undefined' &&
+    typeof Element.prototype.requestPointerLock === 'function' &&
+    (!platform.isTouchDevice || hasFinePointer());
+
 /** The raw platform type string: 'mobile', 'tablet', or 'desktop'. */
 export const PLATFORM_TYPE = platform.type;
 

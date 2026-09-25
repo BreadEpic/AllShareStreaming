@@ -662,6 +662,7 @@
         "enhancerOff": "Désactivé",
         "iosFullscreenHint": "Pour un vrai plein écran : Partager → Sur l'écran d'accueil, puis lancez Moonlight depuis l'icône.",
         "exitFullscreenHint": "Appuyez sur {{combo}} pour quitter le plein écran",
+        "autoCaptureHint": "Le jeu utilise la souris pour regarder autour — cliquez ou appuyez sur une touche pour la capturer",
         "gamingExitTitle": "Quitter le mode jeu souris",
         "gamingExitDesc": "rend la souris & quitte le plein écran",
         "closeOverlay": "Masquer",
